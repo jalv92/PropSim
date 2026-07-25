@@ -22,7 +22,8 @@ a = Analysis(
         (os.path.join(ROOT, "account_patterns.json"), "."),
         (os.path.join(ROOT, "dashboard.html"), "."),
     ],
-    hiddenimports=["nttrades", "ntdata", "ncd_parse", "prop_rules", "sim"],
+    hiddenimports=["nttrades", "ntdata", "ncd_parse", "prop_rules", "sim",
+                   "tape", "engine"],
     hookspath=[],
     excludes=[
         # numpy is required; these are not, and each drags in tens of MB

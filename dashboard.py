@@ -33,11 +33,26 @@ import numpy as np
 import prop_rules as pr
 from sim import PROFILES, POLICIES, load_trades, sim_attempt
 import nttrades
+import ntdata
+import tape as tp
+import engine
 
 HERE = Path(__file__).resolve().parent
 PAGE = pr._res("dashboard.html")
 PATHS_DRAWN = 1000          # spaghetti lines; the screenshot's reference count
 UPDATE_RESULT = {}          # filled once at startup, shown in the UI
+
+
+class ClientGone(Exception):
+    """The browser closed mid-stream. Distinct from an application error.
+
+    These used to share SystemExit, so a genuine user-facing failure -- "this
+    contract has not been prepared yet" -- was swallowed as a disconnect and
+    the page simply showed nothing. A silent failure is the worst kind: the
+    user cannot tell a broken program from a slow one.
+    """
+# The most recent backtest, so the Prop Firm tab can score it without re-running.
+LAST_BACKTEST: dict = {}
 
 
 def config_tree():
@@ -68,6 +83,65 @@ def _hist(x, bins=28):
                 edges=[round(float(e), 2) for e in edges])
 
 
+def _fmt_day(yyyymmdd: str) -> str:
+    return f"{yyyymmdd[:4]}-{yyyymmdd[4:6]}-{yyyymmdd[6:8]}"
+
+
+def prepare_stream(q, write):
+    """Build a contract's tick cache, reporting progress as it goes."""
+    contract = q.get("contract", [""])[0]
+    write("meta", dict(contract=contract))
+
+    def prog(done, total, ticks):
+        write("progress", dict(done=done, total=total, ticks=ticks,
+                               pct=round(100 * done / max(total, 1), 1)))
+    tp.build_cache(contract, force=bool(q.get("force")), on_progress=prog)
+    lo, hi, days = tp.available_range(contract)
+    write("result", dict(contract=contract, first=lo, last=hi, days=days,
+                         ticks=len(tp.load_cache(contract)["ts"])))
+
+
+def backtest_stream(q, write):
+    """Run one backtest and keep the trades for the Prop Firm tab."""
+    contract = q.get("contract", [""])[0]
+    strategy = q.get("strategy", ["orb"])[0]
+    tf = int(q.get("tf", ["5"])[0])
+    start = q.get("start", [""])[0] or None
+    end = q.get("end", [""])[0] or None
+    slip = float(q.get("slippage", ["2"])[0])
+    comm = float(q.get("commission", ["5"])[0])
+    params = {}
+    S = engine.LIBRARY[strategy]
+    for k in S.params:
+        v = q.get("p_" + k, [None])[0]
+        if v not in (None, ""):
+            params[k] = float(v)
+
+    write("progress", dict(stage="loading the tape"))
+    costs = engine.Costs(commission=comm, slippage_ticks=slip)
+    trades, meta = engine.backtest(contract, strategy, tf, start, end,
+                                   params=params, costs=costs)
+    write("progress", dict(stage="scoring"))
+    summary = engine.summarise(trades, meta)
+
+    global LAST_BACKTEST
+    LAST_BACKTEST = dict(trades=trades, meta=meta, summary=summary)
+
+    equity, run = [], 0.0
+    for t in trades:
+        run += t.pnl
+        equity.append(round(run, 2))
+    write("result", dict(
+        summary={k: (None if isinstance(v, float) and v != v else v)
+                 for k, v in summary.items() if k != "params"},
+        params=meta["params"], equity=equity,
+        trades=[dict(date=t.date, dir=t.direction,
+                     entry=round(t.entry_price, 2), exit=round(t.exit_price, 2),
+                     pnl=round(t.pnl, 2), mae=round(t.mae, 2), reason=t.reason)
+                for t in trades[:200]],
+        n_shown=min(len(trades), 200)))
+
+
 def run_stream(q, write):
     """Execute one simulation, streaming progress then the final payload."""
     firm = q.get("firm", ["my_funded_futures"])[0]
@@ -92,7 +166,15 @@ def run_stream(q, write):
     account = (q.get("account", [""])[0] or "").strip()
     pool = None
     src = None
-    if account:
+    if account == "__backtest":
+        if not LAST_BACKTEST.get("trades"):
+            raise SystemExit("No backtest has been run yet — use the Backtest tab.")
+        bt = LAST_BACKTEST
+        pool = nttrades.to_pool(bt["trades"])
+        m = bt["meta"]
+        src = (f"{len(bt['trades'])} trades from a backtest: {m['label']} · "
+               f"{m['contract']} · {m['timeframe']}m · {m['start']}..{m['end']}")
+    elif account:
         # the user's own trades, straight out of NinjaTrader -- no export step
         tl = nttrades.read_trades(account=account)
         if tl:
@@ -213,8 +295,37 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
         if u.path == "/favicon.ico":
             return self._send(204, b"", "image/x-icon")
+        if u.path == "/api/tape":
+            inv = ntdata.inventory(ntdata.resolve_root() or Path("."))
+            rows = []
+            for name, v in (inv.get("tick") or {}).items():
+                ready = tp.cache_path(name).exists()
+                lo = hi = None; days = v["days"]
+                if ready:
+                    try:
+                        lo, hi, days = tp.available_range(name)
+                    except Exception:
+                        ready = False
+                rows.append(dict(contract=name, ready=ready, days=days,
+                                 first=lo or _fmt_day(v["first"]),
+                                 last=hi or _fmt_day(v["last"]),
+                                 mb=v["mb"], est_ticks=v["est_ticks"]))
+            return self._send(200, json.dumps(dict(contracts=rows)).encode(),
+                              "application/json")
+        if u.path == "/api/strategies":
+            lib = []
+            for name, S in engine.LIBRARY.items():
+                lib.append(dict(name=name, label=S.label, uses_ticks=S.uses_ticks,
+                                params=[dict(key=k, default=v.default, lo=v.lo,
+                                             hi=v.hi, desc=v.desc)
+                                        for k, v in S.params.items()]))
+            return self._send(200, json.dumps(dict(strategies=lib)).encode(),
+                              "application/json")
+        if u.path == "/api/tape/prepare":
+            return self._sse(parse_qs(u.query), prepare_stream)
+        if u.path == "/api/backtest":
+            return self._sse(parse_qs(u.query), backtest_stream)
         if u.path == "/api/startup":
-            import ntdata
             cfg = ntdata.load_config()
             q = parse_qs(u.query)
             if q.get("accept"):
@@ -236,7 +347,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(dict(accounts=accts)).encode(),
                               "application/json")
         if u.path == "/api/datasource":
-            import ntdata
             q = parse_qs(u.query)
             root = (q.get("root", [""])[0] or "").strip()
             if root:
@@ -255,7 +365,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._sse(parse_qs(u.query))
         self._send(404, b"not found", "text/plain")
 
-    def _sse(self, q):
+    def _sse(self, q, runner=None):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -270,11 +380,17 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(msg.encode())
                     self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
-                    raise SystemExit          # client navigated away mid-run
+                    raise ClientGone          # client navigated away mid-run
         try:
-            run_stream(q, write)
-        except SystemExit:
+            (runner or run_stream)(q, write)
+        except ClientGone:
             return
+        except SystemExit as exc:
+            # engine/tape raise SystemExit for conditions the USER must see
+            try:
+                write("error", dict(message=str(exc) or "the run could not start"))
+            except Exception:
+                pass
         except Exception as exc:
             traceback.print_exc()
             try:

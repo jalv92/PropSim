@@ -43,8 +43,13 @@ def cache_path(contract: str) -> Path:
     return CACHE_DIR / f"{contract.replace(' ', '_')}.npz"
 
 
-def build_cache(contract: str, nt_root=None, force=False) -> dict:
-    """Parse every .ncd of a contract into one columnar cache."""
+def build_cache(contract: str, nt_root=None, force=False, on_progress=None) -> dict:
+    """Parse every .ncd of a contract into one columnar cache.
+
+    `on_progress(done, total, ticks)` is called as files are read so a UI can
+    show something during the ~15 s parse. A non-technical user must never be
+    left staring at a frozen window wondering whether it crashed.
+    """
     out = cache_path(contract)
     if out.exists() and not force:
         return load_cache(contract)
@@ -58,7 +63,9 @@ def build_cache(contract: str, nt_root=None, force=False) -> dict:
         raise SystemExit(f"no .ncd files under {cdir}")
 
     ts, px, vol, side = [], [], [], []
-    for f in files:
+    for fi, f in enumerate(files):
+        if on_progress and fi % 25 == 0:
+            on_progress(fi, len(files), len(ts))
         for tt, price, boff, aoff, v in read_ticks(f):
             ts.append(tt); px.append(price); vol.append(v)
             side.append(BUY if aoff == 0 else (SELL if boff == 0 else UNKNOWN))
@@ -70,13 +77,16 @@ def build_cache(contract: str, nt_root=None, force=False) -> dict:
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     np.savez(out, **arr)
+    if on_progress:
+        on_progress(len(files), len(files), len(arr["ts"]))
     return arr
 
 
 def load_cache(contract: str) -> dict:
     p = cache_path(contract)
     if not p.exists():
-        raise SystemExit(f"{contract} not cached — run: tape.py --build {contract!r}")
+        raise SystemExit(f"{contract} has not been prepared yet. Open the "
+                         f"Backtest tab and press “Prepare this contract” once.")
     z = np.load(p)
     return {k: z[k] for k in ("ts", "px", "vol", "side")}
 

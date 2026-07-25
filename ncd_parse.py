@@ -20,7 +20,11 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
+
+# pandas is imported lazily inside minute_features(): read_ticks() -- the only
+# entry point the backtest engine uses -- needs nothing but struct and numpy,
+# and a module-level pandas import dragged ~50 MB into the packaged build and
+# crashed it when that dependency was (correctly) excluded.
 
 BIG = 10          # lots per print to count as "large" (NQ outright)
 NET_EPOCH_S = 62135596800  # seconds between 0001-01-01 and 1970-01-01
@@ -99,6 +103,7 @@ def read_ticks(path):
 
 def minute_features(contract_dir):
     """Aggregate all hourly .Last.ncd files of a contract into 1-min rows."""
+    import pandas as pd
     rows = {}
     files = sorted(Path(contract_dir).glob("*.Last.ncd"))
     for f in files:

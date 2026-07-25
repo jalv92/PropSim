@@ -48,7 +48,7 @@
   canvas{display:block;width:100%}
   input[type=range]{width:100%;accent-color:#9aa0a6}
   .foot{color:var(--dimmer);font-size:11px;margin-top:14px;
-        border-top:1px solid var(--line);padding-top:10px}
+        border-top:1px solid var(--line);padding-top:10px;white-space:pre-line}
   .g{color:var(--green)} .r{color:var(--red)} .a{color:var(--amber)}
   .panebody{color:var(--dim);font-size:13px;line-height:1.7}
   .panebody code{font-family:var(--mono);color:var(--txt);font-size:12px}
@@ -56,6 +56,26 @@
   table.kv td{padding:3px 16px 3px 0;vertical-align:top}
   table.kv td:first-child{color:var(--dim)}
   .mono{font-family:var(--mono)}
+  .row{display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin:10px 0}
+  .row label{display:flex;gap:7px;align-items:center;color:var(--txt);font-size:12.5px}
+  .hint{color:var(--dim);font-size:11.5px}
+  input[type=date],input[type=number]{background:#17191d;color:var(--txt);
+    border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:12.5px;
+    font-family:inherit}
+  button.mini{padding:4px 9px;font-size:11px}
+  button.big{padding:9px 20px;font-size:13px}
+  .params{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));
+    gap:10px;margin:12px 0;padding:12px;background:var(--panel);
+    border:1px solid var(--line);border-radius:10px}
+  .params label{display:flex;flex-direction:column;gap:3px;font-size:12px}
+  .params input{width:100%}
+  .params .d{color:var(--dimmer);font-size:10.5px}
+  table.tr{width:100%;border-collapse:collapse;font-size:12px;font-family:var(--mono)}
+  table.tr th{position:sticky;top:0;background:var(--bg);color:var(--dim);
+    text-align:right;padding:5px 8px;font-weight:500;font-size:10.5px;
+    text-transform:uppercase;letter-spacing:.06em}
+  table.tr td{text-align:right;padding:4px 8px;border-top:1px solid #17191b}
+  table.tr td:first-child,table.tr th:first-child{text-align:left}
   /* The `hidden` attribute works through a UA rule ([hidden]{display:none})
      with the lowest possible specificity, so an INLINE display would silently
      beat it and the modal would never close. Layout lives here, and the
@@ -93,6 +113,7 @@
     <div class="tab alt" data-p="verdict">Verdict</div>
     <div class="tab alt off" title="disabled on purpose — see the Verdict tab">Regimes</div>
     <div class="tab alt" data-p="mc">Risk &amp; Monte Carlo</div>
+    <div class="tab alt" data-p="backtest">Backtest</div>
     <div class="tab alt" data-p="data">Data</div>
   </div>
 
@@ -149,6 +170,75 @@
 
   <div id="pane-mc" hidden>
     <div class="panebody" id="mcBody"></div>
+  </div>
+
+  <div id="pane-backtest" hidden>
+    <div class="panebody">
+      <p>Run a strategy over your own tick data, then score the result against a
+      prop firm. Three choices define the run and all three change the answer.</p>
+
+      <div class="row">
+        <label>1. Market data
+          <select id="bt_contract"></select>
+          <span class="hint" id="bt_range">—</span>
+        </label>
+        <button id="bt_prepare" class="primary" hidden>Prepare this contract</button>
+      </div>
+      <div id="bt_prep" class="hint"></div>
+
+      <div class="row">
+        <label>2. Dates
+          <input type="date" id="bt_start"> <span class="hint">to</span>
+          <input type="date" id="bt_end">
+          <button id="bt_all" class="mini">all</button>
+        </label>
+      </div>
+
+      <div class="row">
+        <label>3. Strategy
+          <select id="bt_strategy"></select>
+        </label>
+        <label>Timeframe
+          <select id="bt_tf">
+            <option>1</option><option>3</option><option selected>5</option>
+            <option>15</option><option>30</option><option>60</option>
+          </select><span class="hint">minute bars</span>
+        </label>
+      </div>
+
+      <div id="bt_params" class="params"></div>
+
+      <div class="row">
+        <label>Slippage <input type="number" id="bt_slip" value="2" step="0.5"
+               min="0" max="20" style="width:70px"><span class="hint">ticks each way</span></label>
+        <label>Commission <input type="number" id="bt_comm" value="5" step="0.5"
+               min="0" style="width:70px"><span class="hint">$ per round trip</span></label>
+      </div>
+      <p class="hint" style="margin:-4px 0 12px">Fills are pessimistic on purpose:
+      you pay slippage both ways, and when a stop and a target fall in the same
+      moment the stop wins. Measured on real trades, this setting alone can move
+      a result from convincing to worthless — so it is a dial, never a hidden
+      constant.</p>
+
+      <button id="bt_run" class="primary big">Run backtest</button>
+      <span id="bt_status" class="hint"></span>
+
+      <div id="bt_out" hidden>
+        <div class="kpis" id="bt_kpis" style="margin-top:18px"></div>
+        <div class="sec">
+          <h3>Equity curve</h3>
+          <div class="meta" id="bt_meta">—</div>
+          <canvas id="bt_curve" height="240"></canvas>
+        </div>
+        <div class="sec">
+          <div style="display:flex;justify-content:space-between;align-items:baseline">
+            <h3>Trades</h3>
+            <button id="bt_score" class="primary">Score this against a prop firm →</button>
+          </div>
+          <div id="bt_trades" style="max-height:320px;overflow:auto"></div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div id="pane-data" hidden>
@@ -349,7 +439,8 @@ function run(){
   const q=new URLSearchParams({firm:$("#firm").value, variant:$("#variant").value,
     size:$("#size").value.replace(/,/g,""), sims:"10000",
     profile:$("#profile").value, policy:$("#policy").value,
-    account:$("#account").value.startsWith("__") ? "" : $("#account").value});
+    // only __none means "no trades"; __backtest is a real source
+    account:$("#account").value==="__none" ? "" : $("#account").value});
   $("#run").disabled=true; $("#foot").textContent="Running…";
   RES=null;
   ES=new EventSource("/api/run?"+q);
@@ -364,10 +455,13 @@ function run(){
     $("#foot").textContent=`${META.firm} / ${META.variant} / $${META.size.toLocaleString()} — `
       +`ratchet ${META.hwm_basis}, breach ${META.breach_basis||"UNVERIFIED"}, `
       +`rules retrieved ${META.retrieved}`
-      + (META.pool ? `  —  BOOTSTRAP: ${META.pool.n_trades} real trades / `
-          +`${META.pool.n_days} day-blocks, mean $${META.pool.mean}`
-          +`, MAE ${META.pool.have_mae?"real":"assumed"}`
-        : "  —  parametric Bernoulli profile (paths sit on a lattice by construction)");
+      + (META.pool
+          // Say WHERE the trades came from. "36 real trades" looks identical
+          // whether they are a backtest or the user's live account, and those
+          // mean very different things when a funding decision follows.
+          ? `\n${META.pool.source} · ${META.pool.n_days} day-blocks, `
+            + `mean $${META.pool.mean}, MAE ${META.pool.have_mae?"real":"assumed"}`
+          : "\nparametric profile — no real trades (paths sit on a lattice by construction)");
   });
   ES.addEventListener("progress", ev=>{ const p=JSON.parse(ev.data);
     drawDonut(p.p_pass,p.p_bust,1-p.p_pass-p.p_bust,null,10000);
@@ -450,6 +544,155 @@ function render(){
   $("#medLabel").textContent=v.medLabel;
 }
 
+/* ---------- backtest tab ---------- */
+let TAPE=[], STRATS=[], BT=null;
+
+function btInit(){
+  if(STRATS.length) return;
+  // Nothing is clickable until the lists are in. A user who clicks Run during
+  // the first fetch would otherwise hit an undefined strategy and see nothing
+  // happen at all, which is the worst possible failure: silent.
+  $("#bt_run").disabled = true;
+  $("#bt_status").textContent = "Loading…";
+  fetch("/api/strategies").then(r=>r.json()).then(d=>{
+    STRATS=d.strategies;
+    $("#bt_strategy").innerHTML = STRATS.map(s=>
+      `<option value="${s.name}">${s.label}${s.uses_ticks?" · reads the tape":""}</option>`).join("");
+    btParams();
+    btTape();                       // btContract() decides if Run may enable
+  }).catch(()=>{ $("#bt_status").textContent =
+      "Could not load the strategy list — is the program still running?"; });
+}
+
+function btTape(){
+  return fetch("/api/tape").then(r=>r.json()).then(d=>{
+    TAPE=d.contracts;
+    // Ready contracts first, and open on one of them. Landing a new user on a
+    // contract whose Run button is disabled reads as a broken program.
+    const sorted = TAPE.slice().sort((a,b)=> (b.ready?1:0)-(a.ready?1:0)
+                                          || a.contract.localeCompare(b.contract));
+    $("#bt_contract").innerHTML = sorted.map(c=>
+      `<option value="${c.contract}">${c.contract}${c.ready?"":"  (needs preparing)"}</option>`).join("");
+    const first = sorted.find(c=>c.ready) || sorted[0];
+    if(first) $("#bt_contract").value = first.contract;
+    btContract();
+  });
+}
+
+function btContract(){
+  const c = TAPE.find(x=>x.contract===$("#bt_contract").value);
+  if(!c) return;
+  $("#bt_range").textContent = `${c.days} trading days available, ${c.first} to ${c.last}`;
+  $("#bt_prepare").hidden = c.ready;
+  // Bound the date inputs to what exists. A user cannot ask for data they do
+  // not have, so the question never arises.
+  for(const id of ["#bt_start","#bt_end"]){ $(id).min=c.first; $(id).max=c.last; }
+  $("#bt_start").value=c.first; $("#bt_end").value=c.last;
+  $("#bt_run").disabled = !c.ready || !STRATS.length;
+  $("#bt_status").textContent = !STRATS.length ? "Loading…"
+    : (c.ready ? "" : "Prepare this contract once before running.");
+}
+
+function btParams(){
+  const s = STRATS.find(x=>x.name===$("#bt_strategy").value);
+  if(!s) return;
+  $("#bt_params").innerHTML = s.params.map(p=>
+    `<label>${p.key.replace(/_/g," ")}
+       <input type="number" id="bt_p_${p.key}" value="${p.default}"
+              min="${p.lo}" max="${p.hi}" step="${p.default % 1 ? 0.1 : 1}">
+       <span class="d">${p.desc}</span></label>`).join("");
+}
+
+function btPrepare(){
+  const c = $("#bt_contract").value;
+  $("#bt_prepare").disabled=true;
+  const es = new EventSource("/api/tape/prepare?contract="+encodeURIComponent(c));
+  es.addEventListener("progress", e=>{ const p=JSON.parse(e.data);
+    $("#bt_prep").textContent =
+      `Reading ${c}: ${p.pct}% (${p.ticks.toLocaleString()} ticks so far). `
+      + `This happens once per contract.`; });
+  es.addEventListener("result", e=>{ const r=JSON.parse(e.data);
+    $("#bt_prep").textContent =
+      `Ready: ${r.ticks.toLocaleString()} ticks over ${r.days} days.`;
+    $("#bt_prepare").disabled=false; es.close(); btTape(); });
+  es.addEventListener("error", e=>{ let m="could not read this contract";
+    try{ m=JSON.parse(e.data).message; }catch(_){}
+    $("#bt_prep").textContent = m; $("#bt_prepare").disabled=false; es.close(); });
+}
+
+function btRun(){
+  const s = STRATS.find(x=>x.name===$("#bt_strategy").value);
+  if(!s){ $("#bt_status").textContent="Still loading — try again in a second."; return; }
+  const q = new URLSearchParams({contract:$("#bt_contract").value,
+    strategy:s.name, tf:$("#bt_tf").value,
+    start:$("#bt_start").value, end:$("#bt_end").value,
+    slippage:$("#bt_slip").value, commission:$("#bt_comm").value});
+  for(const p of s.params) q.set("p_"+p.key, $("#bt_p_"+p.key).value);
+  $("#bt_run").disabled=true; $("#bt_status").textContent="Running…";
+  const es = new EventSource("/api/backtest?"+q);
+  es.addEventListener("progress", e=>{
+    $("#bt_status").textContent = (JSON.parse(e.data).stage||"working")+"…"; });
+  es.addEventListener("result", e=>{
+    BT=JSON.parse(e.data); btRender();
+    $("#bt_run").disabled=false; $("#bt_status").textContent=""; es.close(); });
+  es.addEventListener("error", e=>{ let m="the run failed";
+    try{ m=JSON.parse(e.data).message; }catch(_){}
+    $("#bt_status").textContent=m; $("#bt_run").disabled=false; es.close(); });
+}
+
+function btRender(){
+  const s=BT.summary;
+  $("#bt_out").hidden=false;
+  const tiles=[
+    ["Trades", s.trades, ""],
+    ["Net P&L", fmt$(s.pnl), s.pnl>=0?"g":"r"],
+    ["Win rate", (s.wr*100).toFixed(1)+"%", ""],
+    ["Per trading day", s.per_day.toFixed(1), ""],
+    ["Average trade", fmt$(s.mean||0), (s.mean||0)>=0?"g":"r"],
+    ["t-stat (daily)", s.t_daily==null?"—":s.t_daily.toFixed(2),
+     s.t_daily!=null && s.t_daily>=2 ? "g" : ""],
+  ];
+  $("#bt_kpis").innerHTML = tiles.map(([l,v,c])=>
+    `<div class="kpi"><div class="lab">${l}</div><div class="val ${c}">${v}</div></div>`).join("");
+  $("#bt_meta").innerHTML =
+    `<b>${s.label}</b> · ${s.contract} · <b>${s.timeframe}-minute bars</b> · `
+    + `${s.start} to ${s.end} (${s.days} days) · ${s.signals} signals, ${s.trades} taken · `
+    + `slippage ${s.slippage_ticks} ticks/side`;
+  drawCurve();
+  const rows = BT.trades.map(t=>
+    `<tr><td>${t.date}</td><td>${t.dir>0?"long":"short"}</td><td>${t.entry}</td>
+     <td>${t.exit}</td><td class="${t.pnl>=0?'g':'r'}">${fmt$(t.pnl)}</td>
+     <td>${fmt$(t.mae)}</td><td>${t.reason}</td></tr>`).join("");
+  $("#bt_trades").innerHTML =
+    `<table class="tr"><tr><th>date</th><th>side</th><th>entry</th><th>exit</th>
+     <th>P&L</th><th>worst</th><th>exit by</th></tr>${rows}</table>`
+    + (BT.n_shown < s.trades ? `<p class="hint">showing the first ${BT.n_shown}</p>` : "");
+}
+
+function drawCurve(){
+  if(!BT) return;
+  const [x,w,h]=ctxOf($("#bt_curve"));
+  const e=BT.equity; if(!e.length) return;
+  const lo=Math.min(0,...e), hi=Math.max(0,...e), pad=(hi-lo)*0.08||1;
+  const L=62,R=14,T=12,B=22;
+  const X=i=>L+i*(w-L-R)/Math.max(e.length-1,1);
+  const Y=v=>T+(hi+pad-v)*(h-T-B)/((hi-lo)+2*pad);
+  x.strokeStyle="#1a1c20"; x.fillStyle="#5f646b";
+  x.font="10px ui-monospace,monospace"; x.textAlign="right";
+  for(let g=0;g<=4;g++){ const v=lo-pad+((hi-lo)+2*pad)*g/4, y=Y(v);
+    x.beginPath(); x.moveTo(L,y); x.lineTo(w-R,y); x.stroke();
+    x.fillText(fmtK(v), L-6, y+3); }
+  x.save(); x.setLineDash([4,4]); x.strokeStyle="#3a3f46";
+  x.beginPath(); x.moveTo(L,Y(0)); x.lineTo(w-R,Y(0)); x.stroke(); x.restore();
+  x.beginPath(); x.strokeStyle = e[e.length-1]>=0 ? "#34d399" : "#f2635f";
+  x.lineWidth=1.6;
+  e.forEach((v,i)=> i?x.lineTo(X(i),Y(v)):x.moveTo(X(i),Y(v)));
+  x.stroke();
+  x.fillStyle="#5f646b"; x.textAlign="center";
+  x.fillText("trade 1", L+18, h-6);
+  x.fillText("trade "+e.length, w-R-24, h-6);
+}
+
 /* ---------- verdict tab ---------- */
 function renderVerdict(){
   const a=currentAccount()||{};
@@ -508,7 +751,9 @@ function loadAccounts(){
         const tag = m ? (m.firm.replace(/_/g," ")+(m.phase?" / "+m.phase:"")) : "unmatched";
         return `<option value="${d.account}">${d.account} — ${d.n} trades, ${tag}</option>`;
       }));
+    const keep = [...$("#account").options].find(o=>o.value==="__backtest");
     $("#account").innerHTML = opts.join("");
+    if(keep) $("#account").insertBefore(keep, $("#account").firstChild);
     if(ACCOUNTS.length) { $("#account").value = ACCOUNTS[0].account; applyAccount(); }
   }).catch(()=>{});
 }
@@ -517,6 +762,7 @@ function loadAccounts(){
 // derivable from an account name, so the user still picks those -- putting a
 // guessed rule set behind a funding decision is the one thing to never do.
 function applyAccount(){
+  if($("#account").value.startsWith("__")) return;   // synthetic sources
   const d = ACCOUNTS.find(x=>x.account===$("#account").value);
   if(!d || !d.match) return;
   if(CFG.firms[d.match.firm]){
@@ -553,15 +799,32 @@ document.querySelectorAll("#phase div").forEach(el=>el.onclick=()=>{
   document.querySelectorAll("#phase div").forEach(x=>x.classList.remove("on"));
   el.classList.add("on"); PHASE = el.dataset.v; render();
 });
+$("#bt_contract").onchange=btContract;
+$("#bt_strategy").onchange=btParams;
+$("#bt_prepare").onclick=btPrepare;
+$("#bt_run").onclick=btRun;
+$("#bt_all").onclick=()=>{ const c=TAPE.find(x=>x.contract===$("#bt_contract").value);
+  if(c){ $("#bt_start").value=c.first; $("#bt_end").value=c.last; } };
+$("#bt_score").onclick=()=>{
+  // hand the backtest to the Prop Firm tab as its trade source
+  let o=[...$("#account").options].find(x=>x.value==="__backtest");
+  if(!o){ o=document.createElement("option"); o.value="__backtest";
+          $("#account").insertBefore(o, $("#account").firstChild); }
+  o.textContent = `backtest — ${BT.summary.label}, ${BT.summary.trades} trades`;
+  $("#account").value="__backtest";
+  document.querySelector('.tab[data-p="prop"]').click();
+  $("#run").click();
+};
 $("#account").onchange=applyAccount;
 $("#run").onclick=run;
 $("#scrub").oninput=e=>drawPaths(+e.target.value);
 document.querySelectorAll(".tab[data-p]").forEach(t=>t.onclick=()=>{
   document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
   t.classList.add("on");
-  for(const p of ["prop","verdict","mc","data"])
+  for(const p of ["prop","verdict","mc","data","backtest"])
     $("#pane-"+p).hidden = (p!==t.dataset.p);
   if(t.dataset.p==="data") loadData();
+  if(t.dataset.p==="backtest") btInit();
 });
 
 function loadData(root, force){
