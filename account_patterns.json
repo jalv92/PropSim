@@ -1,0 +1,52 @@
+{
+  "_meta": {
+    "purpose": "Map NinjaTrader account-name prefixes to (firm, phase) so the app can open on the user's real accounts with the right rules preselected.",
+    "why_data_not_code": "Adding a firm must never require editing logic. Users can also add their own patterns here without a rebuild.",
+    "limits": "A name identifies at most the firm and the phase. Account SIZE and VARIANT are not derivable from it, so a match preselects the firm and phase only and the user still picks size and variant. Treat every match as a convenience, never as truth.",
+    "matching": "case-insensitive prefix match, longest pattern wins",
+    "retrieved": "2026-07-25"
+  },
+  "patterns": [
+    {
+      "prefix": "APEX-",
+      "firm": "apex_trader_funding",
+      "phase": null,
+      "note": "Apex uses the same name shape for evaluation and PA; phase is not derivable. NOTE: Apex prohibits automated strategies in every phase.",
+      "confidence": "high"
+    },
+    {
+      "prefix": "MFFUEV",
+      "firm": "my_funded_futures",
+      "phase": "evaluation",
+      "note": "observed on a real MFF evaluation account; EV = evaluation",
+      "confidence": "high"
+    },
+    {
+      "prefix": "MFFUSF",
+      "firm": "my_funded_futures",
+      "phase": "funded_sim",
+      "note": "observed on a real MFF sim-funded account; SF = sim funded",
+      "confidence": "high"
+    },
+    {
+      "prefix": "MFF",
+      "firm": "my_funded_futures",
+      "phase": null,
+      "note": "catch-all for MFF name shapes not covered above",
+      "confidence": "medium"
+    },
+    {
+      "prefix": "TST",
+      "firm": "topstep",
+      "phase": null,
+      "note": "UNVERIFIED — not observed on a real account in this workspace. Left here as a starting point, flagged so the UI can say so.",
+      "confidence": "unverified"
+    }
+  ],
+  "unmatched_examples": [
+    {
+      "name": "LTE05078499860002",
+      "note": "Seen on a real account in this workspace. Deliberately NOT mapped: the prefix was not confirmed against any firm's documentation, and guessing which firm a funded account belongs to would put a wrong rule set in front of a funding decision. The user maps it themselves."
+    }
+  ]
+}

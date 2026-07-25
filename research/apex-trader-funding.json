@@ -1,0 +1,1639 @@
+{
+ "_meta": {
+  "status": "RESEARCH OUTPUT \u2014 NOT APPROVED, NOT A LIVE CONFIG FILE",
+  "firm": "Apex Trader Funding",
+  "retrieved": "2026-07-25",
+  "researcher": "trading-quant-researcher",
+  "schema": "firm -> phase -> variant -> {_defaults, sizes{size}}; full record = {**_defaults, **sizes[size]}"
+ },
+ "apex_trader_funding": {
+  "_global": {
+   "firm": "Apex Trader Funding",
+   "retrieved": "2026-07-25",
+   "retrieval_method": "apextraderfunding.com and support.apextraderfunding.com both hard-block automated fetch (Cloudflare error 1020 / 403 to WebFetch, curl and headless Chromium). Every value below comes from Apex's OWN pages read through Wayback Machine snapshots; snapshot timestamps are given per record.",
+   "product_lineup_change": "Apex retired its entire previous lineup on 2026-03-01. Only two variants are purchasable now (EOD Drawdown, Intraday Trailing Drawdown) in 4 sizes (25K/50K/100K/150K). 75K, 250K, 300K and the 100K STATIC product are LEGACY - not purchasable, still tradeable by existing holders under frozen rules.",
+   "no_static_variant_on_sale": "There is NO static-drawdown product on sale as of 2026-07-24. The closest current analogue is the EOD Drawdown variant (threshold fixed for the whole session, recalculated at the close).",
+   "AUTOMATION_PROHIBITED": "Apex prohibits automation and algorithmic execution in ALL phases: 'No Automation or Algorithm Usage allowed... not to reward automated systems executing preprogrammed logic.' Repeated verbatim in the Live program rules. Also bans HFT and manipulation of the sim environment. This is a hard constraint for any automated-strategy plan on Apex.",
+   "platform_dependency": "The evaluation drawdown-lock behaviour DIFFERS BY DATA VENDOR. Rithmic and WealthCharts evals lock the threshold at the profit-target balance; Tradovate evals trail forever. PA behaviour (lock at start+$100) is the same on all vendors.",
+   "session": "trading day 18:00:00-16:59:59 ET (Sun 18:00 open counts as Monday); all positions flat and pending orders cancelled before 16:59 ET daily close",
+   "micro_ratio_note": "10 micro contracts = 1 mini contract for all exposure limits, all phases.",
+   "instruments": "CME/CBOT/NYMEX/COMEX equity, FX, ag, energy, metal, micro futures + MBT/MET; EUREX only on Tradovate.",
+   "source_url": [
+    "https://apextraderfunding.com/help-center/getting-started/prohibited-activities/",
+    "https://apextraderfunding.com/help-center/legacy-products/legacy-products-overview/",
+    "https://apextraderfunding.com/  (embedded product-catalog JSON)",
+    "https://apextraderfunding.com/help-center/additional-helpful-items/scaling-levels-pa-explained/"
+   ],
+   "_schema_note": "Each variant has a _defaults object. Full record for a (phase,variant,size) = {**variant['_defaults'], **variant['sizes'][size]}. Fields absent from both are null/UNVERIFIED.",
+   "dd_two_axis_note": "hwm_basis = what ratchets the floor upward. breach_basis = what is tested against the floor. Apex matches MFF/Topstep/TPT: breach is ALWAYS real-time equity including unrealized P&L, in every sim phase; only the ratchet cadence differs (EOD variant ratchets on the close, Intraday variant ratchets on peak equity). Live phase breach_basis is UNVERIFIED.",
+   "TRAILING_STOP_POINT": {
+    "pa_all_variants_all_vendors": "START BALANCE + $100 (NOT relative to the profit target)",
+    "pa_verbatim": "Once the Intraday Threshold reaches Starting Balance + $100, it stops increasing. Example for a 50K Intraday PA: Threshold Stop Level = $50,100. This occurs when the highest balance, whether realized or unrealized, reaches $52,100 (Starting Balance + Max Drawdown + $100). From that point onward, the Intraday Threshold remains fixed at $50,100.",
+    "pa_verbatim_eod_twin": "Once the EOD Threshold reaches Starting Balance + $100, it stops increasing. Example for a 50K EOD PA: Threshold Stop Level = $50,100. This occurs when the Highest EOD Balance reaches $52,100 (Starting Balance + Max Drawdown + $100).",
+    "eval_rithmic_wealthcharts": "PROFIT TARGET BALANCE (relative to the target, NOT the start balance) - this is the opposite basis from the PA",
+    "eval_verbatim": "Intraday Threshold stops trailing and becomes fixed when it reaches an amount equal to the Target Profit balance. Example for a 50K Rithmic and Wealthcharts Intraday Evaluation account: Threshold Stop Level = $53.000. This occurs when the highest balance, whether realized or unrealized, reaches $55,000 (Profit Target Balance + Max Drawdown). From that point onward, the Intraday Threshold remains fixed at $53,000.",
+    "eval_tradovate": "never locks",
+    "eval_tradovate_verbatim": "Evaluations Tradovate: Intraday Drawdown trails indefinitely with the peak account balance.",
+    "legacy_pa_verbatim": "the trailing drawdown follows your peak unrealized balance until it reaches a fixed point, which is called the Safety Net (initial balance + drawdown limit + $100). The trailing drawdown stops moving when your peak unrealized account balance reaches the Safety Net.",
+    "SELF_CONTRADICTION_ON_APEX_PAGE": "The Intraday FAQ on the same page says 'trailing stops once the Intraday Threshold reaches Profit Target Balance + $2,000' - that sentence is wrong/sloppy. Its own worked numbers ($53,000 threshold, locking when balance hits $55,000) agree with the body text, not with the sentence. Model the body text.",
+    "source_url": [
+     "/help-center/intraday-trailing-drawdown-accounts/intraday-trailing-drawdown-explained/",
+     "/help-center/eod-trailing-drawdown-accounts/eod-drawdown-explained/",
+     "/help-center/legacy-products/legacy-trailing-drawdown-rule/"
+    ],
+    "retrieved": "2026-07-25 (Wayback snapshots 2026-05-27 and 2026-07-13, diffed: identical)"
+   },
+   "breach_basis_verbatim": {
+    "intraday": "The threshold follows the account's highest intraday balance (Peak Balance). ... The threshold is enforced in real time, including unrealized PnL.",
+    "eod_pa": "Your account balance, including unrealized PnL, may never touch or fall below the End-of-Day (EOD) Drawdown threshold. If it does, all positions are automatically liquidated and the PA is permanently closed.",
+    "eod_enforcement": "Even though the threshold is calculated at end-of-day, it is enforced in real time.",
+    "legacy": "the trailing threshold is based on the highest live value during trades, not on closed trade values."
+   },
+   "inactivity": {
+    "new_pa": "2 trading days with >= $50 net profit in every rolling 30-day window; dormant flag at day 15 (notifications day 15 and 20); closed permanently at 30 consecutive days. Counted from the EARLIER of your 2 most recent qualifying days.",
+    "new_pa_conflict": "The Intraday PA page FAQ instead says '$150 net profit day within 150 consecutive calendar days' - that is the legacy policy and appears stale. Dedicated inactivity page wins.",
+    "legacy_pa": "UNVERIFIED - separate legacy policy page not retrieved",
+    "live": "no trading for a month / past 30 days may close the account; extensions available by ticket",
+    "source_url": [
+     "/help-center/billing/inactivity-policy-on-performance-accounts-pa/"
+    ],
+    "retrieved": "2026-07-25 (Wayback 2026-03-25 and 2026-07-13)"
+   }
+  },
+  "evaluation": {
+   "eod_drawdown": {
+    "_defaults": {
+     "buffer_required": null,
+     "consistency_pct": null,
+     "consistency_phases": [],
+     "dd_type": "END_OF_DAY_TRAILING",
+     "dll_basis": "equity incl unrealized; fixed for session; auto-flatten + day paused; does NOT fail account",
+     "dll_reset_time": "18:00 America/New_York",
+     "first_payout_days": null,
+     "first_payout_min_profit": null,
+     "hours": "18:00-16:59:59 ET, flat before 16:59 close",
+     "max_withdrawal": null,
+     "micro_ratio": 10,
+     "min_days": 0,
+     "min_payout": null,
+     "news_restriction": "news trading with your normal strategy allowed; news-chasing / both-sides straddle / pre-news windfall strategies prohibited",
+     "overnight_allowed": false,
+     "phase_only_rules": [
+      "30 calendar days of access, expires 23:59 ET day 30",
+      "no resets - a failed/expired eval must be re-purchased",
+      "DD breach = permanent fail",
+      "7 calendar days after passing to pay the PA activation fee",
+      "no consistency rule in eval",
+      "no minimum trading days - can pass in 1 day",
+      "hedging eval accounts against each other prohibited"
+     ],
+     "profit_split": null,
+     "profit_target_basis": "EOD balance at 16:59:59 ET, net of commissions; Passed flag set after 18:00 ET",
+     "reset_cost": null,
+     "retrieved": "2026-07-25 (Wayback snapshots 2026-03-25, 2026-07-13, 2026-07-24)",
+     "source_url": [
+      "/help-center/eod-trailing-drawdown-accounts/eod-evaluations/",
+      "/help-center/eod-trailing-drawdown-accounts/eod-drawdown-explained/",
+      "/help-center/billing/evaluation-plan-fees-and-access-explained/",
+      "/"
+     ],
+     "weekend_allowed": false,
+     "hwm_basis": "eod_close",
+     "breach_basis": "intraday_equity_incl_unrealized",
+     "contract_cap_indexed": false,
+     "consistency_effect": null,
+     "commissions": {
+      "firm_imposed_in_sim": true,
+      "rate_published": null,
+      "note": "Apex charges vendor commissions inside the sim and the pass is judged net of them, but the new-product pages do not restate this and no rate table is published on any page read. Legacy page verbatim: 'Is the profit goal net of commissions after all in costs? Yes, the profit goal is net of commissions and all associated costs.' Rate = UNVERIFIED."
+     }
+    },
+    "sizes": {
+     "25K": {
+      "profit_target": 1500,
+      "max_dd": 1000,
+      "dd_lock_at": {
+       "rithmic_wealthcharts": "lock@$26,500 ; trips when peak EOD close > $27,500",
+       "tradovate": "never locks"
+      },
+      "daily_loss_limit": 500,
+      "max_contracts": {
+       "minis": 4,
+       "micros": 40,
+       "scaling": "none - fixed for the whole evaluation"
+      },
+      "account_cost": {
+       "standard_one_time": 390,
+       "no_activation_fee_variant_one_time": 990,
+       "note": "one-time; 30 calendar days access; promos/coupons routine; 5-packs discounted"
+      }
+     },
+     "50K": {
+      "profit_target": 3000,
+      "max_dd": 2000,
+      "dd_lock_at": {
+       "rithmic_wealthcharts": "lock@$53,000 ; trips when peak EOD close > $55,000",
+       "tradovate": "never locks"
+      },
+      "daily_loss_limit": 1000,
+      "max_contracts": {
+       "minis": 6,
+       "micros": 60,
+       "scaling": "none - fixed for the whole evaluation"
+      },
+      "account_cost": {
+       "standard_one_time": 490,
+       "no_activation_fee_variant_one_time": 1190,
+       "note": "one-time; 30 calendar days access; promos/coupons routine; 5-packs discounted"
+      }
+     },
+     "100K": {
+      "profit_target": 6000,
+      "max_dd": 3000,
+      "dd_lock_at": {
+       "rithmic_wealthcharts": "lock@$106,000 ; trips when peak EOD close > $109,000",
+       "tradovate": "never locks"
+      },
+      "daily_loss_limit": 1500,
+      "max_contracts": {
+       "minis": 8,
+       "micros": 80,
+       "scaling": "none - fixed for the whole evaluation"
+      },
+      "account_cost": {
+       "standard_one_time": 790,
+       "no_activation_fee_variant_one_time": 1590,
+       "note": "one-time; 30 calendar days access; promos/coupons routine; 5-packs discounted"
+      }
+     },
+     "150K": {
+      "profit_target": 9000,
+      "max_dd": 4000,
+      "dd_lock_at": {
+       "rithmic_wealthcharts": "lock@$159,000 ; trips when peak EOD close > $163,000",
+       "tradovate": "never locks"
+      },
+      "daily_loss_limit": 2000,
+      "max_contracts": {
+       "minis": 12,
+       "micros": 120,
+       "scaling": "none - fixed for the whole evaluation"
+      },
+      "account_cost": {
+       "standard_one_time": 1490,
+       "no_activation_fee_variant_one_time": 2490,
+       "note": "one-time; 30 calendar days access; promos/coupons routine; 5-packs discounted"
+      }
+     }
+    }
+   },
+   "intraday_trailing": {
+    "_defaults": {
+     "buffer_required": null,
+     "consistency_pct": null,
+     "consistency_phases": [],
+     "daily_loss_limit": null,
+     "dd_type": "INTRADAY_REALTIME_TRAILING",
+     "dll_basis": null,
+     "dll_reset_time": null,
+     "first_payout_days": null,
+     "first_payout_min_profit": null,
+     "hours": "18:00-16:59:59 ET, flat before 16:59 close",
+     "max_withdrawal": null,
+     "micro_ratio": 10,
+     "min_days": 0,
+     "min_payout": null,
+     "news_restriction": "news trading with your normal strategy allowed; news-chasing / both-sides straddle / pre-news windfall strategies prohibited",
+     "overnight_allowed": false,
+     "phase_only_rules": [
+      "NO daily loss limit at all in this eval",
+      "threshold trails peak balance incl. UNREALIZED pnl, never resets daily, never moves down",
+      "30 calendar days of access",
+      "no resets",
+      "DD breach = permanent fail",
+      "7 calendar days after passing to pay the PA activation fee",
+      "no consistency rule in eval",
+      "no minimum trading days"
+     ],
+     "profit_split": null,
+     "profit_target_basis": "EOD balance at 16:59:59 ET, net of commissions; Passed flag set after 18:00 ET",
+     "reset_cost": null,
+     "retrieved": "2026-07-25 (Wayback snapshots 2026-03-25, 2026-05-27, 2026-07-13, 2026-07-24)",
+     "source_url": [
+      "/help-center/evaluation-accounts-ea/intraday-trailing-drawdown-evaluations/",
+      "/help-center/intraday-trailing-drawdown-accounts/intraday-trailing-drawdown-explained/",
+      "/help-center/billing/evaluation-plan-fees-and-access-explained/",
+      "/"
+     ],
+     "weekend_allowed": false,
+     "hwm_basis": "intraday_equity_incl_unrealized",
+     "breach_basis": "intraday_equity_incl_unrealized",
+     "contract_cap_indexed": false,
+     "consistency_effect": null,
+     "commissions": {
+      "firm_imposed_in_sim": true,
+      "rate_published": null,
+      "note": "Apex charges vendor commissions inside the sim and the pass is judged net of them, but the new-product pages do not restate this and no rate table is published on any page read. Legacy page verbatim: 'Is the profit goal net of commissions after all in costs? Yes, the profit goal is net of commissions and all associated costs.' Rate = UNVERIFIED."
+     }
+    },
+    "sizes": {
+     "25K": {
+      "profit_target": 1500,
+      "max_dd": 1000,
+      "dd_lock_at": {
+       "rithmic_wealthcharts": "lock@$26,500 ; trips when peak bal (incl unreal) hits $27,500",
+       "tradovate": "never locks"
+      },
+      "max_contracts": {
+       "minis": 4,
+       "micros": 40,
+       "scaling": "none - fixed for the whole evaluation"
+      },
+      "account_cost": {
+       "standard_one_time": 199,
+       "no_activation_fee_variant_one_time": 690,
+       "note": "one-time; 30 calendar days access; promos routine"
+      }
+     },
+     "50K": {
+      "profit_target": 3000,
+      "max_dd": 2000,
+      "dd_lock_at": {
+       "rithmic_wealthcharts": "lock@$53,000 ; trips when peak bal (incl unreal) hits $55,000",
+       "tradovate": "never locks"
+      },
+      "max_contracts": {
+       "minis": 6,
+       "micros": 60,
+       "scaling": "none - fixed for the whole evaluation"
+      },
+      "account_cost": {
+       "standard_one_time": 249,
+       "no_activation_fee_variant_one_time": 790,
+       "note": "one-time; 30 calendar days access; promos routine"
+      }
+     },
+     "100K": {
+      "profit_target": 6000,
+      "max_dd": 3000,
+      "dd_lock_at": {
+       "rithmic_wealthcharts": "lock@$106,000 ; trips when peak bal (incl unreal) hits $109,000",
+       "tradovate": "never locks"
+      },
+      "max_contracts": {
+       "minis": 8,
+       "micros": 80,
+       "scaling": "none - fixed for the whole evaluation"
+      },
+      "account_cost": {
+       "standard_one_time": 399,
+       "no_activation_fee_variant_one_time": 590,
+       "note": "one-time; 30 calendar days access; promos routine"
+      }
+     },
+     "150K": {
+      "profit_target": 9000,
+      "max_dd": 4000,
+      "dd_lock_at": {
+       "rithmic_wealthcharts": "lock@$159,000 ; trips when peak bal (incl unreal) hits $163,000",
+       "tradovate": "never locks"
+      },
+      "max_contracts": {
+       "minis": 12,
+       "micros": 120,
+       "scaling": "none - fixed for the whole evaluation"
+      },
+      "account_cost": {
+       "standard_one_time": 599,
+       "no_activation_fee_variant_one_time": 1690,
+       "note": "one-time; 30 calendar days access; promos routine"
+      }
+     }
+    }
+   },
+   "second_chance_eval_to_live": {
+    "_defaults": {
+     "account_cost": 199,
+     "buffer_required": null,
+     "consistency_pct": 40,
+     "consistency_phases": [
+      "second_chance_eval"
+     ],
+     "daily_loss_limit": 1000,
+     "dd_lock_at": null,
+     "dd_type": "INTRADAY_REALTIME_TRAILING (stated as 'live intraday drawdown')",
+     "dll_basis": "'Done-for-Now' flatten event: every -$1,000 flattens open trades; trader is NOT locked out and may keep trading the same day",
+     "dll_reset_time": null,
+     "first_payout_days": null,
+     "first_payout_min_profit": 250,
+     "hours": "18:00-16:59:59 ET, flat before 16:59 close",
+     "max_contracts": {
+      "minis": 3,
+      "micros": 30
+     },
+     "max_dd": 2000,
+     "max_withdrawal": null,
+     "micro_ratio": 10,
+     "min_days": 5,
+     "min_payout": null,
+     "news_restriction": "news trading with your normal strategy allowed; news-chasing / both-sides straddle / pre-news windfall strategies prohibited",
+     "overnight_allowed": false,
+     "phase_only_rules": [
+      "only sold to traders who lost a live account, after a 14-day cooling-off period",
+      "$250 minimum daily profit requirement",
+      "max 5 open Second Chance accounts at once",
+      "passing returns you directly to LIVE, not to a sim PA",
+      "passed accounts do not carry forward",
+      "unlimited attempts; price is $199 on every attempt"
+     ],
+     "profit_split": null,
+     "profit_target": 4000,
+     "profit_target_basis": "UNVERIFIED (page states target only, not measurement basis)",
+     "reset_cost": null,
+     "retrieved": "2026-07-25 (Wayback snapshot 2026-06-01 / 2026-07-13)",
+     "source_url": [
+      "/help-center/getting-started/apex-live-prop-trading-program-faq/"
+     ],
+     "weekend_allowed": false,
+     "hwm_basis": "UNVERIFIED - page states only 'Drawdown type: Live intraday drawdown'",
+     "breach_basis": "UNVERIFIED",
+     "contract_cap_indexed": false,
+     "consistency_effect": {
+      "type": "UNVERIFIED",
+      "pct": 40,
+      "note": "page states only 'Consistency rule: 40%' with no mechanic"
+     },
+     "commissions": {
+      "firm_imposed_in_sim": null,
+      "rate_published": null
+     }
+    },
+    "sizes": {
+     "uniform": {}
+    }
+   },
+   "legacy_full_trailing_RETIRED": {
+    "_defaults": {
+     "buffer_required": null,
+     "consistency_pct": null,
+     "consistency_phases": [],
+     "daily_loss_limit": null,
+     "dd_type": "INTRADAY_REALTIME_TRAILING (follows highest live/unrealized balance)",
+     "dll_basis": null,
+     "dll_reset_time": null,
+     "first_payout_days": null,
+     "first_payout_min_profit": null,
+     "hours": "18:00-16:59:59 ET, flat before 16:59 close",
+     "max_withdrawal": null,
+     "micro_ratio": 10,
+     "min_days": 7,
+     "min_payout": null,
+     "news_restriction": "news trading with your normal strategy allowed; news-chasing / both-sides straddle / pre-news windfall strategies prohibited",
+     "overnight_allowed": false,
+     "phase_only_rules": [
+      "RETIRED 2026-03-01: not purchasable by anyone; existing accounts keep these rules with no retroactive change",
+      "7 minimum trading days (non-consecutive), no maximum time limit",
+      "unlimited $80 resets",
+      "no daily loss limit",
+      "recurring monthly billing until cancelled"
+     ],
+     "profit_split": null,
+     "profit_target_basis": "balance must CLOSE at or above the profit goal; net of commissions and all costs",
+     "reset_cost": 80,
+     "retrieved": "2026-07-25 (Wayback snapshots 2026-02-08, 2026-03-25, 2026-05-24; 75K from 2025-01-17)",
+     "source_url": [
+      "/help-center/evaluation-accounts-ea/legacy-evaluation-rules/",
+      "/help-center/legacy-products/legacy-trailing-drawdown-rule/",
+      "/help-center/legacy-products/legacy-products-overview/",
+      "/ (plan cards, pre-retirement snapshot)"
+     ],
+     "weekend_allowed": false,
+     "hwm_basis": "intraday_equity_incl_unrealized",
+     "breach_basis": "intraday_equity_incl_unrealized",
+     "contract_cap_indexed": false,
+     "consistency_effect": null,
+     "commissions": {
+      "firm_imposed_in_sim": true,
+      "rate_published": null,
+      "note": "Legacy eval FAQ verbatim: 'Yes, the profit goal is net of commissions and all associated costs.' Rate = UNVERIFIED (set per data vendor)."
+     }
+    },
+    "sizes": {
+     "25K": {
+      "profit_target": 1500,
+      "max_dd": 1500,
+      "dd_lock_at": {
+       "rithmic": "eval: threshold locks when it reaches the profit-target balance ($26,500)",
+       "tradovate": "eval: never locks",
+       "wealthcharts": null
+      },
+      "max_contracts": {
+       "minis": 4,
+       "micros": 40
+      },
+      "account_cost": {
+       "monthly_subscription": 187,
+       "note": "recurring monthly; 75K price is from a 2025-01-17 snapshot, all others 2026-02-08"
+      }
+     },
+     "50K": {
+      "profit_target": 3000,
+      "max_dd": 2500,
+      "dd_lock_at": {
+       "rithmic": "eval: threshold locks when it reaches the profit-target balance ($53,000)",
+       "tradovate": "eval: never locks",
+       "wealthcharts": null
+      },
+      "max_contracts": {
+       "minis": 10,
+       "micros": 100
+      },
+      "account_cost": {
+       "monthly_subscription": 197,
+       "note": "recurring monthly; 75K price is from a 2025-01-17 snapshot, all others 2026-02-08"
+      }
+     },
+     "75K": {
+      "profit_target": 4250,
+      "max_dd": 2750,
+      "dd_lock_at": {
+       "rithmic": "eval: threshold locks when it reaches the profit-target balance ($79,250)",
+       "tradovate": "eval: never locks",
+       "wealthcharts": null
+      },
+      "max_contracts": {
+       "minis": 12,
+       "micros": 120
+      },
+      "account_cost": {
+       "monthly_subscription": 187,
+       "note": "recurring monthly; 75K price is from a 2025-01-17 snapshot, all others 2026-02-08"
+      }
+     },
+     "100K": {
+      "profit_target": 6000,
+      "max_dd": 3000,
+      "dd_lock_at": {
+       "rithmic": "eval: threshold locks when it reaches the profit-target balance ($106,000)",
+       "tradovate": "eval: never locks",
+       "wealthcharts": null
+      },
+      "max_contracts": {
+       "minis": 14,
+       "micros": 140
+      },
+      "account_cost": {
+       "monthly_subscription": 297,
+       "note": "recurring monthly; 75K price is from a 2025-01-17 snapshot, all others 2026-02-08"
+      }
+     },
+     "150K": {
+      "profit_target": 9000,
+      "max_dd": 5000,
+      "dd_lock_at": {
+       "rithmic": "eval: threshold locks when it reaches the profit-target balance ($159,000)",
+       "tradovate": "eval: never locks",
+       "wealthcharts": null
+      },
+      "max_contracts": {
+       "minis": 17,
+       "micros": 170
+      },
+      "account_cost": {
+       "monthly_subscription": 397,
+       "note": "recurring monthly; 75K price is from a 2025-01-17 snapshot, all others 2026-02-08"
+      }
+     },
+     "250K": {
+      "profit_target": 15000,
+      "max_dd": 6500,
+      "dd_lock_at": {
+       "rithmic": "eval: threshold locks when it reaches the profit-target balance ($265,000)",
+       "tradovate": "eval: never locks",
+       "wealthcharts": null
+      },
+      "max_contracts": {
+       "minis": 27,
+       "micros": 270
+      },
+      "account_cost": {
+       "monthly_subscription": 397,
+       "note": "recurring monthly; 75K price is from a 2025-01-17 snapshot, all others 2026-02-08"
+      }
+     },
+     "300K": {
+      "profit_target": 20000,
+      "max_dd": 7500,
+      "dd_lock_at": {
+       "rithmic": "eval: threshold locks when it reaches the profit-target balance ($320,000)",
+       "tradovate": "eval: never locks",
+       "wealthcharts": null
+      },
+      "max_contracts": {
+       "minis": 35,
+       "micros": 350
+      },
+      "account_cost": {
+       "monthly_subscription": 397,
+       "note": "recurring monthly; 75K price is from a 2025-01-17 snapshot, all others 2026-02-08"
+      }
+     }
+    }
+   },
+   "legacy_static_RETIRED": {
+    "_defaults": {
+     "account_cost": {
+      "monthly_subscription": 297
+     },
+     "buffer_required": null,
+     "consistency_pct": null,
+     "consistency_phases": [],
+     "daily_loss_limit": null,
+     "dd_lock_at": "n/a - fixed at $99,375 for the life of the account",
+     "dd_type": "STATIC",
+     "dll_basis": null,
+     "dll_reset_time": null,
+     "first_payout_days": null,
+     "first_payout_min_profit": null,
+     "hours": "18:00-16:59:59 ET, flat before 16:59 close",
+     "max_contracts": {
+      "minis": 2,
+      "micros": 20
+     },
+     "max_dd": 625,
+     "max_withdrawal": null,
+     "micro_ratio": 10,
+     "min_days": 7,
+     "min_payout": null,
+     "news_restriction": "news trading with your normal strategy allowed; news-chasing / both-sides straddle / pre-news windfall strategies prohibited",
+     "overnight_allowed": false,
+     "phase_only_rules": [
+      "RETIRED 2026-03-01",
+      "only static-drawdown product Apex ever sold",
+      "drawdown never trails"
+     ],
+     "profit_split": null,
+     "profit_target": 2000,
+     "profit_target_basis": "balance must CLOSE at or above the profit goal; net of commissions",
+     "reset_cost": 80,
+     "retrieved": "2026-07-25",
+     "source_url": [
+      "/help-center/evaluation-accounts-ea/legacy-evaluation-rules/",
+      "/ (plan cards 2026-02-08)"
+     ],
+     "weekend_allowed": false,
+     "hwm_basis": "none - static floor, never ratchets",
+     "breach_basis": "intraday_equity_incl_unrealized",
+     "contract_cap_indexed": false,
+     "consistency_effect": null,
+     "commissions": {
+      "firm_imposed_in_sim": true,
+      "rate_published": null,
+      "note": "Legacy eval FAQ verbatim: 'Yes, the profit goal is net of commissions and all associated costs.' Rate = UNVERIFIED (set per data vendor)."
+     }
+    },
+    "sizes": {
+     "100K": {}
+    }
+   }
+  },
+  "funded_simulated_pa": {
+   "eod_drawdown": {
+    "_defaults": {
+     "consistency_pct": 50,
+     "consistency_phases": [
+      "pa_payout_request_only"
+     ],
+     "dd_type": "END_OF_DAY_TRAILING",
+     "dll_basis": "equity incl unrealized; auto-flatten + session paused; account stays alive",
+     "dll_reset_time": "18:00 America/New_York",
+     "first_payout_days": 5,
+     "hours": "18:00-16:59:59 ET, flat before 16:59 close",
+     "micro_ratio": 10,
+     "min_days": 5,
+     "min_payout": 500,
+     "news_restriction": "news trading with your normal strategy allowed; news-chasing / both-sides straddle / pre-news windfall strategies prohibited",
+     "overnight_allowed": false,
+     "phase_only_rules": [
+      "50% consistency gates the payout button (does not fail the account)",
+      "inactivity: must record 2 trading days with >= $50 net profit in every rolling 30-day window or the PA is closed permanently",
+      "max 20 active PAs per household across Legacy + EOD + Intraday combined",
+      "DD breach = permanent closure, no resets, must pass a new eval",
+      "no MAE rule, no 5:1 risk/reward rule (removed vs legacy)",
+      "hedging / correlated-instrument violation = immediate closure",
+      "PA is SIMULATED (Sim Funded), not real capital"
+     ],
+     "profit_split": 100,
+     "profit_target": null,
+     "profit_target_basis": "n/a - PA has no profit target",
+     "reset_cost": null,
+     "retrieved": "2026-07-25 (Wayback snapshots 2026-03-25, 2026-05-06/27, 2026-06-30, 2026-07-13/24)",
+     "source_url": [
+      "/help-center/eod-trailing-drawdown-accounts/eod-performance-accounts-pa/",
+      "/help-center/eod-trailing-drawdown-accounts/eod-payouts/",
+      "/help-center/additional-helpful-items/scaling-levels-pa-explained/",
+      "/help-center/additional-helpful-items/daily-loss-limit-explained/",
+      "/help-center/additional-helpful-items/50-consistency-requirement/",
+      "/help-center/billing/inactivity-policy-on-performance-accounts-pa/",
+      "/help-center/billing/pa-activation-process-deadline-explained/",
+      "/"
+     ],
+     "weekend_allowed": false,
+     "hwm_basis": "eod_close",
+     "breach_basis": "intraday_equity_incl_unrealized",
+     "contract_cap_indexed": true,
+     "contract_cap_index_note": "prior session CLOSING BALANCE -> profit-band tier -> (max_minis, DLL). Not a scalar.",
+     "consistency_effect": {
+      "type": "blocks_payout_request",
+      "fails_account": false,
+      "raises_profit_target": false,
+      "formula": "min_net_profit_since_last_payout = best_single_profit_day / 0.5",
+      "scope": "net profit since the last approved payout, or since account inception if none",
+      "resets_on": "each approved payout",
+      "verbatim": "Do I fail if I am above 50% consistency? No, being above the 50% consistency does not fail your account. However, the payout request option will just not be available until the consistency percentage falls below 50%."
+     },
+     "commissions": {
+      "firm_imposed_in_sim": true,
+      "rate_published": null,
+      "note": "Apex charges vendor commissions inside the sim and the pass is judged net of them, but the new-product pages do not restate this and no rate table is published on any page read. Legacy page verbatim: 'Is the profit goal net of commissions after all in costs? Yes, the profit goal is net of commissions and all associated costs.' Rate = UNVERIFIED."
+     }
+    },
+    "sizes": {
+     "25K": {
+      "max_dd": 1000,
+      "dd_lock_at": "locks at $25,100 (start + $100); reached when highest balance hits $26,100",
+      "daily_loss_limit": {
+       "tier_based": true,
+       "by_tier": [
+        [
+         0,
+         999,
+         1,
+         500
+        ],
+        [
+         1000,
+         1999,
+         2,
+         500
+        ],
+        [
+         2000,
+         null,
+         2,
+         1250
+        ]
+       ],
+       "tier_format": "[profit_from, profit_to_or_null, max_minis, dll]",
+       "note": "tier set daily from prior session close; never changes intraday; floor at L1"
+      },
+      "max_contracts": {
+       "level_1_minis": 1,
+       "max_minis": 2,
+       "micros": 20,
+       "scaling": "tier-based on prior session close; oversized orders rejected, no penalty"
+      },
+      "first_payout_min_profit": 100,
+      "max_withdrawal": {
+       "per_payout_number": [
+        1000,
+        1000,
+        1000,
+        1000,
+        1000,
+        1000
+       ],
+       "max_payouts_per_pa": 6,
+       "note": "PA is CLOSED after the 6th payout"
+      },
+      "buffer_required": {
+       "safety_net": 26100,
+       "min_balance_to_request": 26600,
+       "note": "start+dd+$100, enforced for the LIFETIME of the PA (legacy: first 3 payouts only)"
+      },
+      "account_cost": {
+       "one_time_pa_activation_fee": 99,
+       "note": "one-time; due within 7 calendar days of passing"
+      }
+     },
+     "50K": {
+      "max_dd": 2000,
+      "dd_lock_at": "locks at $50,100 (start + $100); reached when highest balance hits $52,100",
+      "daily_loss_limit": {
+       "tier_based": true,
+       "by_tier": [
+        [
+         0,
+         1499,
+         2,
+         1000
+        ],
+        [
+         1500,
+         2999,
+         3,
+         1000
+        ],
+        [
+         3000,
+         5999,
+         4,
+         2000
+        ],
+        [
+         6000,
+         null,
+         4,
+         3000
+        ]
+       ],
+       "tier_format": "[profit_from, profit_to_or_null, max_minis, dll]",
+       "note": "tier set daily from prior session close; never changes intraday; floor at L1"
+      },
+      "max_contracts": {
+       "level_1_minis": 2,
+       "max_minis": 4,
+       "micros": 40,
+       "scaling": "tier-based on prior session close; oversized orders rejected, no penalty"
+      },
+      "first_payout_min_profit": 250,
+      "max_withdrawal": {
+       "per_payout_number": [
+        1500,
+        1500,
+        2000,
+        2500,
+        2500,
+        3000
+       ],
+       "max_payouts_per_pa": 6,
+       "note": "PA is CLOSED after the 6th payout"
+      },
+      "buffer_required": {
+       "safety_net": 52100,
+       "min_balance_to_request": 52600,
+       "note": "start+dd+$100, enforced for the LIFETIME of the PA (legacy: first 3 payouts only)"
+      },
+      "account_cost": {
+       "one_time_pa_activation_fee": 129,
+       "note": "one-time; due within 7 calendar days of passing"
+      }
+     },
+     "100K": {
+      "max_dd": 3000,
+      "dd_lock_at": "locks at $100,100 (start + $100); reached when highest balance hits $103,100",
+      "daily_loss_limit": {
+       "tier_based": true,
+       "by_tier": [
+        [
+         0,
+         1999,
+         3,
+         1750
+        ],
+        [
+         2000,
+         2999,
+         4,
+         1750
+        ],
+        [
+         3000,
+         4999,
+         5,
+         1750
+        ],
+        [
+         5000,
+         9999,
+         6,
+         2500
+        ],
+        [
+         10000,
+         null,
+         6,
+         3500
+        ]
+       ],
+       "tier_format": "[profit_from, profit_to_or_null, max_minis, dll]",
+       "note": "tier set daily from prior session close; never changes intraday; floor at L1"
+      },
+      "max_contracts": {
+       "level_1_minis": 3,
+       "max_minis": 6,
+       "micros": 60,
+       "scaling": "tier-based on prior session close; oversized orders rejected, no penalty"
+      },
+      "first_payout_min_profit": 300,
+      "max_withdrawal": {
+       "per_payout_number": [
+        2000,
+        2500,
+        2500,
+        3000,
+        4000,
+        4000
+       ],
+       "max_payouts_per_pa": 6,
+       "note": "PA is CLOSED after the 6th payout"
+      },
+      "buffer_required": {
+       "safety_net": 103100,
+       "min_balance_to_request": 103600,
+       "note": "start+dd+$100, enforced for the LIFETIME of the PA (legacy: first 3 payouts only)"
+      },
+      "account_cost": {
+       "one_time_pa_activation_fee": 139,
+       "note": "one-time; due within 7 calendar days of passing"
+      }
+     },
+     "150K": {
+      "max_dd": 4000,
+      "dd_lock_at": "locks at $150,100 (start + $100); reached when highest balance hits $154,100",
+      "daily_loss_limit": {
+       "tier_based": true,
+       "by_tier": [
+        [
+         0,
+         1999,
+         4,
+         2500
+        ],
+        [
+         2000,
+         2999,
+         5,
+         2500
+        ],
+        [
+         3000,
+         4999,
+         7,
+         2500
+        ],
+        [
+         5000,
+         9999,
+         10,
+         3000
+        ],
+        [
+         10000,
+         null,
+         10,
+         4000
+        ]
+       ],
+       "tier_format": "[profit_from, profit_to_or_null, max_minis, dll]",
+       "note": "tier set daily from prior session close; never changes intraday; floor at L1"
+      },
+      "max_contracts": {
+       "level_1_minis": 4,
+       "max_minis": 10,
+       "micros": 100,
+       "scaling": "tier-based on prior session close; oversized orders rejected, no penalty"
+      },
+      "first_payout_min_profit": 350,
+      "max_withdrawal": {
+       "per_payout_number": [
+        2500,
+        3000,
+        3000,
+        3000,
+        4000,
+        5000
+       ],
+       "max_payouts_per_pa": 6,
+       "note": "PA is CLOSED after the 6th payout"
+      },
+      "buffer_required": {
+       "safety_net": 154100,
+       "min_balance_to_request": 154600,
+       "note": "start+dd+$100, enforced for the LIFETIME of the PA (legacy: first 3 payouts only)"
+      },
+      "account_cost": {
+       "one_time_pa_activation_fee": 159,
+       "note": "one-time; due within 7 calendar days of passing"
+      }
+     }
+    }
+   },
+   "intraday_trailing": {
+    "_defaults": {
+     "consistency_pct": 50,
+     "consistency_phases": [
+      "pa_payout_request_only"
+     ],
+     "dd_type": "INTRADAY_REALTIME_TRAILING",
+     "dll_basis": "equity incl unrealized; auto-flatten + session paused; account stays alive",
+     "dll_reset_time": "18:00 America/New_York",
+     "first_payout_days": 5,
+     "hours": "18:00-16:59:59 ET, flat before 16:59 close",
+     "micro_ratio": 10,
+     "min_days": 5,
+     "min_payout": 500,
+     "news_restriction": "news trading with your normal strategy allowed; news-chasing / both-sides straddle / pre-news windfall strategies prohibited",
+     "overnight_allowed": false,
+     "phase_only_rules": [
+      "50% consistency gates the payout button (does not fail the account)",
+      "inactivity: must record 2 trading days with >= $50 net profit in every rolling 30-day window or the PA is closed permanently",
+      "max 20 active PAs per household across Legacy + EOD + Intraday combined",
+      "DD breach = permanent closure, no resets, must pass a new eval",
+      "no MAE rule, no 5:1 risk/reward rule (removed vs legacy)",
+      "hedging / correlated-instrument violation = immediate closure",
+      "PA is SIMULATED (Sim Funded), not real capital"
+     ],
+     "profit_split": 100,
+     "profit_target": null,
+     "profit_target_basis": "n/a - PA has no profit target",
+     "reset_cost": null,
+     "retrieved": "2026-07-25 (Wayback snapshots 2026-03-25, 2026-05-06/27, 2026-06-30, 2026-07-13/24)",
+     "source_url": [
+      "/help-center/intraday-trailing-drawdown-accounts/intraday-trailing-drawdown-performance-accounts-pa/",
+      "/help-center/intraday-trailing-drawdown-accounts/intraday-trailing-drawdown-payouts/",
+      "/help-center/additional-helpful-items/scaling-levels-pa-explained/",
+      "/help-center/additional-helpful-items/daily-loss-limit-explained/",
+      "/help-center/additional-helpful-items/50-consistency-requirement/",
+      "/help-center/billing/inactivity-policy-on-performance-accounts-pa/",
+      "/help-center/billing/pa-activation-process-deadline-explained/",
+      "/"
+     ],
+     "weekend_allowed": false,
+     "hwm_basis": "intraday_equity_incl_unrealized",
+     "breach_basis": "intraday_equity_incl_unrealized",
+     "contract_cap_indexed": true,
+     "contract_cap_index_note": "prior session CLOSING BALANCE -> profit-band tier -> (max_minis, DLL). Not a scalar.",
+     "consistency_effect": {
+      "type": "blocks_payout_request",
+      "fails_account": false,
+      "raises_profit_target": false,
+      "formula": "min_net_profit_since_last_payout = best_single_profit_day / 0.5",
+      "scope": "net profit since the last approved payout, or since account inception if none",
+      "resets_on": "each approved payout",
+      "verbatim": "Do I fail if I am above 50% consistency? No, being above the 50% consistency does not fail your account. However, the payout request option will just not be available until the consistency percentage falls below 50%."
+     },
+     "commissions": {
+      "firm_imposed_in_sim": true,
+      "rate_published": null,
+      "note": "Apex charges vendor commissions inside the sim and the pass is judged net of them, but the new-product pages do not restate this and no rate table is published on any page read. Legacy page verbatim: 'Is the profit goal net of commissions after all in costs? Yes, the profit goal is net of commissions and all associated costs.' Rate = UNVERIFIED."
+     }
+    },
+    "sizes": {
+     "25K": {
+      "max_dd": 1000,
+      "dd_lock_at": "locks at $25,100 (start + $100); reached when highest balance hits $26,100",
+      "daily_loss_limit": {
+       "tier_based": true,
+       "by_tier": [
+        [
+         0,
+         999,
+         1,
+         500
+        ],
+        [
+         1000,
+         1999,
+         2,
+         500
+        ],
+        [
+         2000,
+         null,
+         2,
+         1250
+        ]
+       ],
+       "tier_format": "[profit_from, profit_to_or_null, max_minis, dll]",
+       "note": "tier set daily from prior session close; never changes intraday; floor at L1"
+      },
+      "max_contracts": {
+       "level_1_minis": 1,
+       "max_minis": 2,
+       "micros": 20,
+       "scaling": "tier-based on prior session close; oversized orders rejected, no penalty"
+      },
+      "first_payout_min_profit": 100,
+      "max_withdrawal": {
+       "per_payout_number": [
+        1000,
+        1000,
+        1000,
+        1000,
+        1000,
+        1000
+       ],
+       "max_payouts_per_pa": 6,
+       "note": "PA is CLOSED after the 6th payout"
+      },
+      "buffer_required": {
+       "safety_net": 26100,
+       "min_balance_to_request": 26600,
+       "note": "start+dd+$100, enforced for the LIFETIME of the PA (legacy: first 3 payouts only)"
+      },
+      "account_cost": {
+       "one_time_pa_activation_fee": 69,
+       "note": "one-time; due within 7 calendar days of passing"
+      }
+     },
+     "50K": {
+      "max_dd": 2000,
+      "dd_lock_at": "locks at $50,100 (start + $100); reached when highest balance hits $52,100",
+      "daily_loss_limit": {
+       "tier_based": true,
+       "by_tier": [
+        [
+         0,
+         1499,
+         2,
+         1000
+        ],
+        [
+         1500,
+         2999,
+         3,
+         1000
+        ],
+        [
+         3000,
+         5999,
+         4,
+         2000
+        ],
+        [
+         6000,
+         null,
+         4,
+         3000
+        ]
+       ],
+       "tier_format": "[profit_from, profit_to_or_null, max_minis, dll]",
+       "note": "tier set daily from prior session close; never changes intraday; floor at L1"
+      },
+      "max_contracts": {
+       "level_1_minis": 2,
+       "max_minis": 4,
+       "micros": 40,
+       "scaling": "tier-based on prior session close; oversized orders rejected, no penalty"
+      },
+      "first_payout_min_profit": 200,
+      "max_withdrawal": {
+       "per_payout_number": [
+        1500,
+        2000,
+        2500,
+        2500,
+        3000,
+        3000
+       ],
+       "max_payouts_per_pa": 6,
+       "note": "PA is CLOSED after the 6th payout"
+      },
+      "buffer_required": {
+       "safety_net": 52100,
+       "min_balance_to_request": 52600,
+       "note": "start+dd+$100, enforced for the LIFETIME of the PA (legacy: first 3 payouts only)"
+      },
+      "account_cost": {
+       "one_time_pa_activation_fee": 79,
+       "note": "one-time; due within 7 calendar days of passing"
+      }
+     },
+     "100K": {
+      "max_dd": 3000,
+      "dd_lock_at": "locks at $100,100 (start + $100); reached when highest balance hits $103,100",
+      "daily_loss_limit": {
+       "tier_based": true,
+       "by_tier": [
+        [
+         0,
+         1999,
+         3,
+         1750
+        ],
+        [
+         2000,
+         2999,
+         4,
+         1750
+        ],
+        [
+         3000,
+         4999,
+         5,
+         1750
+        ],
+        [
+         5000,
+         9999,
+         6,
+         2500
+        ],
+        [
+         10000,
+         null,
+         6,
+         3500
+        ]
+       ],
+       "tier_format": "[profit_from, profit_to_or_null, max_minis, dll]",
+       "note": "tier set daily from prior session close; never changes intraday; floor at L1"
+      },
+      "max_contracts": {
+       "level_1_minis": 3,
+       "max_minis": 6,
+       "micros": 60,
+       "scaling": "tier-based on prior session close; oversized orders rejected, no penalty"
+      },
+      "first_payout_min_profit": 250,
+      "max_withdrawal": {
+       "per_payout_number": [
+        2000,
+        2500,
+        3000,
+        3000,
+        4000,
+        4000
+       ],
+       "max_payouts_per_pa": 6,
+       "note": "PA is CLOSED after the 6th payout"
+      },
+      "buffer_required": {
+       "safety_net": 103100,
+       "min_balance_to_request": 103600,
+       "note": "start+dd+$100, enforced for the LIFETIME of the PA (legacy: first 3 payouts only)"
+      },
+      "account_cost": {
+       "one_time_pa_activation_fee": 99,
+       "note": "one-time; due within 7 calendar days of passing"
+      }
+     },
+     "150K": {
+      "max_dd": 4000,
+      "dd_lock_at": "locks at $150,100 (start + $100); reached when highest balance hits $154,100",
+      "daily_loss_limit": {
+       "tier_based": true,
+       "by_tier": [
+        [
+         0,
+         1999,
+         4,
+         2500
+        ],
+        [
+         2000,
+         2999,
+         5,
+         2500
+        ],
+        [
+         3000,
+         4999,
+         7,
+         2500
+        ],
+        [
+         5000,
+         9999,
+         10,
+         3000
+        ],
+        [
+         10000,
+         null,
+         10,
+         4000
+        ]
+       ],
+       "tier_format": "[profit_from, profit_to_or_null, max_minis, dll]",
+       "note": "tier set daily from prior session close; never changes intraday; floor at L1"
+      },
+      "max_contracts": {
+       "level_1_minis": 4,
+       "max_minis": 10,
+       "micros": 100,
+       "scaling": "tier-based on prior session close; oversized orders rejected, no penalty"
+      },
+      "first_payout_min_profit": 300,
+      "max_withdrawal": {
+       "per_payout_number": [
+        2500,
+        3000,
+        3000,
+        4000,
+        4000,
+        5000
+       ],
+       "max_payouts_per_pa": 6,
+       "note": "PA is CLOSED after the 6th payout"
+      },
+      "buffer_required": {
+       "safety_net": 154100,
+       "min_balance_to_request": 154600,
+       "note": "start+dd+$100, enforced for the LIFETIME of the PA (legacy: first 3 payouts only)"
+      },
+      "account_cost": {
+       "one_time_pa_activation_fee": 129,
+       "note": "one-time; due within 7 calendar days of passing"
+      }
+     }
+    }
+   },
+   "legacy_full_trailing_RETIRED": {
+    "_defaults": {
+     "account_cost": {
+      "pa_monthly_fee": 85,
+      "note": "$85 per account per month, max 20 PAs, data included"
+     },
+     "consistency_pct": 30,
+     "consistency_phases": [
+      "legacy_pa_payout_request_only"
+     ],
+     "daily_loss_limit": null,
+     "dd_type": "INTRADAY_REALTIME_TRAILING",
+     "dll_basis": null,
+     "dll_reset_time": null,
+     "first_payout_days": 8,
+     "first_payout_min_profit": {
+      "qualifying_days": 5,
+      "per_day": 50,
+      "of_the_8_trading_days": true
+     },
+     "hours": "18:00-16:59:59 ET, flat before 16:59 close",
+     "micro_ratio": 10,
+     "min_days": 8,
+     "min_payout": 500,
+     "news_restriction": "news trading with your normal strategy allowed; news-chasing / both-sides straddle / pre-news windfall strategies prohibited",
+     "overnight_allowed": false,
+     "phase_only_rules": [
+      "RETIRED 2026-03-01 for new purchases; existing PAs unchanged",
+      "30% Negative P&L / MAE rule: open unrealized loss <= 30% of start-of-day profit balance (50% once EOD profit doubles the safety net)",
+      "5:1 risk-reward rule: stop loss <= 5x the profit target of the trade",
+      "one-direction rule: no simultaneous long+short, no non-directional bracket trading",
+      "contract scaling rule: half size until the trailing threshold stops",
+      "no resets on PAs",
+      "30% consistency stops applying after the 6th payout or on transfer to Live"
+     ],
+     "profit_split": {
+      "stated_rule_a": "100% of the first $25,000 paid out per account, 90% thereafter",
+      "stated_rule_b": "100% payouts unlocked from the 6th approved payout onward",
+      "note": "the legacy payout page states BOTH; reconcile with Apex before modelling"
+     },
+     "profit_target": null,
+     "profit_target_basis": "n/a",
+     "reset_cost": null,
+     "retrieved": "2026-07-25 (Wayback snapshots 2026-03-25, 2026-05-22, 2026-05-24)",
+     "source_url": [
+      "/help-center/performance-accounts-pa/legacy-performance-account-pa-trading-rules/",
+      "/help-center/legacy-payouts/legacy-pa-payout-parameters/",
+      "/help-center/legacy-products/legacy-trailing-drawdown-rule/",
+      "/help-center/legacy-products/legacy-products-overview/"
+     ],
+     "weekend_allowed": false,
+     "hwm_basis": "intraday_equity_incl_unrealized",
+     "breach_basis": "intraday_equity_incl_unrealized",
+     "contract_cap_indexed": true,
+     "contract_cap_index_note": "binary: half of max until EOD balance exceeds start+dd+$100, then full permanently.",
+     "consistency_effect": {
+      "type": "blocks_payout_request",
+      "fails_account": false,
+      "raises_profit_target": false,
+      "formula": "min_total_profit = best_single_profit_day / 0.30",
+      "scope": "profit balance since the last approved payout, or since trading started if none",
+      "resets_on": "each approved payout",
+      "expires": "applies until the sixth payout or until the account is transferred to a Live Prop Trading Account; then no longer in effect",
+      "escalation": "the legacy payout page also lists payout denial, account reset to the prior EOD balance, profit removal and probation as possible outcomes for rule violations",
+      "verbatim": "The 30% Consistency Rule ensures that no single trading day accounts for more than 30% of the total profit balance at the time of a payout request. ... The rule applies until the sixth payout or until the account is transferred to a Live Prop Trading Account. At that point, the 30% rule is no longer in effect."
+     },
+     "commissions": {
+      "firm_imposed_in_sim": true,
+      "rate_published": null,
+      "note": "Legacy eval FAQ verbatim: 'Yes, the profit goal is net of commissions and all associated costs.' Rate = UNVERIFIED (set per data vendor)."
+     }
+    },
+    "sizes": {
+     "25K": {
+      "max_dd": 1500,
+      "dd_lock_at": "locks at $25,100 (start + $100); safety net = $26,600",
+      "max_contracts": {
+       "minis": 4,
+       "micros": 40,
+       "scaling": "half of max contracts until EOD balance exceeds start+dd+$100, then full size permanently"
+      },
+      "max_withdrawal": {
+       "first_five_payouts": 1500,
+       "from_sixth_payout": "no maximum",
+       "min_balance_to_request": 26600
+      },
+      "buffer_required": {
+       "safety_net": 26600,
+       "applies_to": "first three approved payouts only, then dropped",
+       "encroachment": "the $500 minimum payout may dip into the safety net; anything above $500 may not"
+      }
+     },
+     "50K": {
+      "max_dd": 2500,
+      "dd_lock_at": "locks at $50,100 (start + $100); safety net = $52,600",
+      "max_contracts": {
+       "minis": 10,
+       "micros": 100,
+       "scaling": "half of max contracts until EOD balance exceeds start+dd+$100, then full size permanently"
+      },
+      "max_withdrawal": {
+       "first_five_payouts": 2000,
+       "from_sixth_payout": "no maximum",
+       "min_balance_to_request": 52600
+      },
+      "buffer_required": {
+       "safety_net": 52600,
+       "applies_to": "first three approved payouts only, then dropped",
+       "encroachment": "the $500 minimum payout may dip into the safety net; anything above $500 may not"
+      }
+     },
+     "75K": {
+      "max_dd": 2750,
+      "dd_lock_at": "locks at $75,100 (start + $100); safety net = $77,850",
+      "max_contracts": {
+       "minis": 12,
+       "micros": 120,
+       "scaling": "half of max contracts until EOD balance exceeds start+dd+$100, then full size permanently"
+      },
+      "max_withdrawal": {
+       "first_five_payouts": null,
+       "from_sixth_payout": "no maximum",
+       "min_balance_to_request": null
+      },
+      "buffer_required": {
+       "safety_net": 77850,
+       "applies_to": "first three approved payouts only, then dropped",
+       "encroachment": "the $500 minimum payout may dip into the safety net; anything above $500 may not"
+      }
+     },
+     "100K": {
+      "max_dd": 3000,
+      "dd_lock_at": "locks at $100,100 (start + $100); safety net = $103,100",
+      "max_contracts": {
+       "minis": 14,
+       "micros": 140,
+       "scaling": "half of max contracts until EOD balance exceeds start+dd+$100, then full size permanently"
+      },
+      "max_withdrawal": {
+       "first_five_payouts": 2500,
+       "from_sixth_payout": "no maximum",
+       "min_balance_to_request": 103100
+      },
+      "buffer_required": {
+       "safety_net": 103100,
+       "applies_to": "first three approved payouts only, then dropped",
+       "encroachment": "the $500 minimum payout may dip into the safety net; anything above $500 may not"
+      }
+     },
+     "150K": {
+      "max_dd": 5000,
+      "dd_lock_at": "locks at $150,100 (start + $100); safety net = $155,100",
+      "max_contracts": {
+       "minis": 17,
+       "micros": 170,
+       "scaling": "half of max contracts until EOD balance exceeds start+dd+$100, then full size permanently"
+      },
+      "max_withdrawal": {
+       "first_five_payouts": 2750,
+       "from_sixth_payout": "no maximum",
+       "min_balance_to_request": 155100
+      },
+      "buffer_required": {
+       "safety_net": 155100,
+       "applies_to": "first three approved payouts only, then dropped",
+       "encroachment": "the $500 minimum payout may dip into the safety net; anything above $500 may not"
+      }
+     },
+     "250K": {
+      "max_dd": 6500,
+      "dd_lock_at": "locks at $250,100 (start + $100); safety net = $256,600",
+      "max_contracts": {
+       "minis": 27,
+       "micros": 270,
+       "scaling": "half of max contracts until EOD balance exceeds start+dd+$100, then full size permanently"
+      },
+      "max_withdrawal": {
+       "first_five_payouts": 3000,
+       "from_sixth_payout": "no maximum",
+       "min_balance_to_request": 256600
+      },
+      "buffer_required": {
+       "safety_net": 256600,
+       "applies_to": "first three approved payouts only, then dropped",
+       "encroachment": "the $500 minimum payout may dip into the safety net; anything above $500 may not"
+      }
+     },
+     "300K": {
+      "max_dd": 7500,
+      "dd_lock_at": "locks at $300,100 (start + $100); safety net = $307,600",
+      "max_contracts": {
+       "minis": 35,
+       "micros": 350,
+       "scaling": "half of max contracts until EOD balance exceeds start+dd+$100, then full size permanently"
+      },
+      "max_withdrawal": {
+       "first_five_payouts": 3500,
+       "from_sixth_payout": "no maximum",
+       "min_balance_to_request": 307600
+      },
+      "buffer_required": {
+       "safety_net": 307600,
+       "applies_to": "first three approved payouts only, then dropped",
+       "encroachment": "the $500 minimum payout may dip into the safety net; anything above $500 may not"
+      }
+     }
+    }
+   },
+   "legacy_static_RETIRED": {
+    "_defaults": {
+     "account_cost": {
+      "pa_monthly_fee": 85
+     },
+     "buffer_required": {
+      "safety_net": 102600,
+      "note": "$2,600 - explicitly NOT drawdown+$100 ($725) for this product"
+     },
+     "consistency_pct": 30,
+     "consistency_phases": [
+      "legacy_pa_payout_request_only"
+     ],
+     "daily_loss_limit": null,
+     "dd_lock_at": "n/a - fixed at $99,375",
+     "dd_type": "STATIC",
+     "dll_basis": null,
+     "dll_reset_time": null,
+     "first_payout_days": 8,
+     "first_payout_min_profit": {
+      "qualifying_days": 5,
+      "per_day": 50
+     },
+     "hours": "18:00-16:59:59 ET, flat before 16:59 close",
+     "max_contracts": {
+      "minis": 2,
+      "micros": 20,
+      "scaling": "half size until the $2,600 safety-net amount is reached"
+     },
+     "max_dd": 625,
+     "max_withdrawal": {
+      "first_five_payouts": 1000,
+      "from_sixth_payout": "no maximum",
+      "min_balance_to_request": 102600
+     },
+     "micro_ratio": 10,
+     "min_days": 8,
+     "min_payout": 500,
+     "news_restriction": "news trading with your normal strategy allowed; news-chasing / both-sides straddle / pre-news windfall strategies prohibited",
+     "overnight_allowed": false,
+     "phase_only_rules": [
+      "RETIRED 2026-03-01",
+      "static drawdown never trails",
+      "same MAE / 5:1 / one-direction / hedging rules as legacy full"
+     ],
+     "profit_split": {
+      "stated_rule_a": "100% of first $25,000 per account then 90%",
+      "stated_rule_b": "100% from the 6th payout"
+     },
+     "profit_target": null,
+     "profit_target_basis": "n/a",
+     "reset_cost": null,
+     "retrieved": "2026-07-25",
+     "source_url": [
+      "/help-center/performance-accounts-pa/legacy-performance-account-pa-trading-rules/",
+      "/help-center/legacy-payouts/legacy-pa-payout-parameters/"
+     ],
+     "weekend_allowed": false,
+     "hwm_basis": "none - static floor, never ratchets",
+     "breach_basis": "intraday_equity_incl_unrealized",
+     "contract_cap_indexed": true,
+     "contract_cap_index_note": "binary: half of max until the $2,600 safety-net amount is reached, then full.",
+     "consistency_effect": {
+      "type": "blocks_payout_request",
+      "fails_account": false,
+      "raises_profit_target": false,
+      "formula": "min_total_profit = best_single_profit_day / 0.30",
+      "scope": "profit balance since the last approved payout, or since trading started if none",
+      "resets_on": "each approved payout",
+      "expires": "applies until the sixth payout or until the account is transferred to a Live Prop Trading Account; then no longer in effect",
+      "escalation": "the legacy payout page also lists payout denial, account reset to the prior EOD balance, profit removal and probation as possible outcomes for rule violations",
+      "verbatim": "The 30% Consistency Rule ensures that no single trading day accounts for more than 30% of the total profit balance at the time of a payout request. ... The rule applies until the sixth payout or until the account is transferred to a Live Prop Trading Account. At that point, the 30% rule is no longer in effect."
+     },
+     "commissions": {
+      "firm_imposed_in_sim": true,
+      "rate_published": null,
+      "note": "Legacy eval FAQ verbatim: 'Yes, the profit goal is net of commissions and all associated costs.' Rate = UNVERIFIED (set per data vendor)."
+     }
+    },
+    "sizes": {
+     "100K": {}
+    }
+   }
+  },
+  "live_funded": {
+   "apex_live_prop": {
+    "_defaults": {
+     "account_cost": {
+      "apex_fee": 0,
+      "professional_data": "~$140/month, main feed covered by Apex; extra instrument feeds are the trader's cost",
+      "commissions": "set by the broker"
+     },
+     "buffer_required": {
+      "safety_net": 3100,
+      "note": "payouts only from profit above $3,100; withdrawing INTO the safety net is possible only after 90 days of live trading and CLOSES the account permanently"
+     },
+     "consistency_pct": null,
+     "consistency_phases": [
+      "none at Level 1; may be imposed under probation / Longevity Assistance / 4th-round review"
+     ],
+     "daily_loss_limit": {
+      "level_1": null,
+      "level_2": 5000,
+      "level_3": 10000,
+      "level_4": "custom risk-manager review",
+      "note": "framed as flash-crash/outage protection, not a tight daily cap"
+     },
+     "dd_lock_at": "locks at +$100 once live profit balance reaches +$3,100; account closed if balance falls to $100 or less",
+     "dd_type": "END_OF_DAY_TRAILING",
+     "dll_basis": "UNVERIFIED (page does not state realized vs unrealized)",
+     "dll_reset_time": "UNVERIFIED",
+     "first_payout_days": 0,
+     "first_payout_min_profit": null,
+     "hours": "all trades must be closed by 16:50 ET; overnight holding through the close is not permitted",
+     "max_contracts": {
+      "level_1": {
+       "minis": 10,
+       "micros": 100
+      },
+      "level_2": {
+       "minis": 25,
+       "micros": 250
+      },
+      "level_3": {
+       "minis": 30,
+       "micros": 300
+      },
+      "level_4": "custom",
+      "level_thresholds_live_profit": {
+       "L1": "$0-$10,000",
+       "L2": "$10,000-$25,000",
+       "L3": "$25,000-$50,000",
+       "L4": "$50,000+"
+      },
+      "note": "no contract scaling within Level 1"
+     },
+     "max_dd": 3000,
+     "max_withdrawal": {
+      "cap": null,
+      "frequency": "daily",
+      "note": "no cap; only profit above the $3,100 safety net is withdrawable"
+     },
+     "micro_ratio": 10,
+     "min_days": 0,
+     "min_payout": 500,
+     "news_restriction": "news trading with your normal strategy allowed; news-chasing / both-sides straddle / pre-news windfall strategies prohibited",
+     "overnight_allowed": false,
+     "phase_only_rules": [
+      "invitation only; Apex decides, monitoring typically starts after 3 consecutive withdrawals from one sim PA",
+      "starting balance is $0 (not $25K/$50K/etc); live account size is uniform, not size-tiered",
+      "you cannot hold live and sim accounts at the same time - all evals are closed/refunded and all PAs deactivated on transition",
+      "1 live account to start; +1 account per $4,500 of live profit, max 5",
+      "Bonus Vault: sim PA profit balances become a tracking ledger; 20% of monthly live withdrawals paid as a bonus (40% in the first month of each new account), paid on the 15th of the following month, live account must still be open",
+      "inactivity: no trading for a month / 30 days may close the account",
+      "blowing the live account: 14-day cooling-off, then the $199 Second Chance Eval-to-Live",
+      "3rd live failure: risk-manager review; a 4th round, if offered, halves the remaining Bonus Vault",
+      "declining the live invitation deactivates the whole Apex account and pays a final $3,000; Bonus Vault forfeited",
+      "payouts processed to the payment processor within 48 hours"
+     ],
+     "profit_split": 90,
+     "profit_target": null,
+     "profit_target_basis": "n/a - live is invitation-only, no target",
+     "reset_cost": null,
+     "retrieved": "2026-07-25 (Wayback snapshots 2026-06-01, 2026-07-13)",
+     "source_url": [
+      "/help-center/getting-started/apex-live-prop-trading-program-faq/"
+     ],
+     "weekend_allowed": false,
+     "hwm_basis": "eod_close",
+     "breach_basis": "UNVERIFIED - Live FAQ says only 'If the account balance ever reaches $100 or less, the live account will be closed'; it never states realized vs unrealized",
+     "contract_cap_indexed": true,
+     "contract_cap_index_note": "live PROFIT BALANCE -> level -> (contract limit, DLL).",
+     "consistency_effect": {
+      "type": "none_at_level_1",
+      "note": "may be imposed under probation / Longevity Assistance / 4th-round review"
+     },
+     "commissions": {
+      "firm_imposed_in_sim": "n/a - live",
+      "rate_published": null,
+      "note": "'Commissions are set by the broker.'"
+     }
+    },
+    "sizes": {
+     "uniform": {}
+    }
+   }
+  }
+ }
+}

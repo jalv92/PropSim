@@ -1,0 +1,15 @@
+# Never commit market data or a user's trades. The tool is public; the data is
+# not -- CME 3.2(ii) forbids supplying it to another party or location.
+*.ncd
+*.nrd
+*.pkl
+*.sqlite
+data/
+# build output
+build/*.spec.bak
+dist/
+dist_installer/
+__pycache__/
+*.pyc
+# the user's own settings and downloaded rules live outside the repo anyway
+.prop-sim/

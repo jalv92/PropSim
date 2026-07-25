@@ -1,0 +1,581 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Prop-firm Monte Carlo</title>
+<style>
+  :root{
+    --bg:#0b0b0d; --panel:#121316; --line:#232529; --txt:#e7e9ea; --dim:#8b9096;
+    --dimmer:#5f646b; --green:#34d399; --red:#f2635f; --amber:#f0b429;
+    --blue:#5aa9e6; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#000;color:var(--txt);
+       font:13px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  .wrap{max-width:1360px;margin:18px auto;background:var(--bg);
+        border:1px solid var(--line);border-radius:14px;padding:18px 20px 22px}
+  .tabs{display:flex;gap:8px;margin-bottom:16px}
+  .tab{padding:6px 13px;border-radius:7px;border:1px solid transparent;
+       color:var(--dim);cursor:pointer;font-size:12.5px}
+  .tab.on{color:var(--txt);border-bottom:2px solid var(--txt);border-radius:0}
+  .tab.alt{border:1px solid #1d3a52;color:#7fb6e0;background:#0d1a26}
+  .tab.off{opacity:.4;cursor:not-allowed}
+  .bar{display:flex;align-items:center;justify-content:space-between;gap:12px;
+       margin-bottom:14px;flex-wrap:wrap}
+  select,button{background:#17191d;color:var(--txt);border:1px solid var(--line);
+                border-radius:8px;padding:7px 10px;font-size:12.5px;font-family:inherit}
+  select{cursor:pointer;max-width:260px}
+  button{cursor:pointer}
+  button.primary{background:#1f2937;border-color:#2f3d4f}
+  button:disabled{opacity:.5;cursor:default}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg div{padding:6px 16px;cursor:pointer;color:var(--dim);font-size:12.5px}
+  .seg div.on{background:#22262c;color:var(--txt)}
+  .warn{background:#2a1c10;border:1px solid #5a3a17;color:#e8b978;
+        padding:8px 11px;border-radius:8px;font-size:12px;margin-bottom:12px}
+  .warn.bad{background:#2c1416;border-color:#6b2b2f;color:#f0a3a0}
+  .warn b{color:#fff}
+  .grid{display:grid;grid-template-columns:minmax(0,420px) minmax(0,1fr);
+        gap:20px;border-bottom:1px solid var(--line);padding-bottom:16px}
+  .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);
+        border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .kpi{background:var(--panel);padding:13px 14px}
+  .kpi .lab{color:var(--dim);font-size:10px;letter-spacing:.09em;
+            text-transform:uppercase;margin-bottom:9px}
+  .kpi .val{font-family:var(--mono);font-size:23px;letter-spacing:-.5px}
+  .sec{margin-top:18px}
+  .sec h3{margin:0;font-size:14px;font-weight:600}
+  .meta{color:var(--dim);font-size:12px;margin:5px 0 9px}
+  .meta b{color:var(--txt);font-weight:600}
+  canvas{display:block;width:100%}
+  input[type=range]{width:100%;accent-color:#9aa0a6}
+  .foot{color:var(--dimmer);font-size:11px;margin-top:14px;
+        border-top:1px solid var(--line);padding-top:10px}
+  .g{color:var(--green)} .r{color:var(--red)} .a{color:var(--amber)}
+  .panebody{color:var(--dim);font-size:13px;line-height:1.7}
+  .panebody code{font-family:var(--mono);color:var(--txt);font-size:12px}
+  table.kv{border-collapse:collapse;margin-top:6px;font-size:12.5px}
+  table.kv td{padding:3px 16px 3px 0;vertical-align:top}
+  table.kv td:first-child{color:var(--dim)}
+  .mono{font-family:var(--mono)}
+</style>
+
+<div id="gate" hidden style="position:fixed;inset:0;background:#000c;z-index:50;
+     display:flex;align-items:center;justify-content:center;padding:20px">
+  <div style="max-width:620px;background:var(--panel);border:1px solid var(--line);
+              border-radius:14px;padding:22px 24px">
+    <h2 style="margin:0 0 10px;font-size:17px">Before you use this</h2>
+    <div class="panebody" style="color:var(--txt)">
+      <p><b>The prop-firm rules in this tool are best-effort and dated.</b> They
+      were read from each firm's own published pages and every value carries the
+      date it was retrieved. Firms change rules roughly quarterly and sometimes
+      contradict their own pages — during research one firm had removed a daily
+      loss limit entirely while its pricing page still showed it, and another's
+      marketing page understated a payout cap by 2.5×.</p>
+      <p><b>Verify with the firm before paying for an evaluation.</b> Values the
+      tool could not confirm are marked UNVERIFIED and every account shows what
+      the simulator does not model.</p>
+      <p>This is a simulator, not financial advice, and a simulated pass rate is
+      not a prediction about your account.</p>
+      <p style="color:var(--dim);font-size:12px" id="gateRules"></p>
+    </div>
+    <button class="primary" id="gateOk" style="margin-top:6px">I understand</button>
+  </div>
+</div>
+
+<div class="wrap">
+  <div class="tabs">
+    <div class="tab on"  data-p="prop">Prop Firm</div>
+    <div class="tab alt" data-p="verdict">Verdict</div>
+    <div class="tab alt off" title="disabled on purpose — see the Verdict tab">Regimes</div>
+    <div class="tab alt" data-p="mc">Risk &amp; Monte Carlo</div>
+    <div class="tab alt" data-p="data">Data</div>
+  </div>
+
+  <div id="pane-prop">
+    <div class="bar">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <select id="firm"></select>
+        <select id="variant"></select>
+        <select id="size"></select>
+        <select id="profile"></select>
+        <select id="policy"></select>
+        <select id="account" title="Your own trades, read straight from NinjaTrader"></select>
+        <button id="run" class="primary">Run 10,000 sims</button>
+      </div>
+      <div class="seg" id="phase">
+        <div class="on" data-v="challenge">Challenge</div>
+        <div data-v="funded">Funded</div>
+      </div>
+    </div>
+
+    <div id="warns"></div>
+
+    <div class="grid">
+      <div style="position:relative">
+        <canvas id="donut" height="330"></canvas>
+      </div>
+      <div class="kpis" id="kpis"></div>
+    </div>
+
+    <div class="sec">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <h3 id="secTitle">Challenge equity paths</h3>
+        <span class="meta mono" id="pathcount">—</span>
+      </div>
+      <div class="meta">Trading day <b id="dayNow">—</b> / <span id="dayMax">—</span>
+        &nbsp;&nbsp;Median <b id="medNow">—</b></div>
+      <canvas id="spaghetti" height="430"></canvas>
+      <input type="range" id="scrub" min="1" max="1" value="1">
+    </div>
+
+    <div class="sec">
+      <div class="meta"><span id="medLabel">MEDIAN P&amp;L</span> <b id="pnlMed" class="mono">—</b>
+        &nbsp;&nbsp; P5 – P95 <b id="pnlRange" class="mono">—</b>
+        &nbsp;&nbsp; <b id="pctLose">—</b> <span id="loseLabel">losing</span></div>
+      <canvas id="hist" height="190"></canvas>
+    </div>
+
+    <div class="foot" id="foot">Ready.</div>
+  </div>
+
+  <div id="pane-verdict" hidden>
+    <div class="panebody" id="verdictBody"></div>
+  </div>
+
+  <div id="pane-mc" hidden>
+    <div class="panebody" id="mcBody"></div>
+  </div>
+
+  <div id="pane-data" hidden>
+    <div class="panebody">
+      <p>PropSim reads one folder. Everything else — your trades, your accounts,
+      your instruments and their point values, your commissions — is derived
+      from it.</p>
+      <div style="display:flex;gap:8px;margin:12px 0">
+        <input id="ntroot" placeholder="path to your NinjaTrader 8 folder"
+               style="flex:1;background:#17191d;color:var(--txt);
+                      border:1px solid var(--line);border-radius:8px;
+                      padding:7px 10px;font-size:12.5px">
+        <button id="scan" class="primary">Scan</button>
+      </div>
+      <div id="dataBody"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmt$ = v => (v<0?"-":"")+"$"+Math.abs(Math.round(v)).toLocaleString();
+const fmtK = v => "$"+(Math.abs(v)>=1000 ? (v/1000).toFixed(1)+"K" : Math.round(v));
+const pct = v => (v*100).toFixed(2)+"%";
+let CFG=null, RES=null, META=null, ES=null, ACCOUNTS=[], PHASE="challenge", V=null;
+
+/* ---------- crisp canvas ---------- */
+function ctxOf(c){
+  const r = window.devicePixelRatio||1, w = c.clientWidth, h = c.height;
+  if(c.width !== w*r || c._h !== h*r){ c.width = w*r; c._h = h*r; c.style.height = h+"px";
+    c.height = h*r; }
+  const x = c.getContext("2d"); x.setTransform(r,0,0,r,0,0);
+  x.clearRect(0,0,w,h); return [x,w,h];
+}
+
+/* ---------- pickers ---------- */
+function fill(sel, items, cur){
+  sel.innerHTML = items.map(v=>`<option${v===cur?" selected":""}>${v}</option>`).join("");
+}
+function firmsOf(){ return Object.keys(CFG.firms).sort(); }
+function variantsOf(f){
+  return Object.keys(CFG.firms[f]).filter(v=>CFG.firms[f][v].evaluation).sort(); }
+function sizesOf(f,v){
+  return Object.keys(CFG.firms[f][v].evaluation||{}).map(Number).sort((a,b)=>a-b); }
+
+function syncPickers(keepV){
+  const f = $("#firm").value;
+  const vs = variantsOf(f);
+  fill($("#variant"), vs, keepV && vs.includes(keepV) ? keepV : vs[0]);
+  const szs = sizesOf(f, $("#variant").value);
+  fill($("#size"), szs.map(s=>s.toLocaleString()), (szs.includes(50000)?50000:szs[0]).toLocaleString());
+  showWarnings();
+}
+function currentAccount(){
+  const f=$("#firm").value, v=$("#variant").value,
+        s=$("#size").value.replace(/,/g,"");
+  return (CFG.firms[f][v].evaluation||{})[s];
+}
+function showWarnings(){
+  const a = currentAccount(); const box=$("#warns"); box.innerHTML="";
+  if(!a) return;
+  for(const w of a.warnings||[]){
+    const bad = w.includes("PROHIBITS");
+    box.insertAdjacentHTML("beforeend",
+      `<div class="warn${bad?" bad":""}">${bad?"<b>⚠ </b>":""}${w}</div>`);
+  }
+}
+
+/* ---------- donut ---------- */
+function drawDonut(p_pass,p_bust,p_time,daysPass,sims,labels){
+  labels = labels || ["Pass","Fail","Timeout"];
+  const [x,w,h]=ctxOf($("#donut"));
+  const cx=w*0.5, cy=h*0.5, R=Math.min(w,h)*0.30, T=26;
+  const segs=[[p_pass,"#34d399"],[p_bust,"#f2635f"],[p_time,"#f0b429"]];
+  let a=-Math.PI/2;
+  for(const [v,col] of segs){
+    if(v<=0) continue;
+    x.beginPath(); x.arc(cx,cy,R,a,a+v*Math.PI*2); x.strokeStyle=col;
+    x.lineWidth=T; x.stroke(); a+=v*Math.PI*2;
+  }
+  x.fillStyle="#e7e9ea"; x.textAlign="center"; x.font="600 19px ui-monospace,monospace";
+  x.fillText(sims.toLocaleString(), cx, cy+2);
+  x.fillStyle="#8b9096"; x.font="11px system-ui"; x.fillText("sims", cx, cy+18);
+  x.textAlign="left"; x.font="600 12.5px system-ui";
+  x.fillStyle="#34d399"; x.fillText(labels[0]+": "+pct(p_pass), 8, 20);
+  x.fillStyle="#8b9096"; x.font="11px system-ui";
+  x.fillText(daysPass!=null?("avg "+daysPass.toFixed(1)+" days"):"—", 8, 36);
+  x.fillStyle="#f2635f"; x.font="600 12.5px system-ui";
+  x.fillText(labels[1]+": "+pct(p_bust), 8, h-26);
+  x.fillStyle="#f0b429"; x.font="600 12px system-ui";
+  x.fillText(labels[2]+": "+pct(p_time), 8, h-8);
+}
+
+/* ---------- KPI tiles ---------- */
+function drawKpis(t){
+  $("#kpis").innerHTML = t.map(([l,v,c])=>
+    `<div class="kpi"><div class="lab">${l}</div>
+     <div class="val ${c}">${v}</div></div>`).join("");
+}
+
+/* ---------- spaghetti ---------- */
+function drawPaths(upto){
+  if(!RES||!V) return;
+  const [x,w,h]=ctxOf($("#spaghetti"));
+  const P=V.paths, n=Math.min(upto, V.nDays-1);
+  const start=META.start, target=start+(META.target||0);
+  const floor=start-(META.max_dd||0);
+  let lo=Math.min(floor,start)*1, hi=Math.max(target,start)*1;
+  for(const row of P) for(let i=0;i<=n;i++){ const v=row[i];
+    if(v==null) continue; if(v<lo)lo=v; if(v>hi)hi=v; }
+  const pad=(hi-lo)*0.06||1; lo-=pad; hi+=pad;
+  const L=58, R=14, TP=12, BT=24;
+  const X=i=> L + i*(w-L-R)/Math.max(n,1);
+  const Y=v=> TP + (hi-v)*(h-TP-BT)/(hi-lo);
+
+  x.strokeStyle="#1a1c20"; x.lineWidth=1; x.font="10px ui-monospace,monospace";
+  x.fillStyle="#5f646b"; x.textAlign="right";
+  for(let g=0;g<=4;g++){ const v=lo+(hi-lo)*g/4, y=Y(v);
+    x.beginPath(); x.moveTo(L,y); x.lineTo(w-R,y); x.stroke();
+    x.fillText(fmtK(v), L-6, y+3); }
+  x.textAlign="center";
+  for(let g=0;g<=4;g++){ const i=Math.round(n*g/4);
+    x.fillText(i, X(i), h-7); }
+
+  x.lineWidth=1;
+  for(let k=0;k<P.length;k++){
+    const oc=V.outcome[k];
+    x.strokeStyle = oc===1 ? "rgba(52,211,153,.34)"
+                  : oc===2 ? "rgba(242,99,95,.30)" : "rgba(240,180,41,.30)";
+    x.beginPath(); let started=false;
+    for(let i=0;i<=n;i++){ const v=P[k][i]; if(v==null){ break; }
+      const px=X(i), py=Y(v);
+      if(!started){ x.moveTo(px,py); started=true; } else x.lineTo(px,py); }
+    if(started) x.stroke();
+  }
+  const line=(v,col,lab)=>{ if(v==null) return;
+    x.save(); x.setLineDash([5,4]); x.strokeStyle=col; x.lineWidth=1.2;
+    x.beginPath(); x.moveTo(L,Y(v)); x.lineTo(w-R,Y(v)); x.stroke(); x.restore();
+    x.fillStyle=col; x.textAlign="right"; x.font="10px system-ui";
+    x.fillText(lab, w-R, Y(v)-4); };
+  if(PHASE!=="funded"){
+    if(META.target) line(target,"#34d399","Target");
+    line(floor,"#f2635f","Trailing DD");
+  }
+  if(META.dd_lock!=null && META.dd_lock!==floor)
+    line(META.dd_lock,"#f0b429","DD lock");
+
+  let vals=[]; for(const row of P){ const v=row[n]; if(v!=null) vals.push(v); }
+  vals.sort((a,b)=>a-b);
+  $("#dayNow").textContent=n;
+  $("#medNow").textContent= vals.length? fmtK(vals[vals.length>>1]) : "—";
+}
+
+/* ---------- histogram ---------- */
+function drawHist(){
+  if(!RES||!V) return;
+  const [x,w,h]=ctxOf($("#hist"));
+  const c=V.hist.counts, e=V.hist.edges, mx=Math.max(...c,1);
+  const L=44,R=14,TP=8,BT=20, bw=(w-L-R)/c.length;
+  x.strokeStyle="#1a1c20"; x.fillStyle="#5f646b";
+  x.font="10px ui-monospace,monospace"; x.textAlign="right";
+  for(const g of [0,0.5,1]){ const y=TP+(1-g)*(h-TP-BT);
+    x.beginPath(); x.moveTo(L,y); x.lineTo(w-R,y); x.stroke();
+    x.fillText(Math.round(mx*g), L-6, y+3); }
+  for(let i=0;i<c.length;i++){
+    const mid=(e[i]+e[i+1])/2;
+    x.fillStyle = mid>=0 ? "#34d399" : "#f2635f";
+    const bh=(c[i]/mx)*(h-TP-BT);
+    x.fillRect(L+i*bw+1, h-BT-bh, bw-2, bh);
+  }
+  x.fillStyle="#5f646b"; x.textAlign="center";
+  for(let i=0;i<c.length;i+=Math.ceil(c.length/6))
+    x.fillText(fmtK(e[i]), L+i*bw+bw/2, h-6);
+}
+
+/* ---------- run ---------- */
+function run(){
+  if(ES) ES.close();
+  const q=new URLSearchParams({firm:$("#firm").value, variant:$("#variant").value,
+    size:$("#size").value.replace(/,/g,""), sims:"10000",
+    profile:$("#profile").value, policy:$("#policy").value,
+    account:$("#account").value.startsWith("__") ? "" : $("#account").value});
+  $("#run").disabled=true; $("#foot").textContent="Running…";
+  RES=null;
+  ES=new EventSource("/api/run?"+q);
+  ES.addEventListener("meta", ev=>{ META=JSON.parse(ev.data);
+    if(META.pool && META.pool.n_days < 20){
+      $("#warns").insertAdjacentHTML("beforeend",
+        `<div class="warn">Only <b>${META.pool.n_days} trading day(s)</b> of real
+         trades in this account. The bootstrap resamples whole days, so with this
+         few blocks the equity paths are coarse and the pass rate carries wide
+         uncertainty — treat it as indicative, not as a measurement.</div>`);
+    }
+    $("#foot").textContent=`${META.firm} / ${META.variant} / $${META.size.toLocaleString()} — `
+      +`ratchet ${META.hwm_basis}, breach ${META.breach_basis||"UNVERIFIED"}, `
+      +`rules retrieved ${META.retrieved}`
+      + (META.pool ? `  —  BOOTSTRAP: ${META.pool.n_trades} real trades / `
+          +`${META.pool.n_days} day-blocks, mean $${META.pool.mean}`
+          +`, MAE ${META.pool.have_mae?"real":"assumed"}`
+        : "  —  parametric Bernoulli profile (paths sit on a lattice by construction)");
+  });
+  ES.addEventListener("progress", ev=>{ const p=JSON.parse(ev.data);
+    drawDonut(p.p_pass,p.p_bust,1-p.p_pass-p.p_bust,null,10000);
+    $("#dayNow").textContent=p.day; $("#medNow").textContent=fmtK(p.median);
+  });
+  ES.addEventListener("result", ev=>{
+    RES=JSON.parse(ev.data);
+    render();
+    $("#run").disabled=false; ES.close(); ES=null;
+    renderVerdict();
+  });
+  ES.addEventListener("error", ev=>{
+    let m="stream error";
+    try{ m=JSON.parse(ev.data).message; }catch(e){}
+    $("#foot").textContent=m; $("#run").disabled=false;
+    if(ES){ES.close();ES=null;}
+  });
+}
+
+/* ---------- render: challenge vs funded ---------- */
+function view(){
+  if(PHASE==="funded" && RES && RES.funded){
+    const f=RES.funded;
+    return {
+      // "pass/fail" has no meaning once funded; the question is whether money
+      // came out before the account died
+      donut:[f.p_alive, f.p_lost_nothing, f.p_paid_then_lost],
+      donutLabels:["Alive","Lost, nothing out","Paid, then lost"],
+      days:f.days_to_first,
+      kpis:[
+        ["Median withdrawn", fmt$(f.median_income), f.median_income>0?"g":"r"],
+        ["Took a payout", pct(f.p_payout), ""],
+        ["Mean withdrawn", fmt$(f.mean_income), f.mean_income>0?"g":"r"],
+        ["Days to 1st payout", f.days_to_first==null?"—":f.days_to_first.toFixed(1)+" days",""],
+        ["Withdrawn, 5th pct", fmt$(f.income_p5), f.income_p5>0?"g":"r"],
+        ["Withdrawn, 95th pct", fmt$(f.income_p95), "g"],
+      ],
+      paths:f.paths, outcome:f.outcome, nDays:f.n_days, hist:f.hist,
+      title:"Funded equity paths (balance + cumulative withdrawals)",
+      target:null, floor:META.start-(f.buffer!=null?0:0),
+      med:f.median_income, p5:f.income_p5, p95:f.income_p95,
+      lose:f.p_lost_nothing, loseLabel:"lost with nothing withdrawn",
+      medLabel:"MEDIAN WITHDRAWN"
+    };
+  }
+  return {
+    donut:[RES.p_pass, RES.p_bust, RES.p_timeout],
+    donutLabels:["Pass","Fail","Timeout"],
+    days:RES.days_pass,
+    kpis:[
+      ["Net EV (mean)", fmt$(RES.net_mean), RES.net_mean>=0?"g":"r"],
+      ["Payout probability", pct(RES.p_payout), ""],
+      ["Mean payout", fmt$(RES.mean_payout), ""],
+      ["Days to 1st payout", RES.days_to_first_payout==null?"—":RES.days_to_first_payout.toFixed(1)+" days",""],
+      ["Net EV, 5th pct", fmt$(RES.net_p5), RES.net_p5>=0?"g":"r"],
+      ["Net EV, 95th pct", fmt$(RES.net_p95), RES.net_p95>=0?"g":"r"],
+    ],
+    paths:RES.paths, outcome:RES.outcome, nDays:RES.n_days, hist:RES.hist,
+    title:"Challenge equity paths",
+    med:RES.pnl_median, p5:RES.pnl_p5, p95:RES.pnl_p95,
+    lose:RES.pct_losing, loseLabel:"losing", medLabel:"MEDIAN P&L"
+  };
+}
+
+function render(){
+  if(!RES) return;
+  const v=view();
+  V=v;
+  $("#secTitle").textContent=v.title;
+  $("#pathcount").textContent=`All paths (${v.paths.length})`;
+  $("#dayMax").textContent=v.nDays-1;
+  $("#scrub").max=v.nDays-1; $("#scrub").value=v.nDays-1;
+  drawDonut(v.donut[0],v.donut[1],v.donut[2],v.days,10000,v.donutLabels);
+  drawKpis(v.kpis); drawPaths(v.nDays-1); drawHist();
+  $("#pnlMed").textContent=fmt$(v.med);
+  $("#pnlMed").className="mono "+(v.med>=0?"g":"r");
+  $("#pnlRange").textContent=fmt$(v.p5)+" to "+fmt$(v.p95);
+  $("#pctLose").textContent=(v.lose*100).toFixed(0)+"%";
+  $("#loseLabel").textContent=v.loseLabel;
+  $("#medLabel").textContent=v.medLabel;
+}
+
+/* ---------- verdict tab ---------- */
+function renderVerdict(){
+  const a=currentAccount()||{};
+  const rows=[
+    ["Rules retrieved", a.retrieved||"—"],
+    ["Fully verified", a.verified?"yes":"<b class='r'>no</b>"],
+    ["Drawdown ratchet", a.hwm_basis],
+    ["Breach tested on", a.breach_basis||"<b class='r'>UNVERIFIED</b>"],
+    ["Floor locks at", a.dd_lock!=null?fmt$(a.dd_lock):"never"],
+    ["Consistency", a.consistency_pct?a.consistency_pct+"% — "+(a.consistency_effect||"mechanic UNVERIFIED"):"none"],
+  ];
+  $("#verdictBody").innerHTML = `
+    <p><b>This tab is the honest one.</b> The Prop Firm tab answers
+    “what are the odds”; this one answers “should you believe them”.</p>
+    <table class="kv">${rows.map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</table>
+    ${(a.unmodeled&&a.unmodeled.length)?`<p style="margin-top:14px">
+      <b>${a.unmodeled.length} rule(s) this simulator does not model:</b></p>
+      <ul>${a.unmodeled.map(u=>`<li>${u}</li>`).join("")}</ul>`:""}
+    <p style="margin-top:16px"><b>Not yet wired:</b> the trial ledger. Until it
+    exists, nothing here counts a trial, and a P(pass) figure read off this page
+    is a pricing estimate for an <i>already-validated</i> edge — never a reason
+    to believe an edge exists. Optimising a strategy against these numbers is
+    the documented failure mode, not a feature.</p>`;
+}
+
+$("#mcBody").innerHTML = `
+  <p>The Monte Carlo resamples a <b>parametric</b> trade profile (win rate,
+  reward:risk, risk per contract, trades per day, friction), not your real trade
+  list. 10,000 draws of the same estimated parameters are not 10,000 pieces of
+  evidence — the uncertainty in P(pass) is inherited entirely from the
+  uncertainty in those parameters and then passed through a steep non-linear
+  map.</p>
+  <p><b>Known modelling gaps, stated rather than hidden:</b></p>
+  <ul>
+    <li>Evaluation and funded phases are drawn <b>independently</b> — a path that
+    barely scraped through its eval starts the funded phase from the nominal
+    balance, not the state it finished in.</li>
+    <li>Intra-trade excursion is <b>modelled, not simulated</b>: a Bernoulli trade
+    has no price path, so a winner's worst excursion is assumed to be half its
+    stop distance (<code>MAE_FRAC_WIN = 0.5</code>). This is the largest single
+    assumption in the engine and it only bites when the breach basis is intraday.</li>
+    <li>Bootstrap-from-a-real-trade-list is not implemented yet; that is what
+    removes the assumption above.</li>
+  </ul>
+  <p><b>Regimes is disabled on purpose.</b> Slicing results by market regime after
+  the fact is p-hacking with a chart attached. If it is ever added it must
+  increment the trial counter.</p>`;
+
+/* ---------- boot ---------- */
+function loadAccounts(){
+  return fetch("/api/accounts").then(r=>r.json()).then(a=>{
+    ACCOUNTS = a.accounts || [];
+    const opts = ['<option value="__none">— parametric profile (no real trades) —</option>']
+      .concat(ACCOUNTS.map(d=>{
+        const m=d.match;
+        const tag = m ? (m.firm.replace(/_/g," ")+(m.phase?" / "+m.phase:"")) : "unmatched";
+        return `<option value="${d.account}">${d.account} — ${d.n} trades, ${tag}</option>`;
+      }));
+    $("#account").innerHTML = opts.join("");
+    if(ACCOUNTS.length) { $("#account").value = ACCOUNTS[0].account; applyAccount(); }
+  }).catch(()=>{});
+}
+
+// A matched account preselects FIRM and PHASE only. Size and variant are not
+// derivable from an account name, so the user still picks those -- putting a
+// guessed rule set behind a funding decision is the one thing to never do.
+function applyAccount(){
+  const d = ACCOUNTS.find(x=>x.account===$("#account").value);
+  if(!d || !d.match) return;
+  if(CFG.firms[d.match.firm]){
+    const keep = $("#variant").value;      // don't clobber the variant on firm switch
+    $("#firm").value = d.match.firm;
+    syncPickers(keep);
+  }
+}
+
+fetch("/api/startup").then(r=>r.json()).then(st=>{
+  const o=st.rules||{};
+  $("#gateRules").textContent =
+    `Rules in use: ${o.downloaded?"downloaded":"bundled with this build"}, dated ${o.mtime||"unknown"}.`
+    + (st.update && st.update.ok===false ? `  Update check: ${st.update.reason} — using the bundled copy.` : "");
+  if(!st.accepted){ $("#gate").hidden=false; }
+}).catch(()=>{});
+$("#gateOk").onclick=()=>{ $("#gate").hidden=true;
+  fetch("/api/startup?accept=1").catch(()=>{}); };
+
+fetch("/api/config").then(r=>r.json()).then(c=>{
+  CFG=c;
+  fill($("#firm"), firmsOf(), "my_funded_futures");
+  fill($("#profile"), Object.keys(c.profiles), "modest edge 1:1");
+  fill($("#policy"), c.policies, "fixed-3");
+  syncPickers("rapid");
+  renderVerdict();
+  loadAccounts();
+  $("#foot").textContent="Ready — pick an account and run.";
+});
+$("#firm").onchange=()=>{syncPickers();renderVerdict();};
+$("#variant").onchange=()=>{syncPickers($("#variant").value);renderVerdict();};
+$("#size").onchange=()=>{showWarnings();renderVerdict();};
+document.querySelectorAll("#phase div").forEach(el=>el.onclick=()=>{
+  document.querySelectorAll("#phase div").forEach(x=>x.classList.remove("on"));
+  el.classList.add("on"); PHASE = el.dataset.v; render();
+});
+$("#account").onchange=applyAccount;
+$("#run").onclick=run;
+$("#scrub").oninput=e=>drawPaths(+e.target.value);
+document.querySelectorAll(".tab[data-p]").forEach(t=>t.onclick=()=>{
+  document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
+  t.classList.add("on");
+  for(const p of ["prop","verdict","mc","data"])
+    $("#pane-"+p).hidden = (p!==t.dataset.p);
+  if(t.dataset.p==="data") loadData();
+});
+
+function loadData(root){
+  const q = root ? "?root="+encodeURIComponent(root) : "";
+  $("#dataBody").innerHTML = "<p>Scanning…</p>";
+  fetch("/api/datasource"+q).then(r=>r.json()).then(d=>{
+    $("#ntroot").value = d.root || "";
+    const tape = Object.entries(d.tick||{}), rep = Object.entries(d.replay||{});
+    let html = "";
+    if(tape.length){
+      html += `<p style="margin-top:14px"><b class="g">Tape (db/tick) — usable.</b>
+        This is what backtests and bootstraps run on.</p>
+        <table class="kv"><tr><td><b>contract</b></td><td><b>days</b></td>
+        <td><b>MB</b></td><td><b>est. ticks</b></td><td><b>range</b></td></tr>`;
+      for(const [k,v] of tape)
+        html += `<tr><td>${k}</td><td>${v.days}</td><td>${v.mb}</td>
+                 <td>${v.est_ticks.toLocaleString()}</td>
+                 <td>${v.first}..${v.last}</td></tr>`;
+      html += "</table>";
+    }
+    if(rep.length){
+      html += `<p style="margin-top:18px"><b class="a">Market Replay (db/replay)
+        — catalogued, not replayable.</b> The event stream carries an
+        out-of-spec volume opcode that silently corrupts any decoder written
+        outside NinjaTrader, so PropSim reads only the header (which is
+        checksummed) and reports what you have. The tape above is used
+        instead.</p>
+        <table class="kv"><tr><td><b>contract</b></td><td><b>days</b></td>
+        <td><b>GB</b></td><td><b>mean depth</b></td><td><b>range</b></td></tr>`;
+      for(const [k,v] of rep)
+        html += `<tr><td>${k}</td><td>${v.days}</td><td>${v.gb}</td>
+                 <td>${v.mean_depth_size}</td><td>${v.first}..${v.last}</td></tr>`;
+      html += "</table>";
+    }
+    for(const n of d.notes||[])
+      html += `<div class="warn" style="margin-top:12px">${n}</div>`;
+    $("#dataBody").innerHTML = html || "<p>Nothing found under that folder.</p>";
+  }).catch(e=>{ $("#dataBody").innerHTML="<p class='r'>Scan failed.</p>"; });
+}
+$("#scan").onclick=()=>{ loadData($("#ntroot").value.trim()); loadAccounts(); };
+addEventListener("resize", ()=>{ if(RES) render(); });
+</script>

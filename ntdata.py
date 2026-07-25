@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""Discover and inventory a NinjaTrader 8 data folder.
+
+This is the whole of the end user's configuration: point at the NinjaTrader 8
+folder once, and everything downstream is derived. Nothing else is asked.
+
+    python3 ntdata.py                    # auto-detect and inventory
+    python3 ntdata.py "D:/NinjaTrader 8" # explicit root
+
+What is readable from outside NinjaTrader, and what is not:
+
+    db/tick/<contract>/*.Last.ncd   READABLE. Proprietary but decoded by
+                                    ncd_parse.py; carries the bid/ask at each
+                                    trade, so the true aggressor side is
+                                    recoverable. This is the product's tape.
+
+    db/replay/<contract>/*.nrd      HEADER ONLY. The 44x80-byte header is
+                                    plain and checksummed, so days, instrument,
+                                    session bounds and depth quality are all
+                                    readable. The EVENT STREAM is not: it
+                                    carries an out-of-spec volume opcode that
+                                    silently corrupts hand-written parsers a
+                                    few KB in (verified on four files,
+                                    2026-07-25). Ground truth for the stream is
+                                    NinjaTrader's own MarketReplay.
+                                    DumpMarketDepth, which only exists inside
+                                    the NinjaTrader process.
+
+So Market Replay is inventoried and reported, never replayed. Saying that in
+the UI is better than a parser that returns plausible garbage.
+"""
+from __future__ import annotations
+
+import json
+import struct
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+NET_EPOCH = datetime(1, 1, 1, tzinfo=timezone.utc)
+HDR_SLOT = struct.Struct("<didddddiqqq")     # last,count,max,min,first,1.0,tick,flag,t0,t1,vol
+SLOT_BYTES = 80
+L2_ASK, L2_BID = 10, 11                      # header slots carrying market depth
+
+WINDOWS_DEFAULTS = [
+    Path.home() / "Documents" / "NinjaTrader 8",
+    Path.home() / "OneDrive" / "Documents" / "NinjaTrader 8",
+    Path("C:/Users/Public/Documents/NinjaTrader 8"),
+]
+
+
+def candidate_roots():
+    """Plausible NinjaTrader 8 folders, including the WSL view of C:."""
+    out = list(WINDOWS_DEFAULTS)
+    users = Path("/mnt/c/Users")
+    if users.is_dir():
+        for u in users.iterdir():
+            if u.name in ("Public", "Default", "All Users"):
+                continue
+            out += [u / "Documents" / "NinjaTrader 8",
+                    u / "OneDrive" / "Documents" / "NinjaTrader 8"]
+    return out
+
+
+def autodetect():
+    for p in candidate_roots():
+        try:
+            if (p / "db").is_dir():
+                return p
+        except OSError:
+            continue
+    return None
+
+
+def _ncd_span(path: Path):
+    """(first_tick_datetime, tick_estimate) without decoding the whole file."""
+    try:
+        raw = path.read_bytes()[:28]
+        if len(raw) < 28:
+            return None, 0
+        _inc, _p0, t0 = struct.unpack_from("<ddq", raw, 4)
+        return NET_EPOCH + timedelta(microseconds=t0 / 10), path.stat().st_size
+    except OSError:
+        return None, 0
+
+
+def read_nrd_header(path: Path):
+    """Header-only read of a Market Replay file: day quality without decoding.
+
+    `count` and `volumeSum` are checksummed against the full decode, so the
+    mean depth-event size falls out of slots 10+11 arithmetically -- which is
+    how depth is audited without touching the unparseable stream.
+    """
+    try:
+        with path.open("rb") as fh:
+            buf = fh.read(SLOT_BYTES * 44)
+    except OSError:
+        return None
+    if len(buf) < SLOT_BYTES * 44:
+        return None
+    depth_n = depth_vol = 0
+    tape_vol = 0
+    for slot in (L2_ASK, L2_BID, 2):
+        try:
+            f = HDR_SLOT.unpack_from(buf, slot * SLOT_BYTES)
+        except struct.error:
+            continue
+        count, volsum = f[1], f[10]
+        if slot == 2:
+            tape_vol = volsum
+        else:
+            depth_n += count
+            depth_vol += volsum
+    return dict(depth_events=depth_n, tape_volume=tape_vol,
+                mean_depth_size=round(depth_vol / depth_n, 2) if depth_n else 0.0)
+
+
+def inventory(root: Path):
+    """Everything the app knows about a user's NinjaTrader folder."""
+    root = Path(root)
+    db = root / "db"
+    out = dict(root=str(root), ok=db.is_dir(), tick={}, replay={}, notes=[])
+    if not out["ok"]:
+        out["notes"].append(f"no 'db' folder under {root} — is this the "
+                            f"NinjaTrader 8 folder?")
+        return out
+
+    tick = db / "tick"
+    if tick.is_dir():
+        for cdir in sorted(p for p in tick.iterdir() if p.is_dir()):
+            files = sorted(cdir.glob("*.Last.ncd"))
+            if not files:
+                continue
+            days = sorted({f.name[:8] for f in files})
+            size = sum(f.stat().st_size for f in files)
+            out["tick"][cdir.name] = dict(
+                days=len(days), first=days[0], last=days[-1],
+                files=len(files), mb=round(size / 1e6, 1),
+                # ~5.6 bytes/tick measured across this format
+                est_ticks=int(size / 5.6), usable=True)
+    else:
+        out["notes"].append("no db/tick folder — no tape available")
+
+    replay = db / "replay"
+    if replay.is_dir():
+        for cdir in sorted(p for p in replay.iterdir() if p.is_dir()):
+            files = sorted(cdir.glob("*.nrd"))
+            if not files:
+                continue
+            days = sorted({f.stem[:8] for f in files})
+            size = sum(f.stat().st_size for f in files)
+            sample = read_nrd_header(max(files, key=lambda f: f.stat().st_size))
+            out["replay"][cdir.name] = dict(
+                days=len(days), first=days[0], last=days[-1],
+                gb=round(size / 1e9, 2),
+                mean_depth_size=(sample or {}).get("mean_depth_size", 0.0),
+                usable=False,
+                note="inventory only — the event stream cannot be decoded "
+                     "outside NinjaTrader")
+    if out["replay"]:
+        out["notes"].append(
+            f"{sum(v['days'] for v in out['replay'].values())} Market Replay "
+            "days found. These are catalogued but NOT replayable: the stream "
+            "requires NinjaTrader's own decoder. The tape (db/tick) is used "
+            "instead.")
+    if not out["tick"]:
+        out["notes"].append("No usable tape found. You can still load an "
+                            "exported trade list (CSV).")
+    return out
+
+
+CONFIG = Path.home() / ".prop-sim" / "config.json"
+
+
+def load_config():
+    try:
+        return json.loads(CONFIG.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(cfg):
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG.write_text(json.dumps(cfg, indent=1))
+    return cfg
+
+
+def resolve_root(explicit=None):
+    """Explicit path > saved config > autodetect. Returns None if nothing."""
+    if explicit:
+        return Path(explicit)
+    saved = load_config().get("nt_root")
+    if saved and (Path(saved) / "db").is_dir():
+        return Path(saved)
+    return autodetect()
+
+
+def main():
+    root = resolve_root(sys.argv[1] if len(sys.argv) > 1 else None)
+    if root is None:
+        print("No NinjaTrader 8 folder found. Pass one:")
+        print('  python3 ntdata.py "C:/Users/you/Documents/NinjaTrader 8"')
+        for c in candidate_roots()[:4]:
+            print(f"    tried {c}")
+        raise SystemExit(1)
+    inv = inventory(root)
+    print(f"NinjaTrader 8 folder: {inv['root']}   ok={inv['ok']}\n")
+    if inv["tick"]:
+        print("TAPE (db/tick) — usable")
+        print(f"  {'contract':<14}{'days':>5}{'files':>7}{'MB':>8}"
+              f"{'est ticks':>12}   range")
+        for k, v in inv["tick"].items():
+            print(f"  {k:<14}{v['days']:>5}{v['files']:>7}{v['mb']:>8.1f}"
+                  f"{v['est_ticks']:>12,}   {v['first']}..{v['last']}")
+    if inv["replay"]:
+        print("\nMARKET REPLAY (db/replay) — inventory only, not replayable")
+        print(f"  {'contract':<14}{'days':>5}{'GB':>8}{'mean depth':>12}   range")
+        for k, v in inv["replay"].items():
+            print(f"  {k:<14}{v['days']:>5}{v['gb']:>8.2f}"
+                  f"{v['mean_depth_size']:>12.2f}   {v['first']}..{v['last']}")
+    for n in inv["notes"]:
+        print(f"\n  note: {n}")
+
+
+if __name__ == "__main__":
+    main()
