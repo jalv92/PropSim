@@ -129,14 +129,31 @@ def _num(v):
         s = v.strip().lower()
         if s in ("none", "n/a", "null", "unverified", "unver", ""):
             return None
-        m = re.search(r"-?\d[\d,]*\.?\d*", s.replace("$", ""))
-        if not m:
+        clean = s.replace("$", "")
+        nums = re.findall(r"-?\d[\d,]*\.?\d*", clean)
+        if not nums:
+            return None
+        # REFUSE PROSE. A conditional rule cannot be reduced to one scalar, and
+        # taking the first number is how "payout 1: 2000; payouts 2+: 2500"
+        # became a $1 withdrawal cap -- silently, on every Lucid payout. When a
+        # field carries more than one number, or reads as a list, the honest
+        # answer is None: the caller then flags it as not modelled instead of
+        # simulating a number nobody wrote.
+        if len(nums) > 1 or ";" in clean:
             return None
         try:
-            return float(m.group().rstrip(",.").replace(",", ""))
+            return float(nums[0].rstrip(",.").replace(",", ""))
         except ValueError:
             return None
     return None
+
+
+def _prose(v) -> bool:
+    """True when a field held a conditional rule we refused to reduce."""
+    if not isinstance(v, str):
+        return False
+    clean = v.replace("$", "")
+    return len(re.findall(r"-?\d[\d,]*\.?\d*", clean)) > 1 or ";" in clean
 
 
 def _size_to_int(key) -> int:
@@ -232,13 +249,32 @@ def _consistency_effect(row, phase: str):
 
 
 def _contracts(v):
+    """Mini-equivalent position cap.
+
+    `_num` refuses multi-number prose on purpose, but two notations here are
+    unambiguous and worth keeping rather than discarding: "4 minis or 40
+    micros" and a leading count followed by scaling detail. Both put the mini
+    cap first.
+    """
     if isinstance(v, dict):
         return int(v["minis"]) if "minis" in v else None
+    if isinstance(v, str):
+        m = re.match(r"\s*(\d+)\s*mini", v.lower())
+        if m:
+            return int(m.group(1))
+        m = re.match(r"\s*(?:cap\s+)?(\d+)\b", v.strip())
+        if m and "mini" in v.lower():
+            return int(m.group(1))
     n = _num(v)
     return int(n) if n is not None else None
 
 
 def _split(v):
+    """Trader's share. "90/10" is unambiguous even though it holds two numbers."""
+    if isinstance(v, str):
+        m = re.match(r"\s*(\d{1,3})\s*/\s*(\d{1,3})", v)
+        if m and int(m.group(1)) + int(m.group(2)) == 100:
+            return int(m.group(1)) / 100.0
     n = _num(v)
     if n is None:
         return None
@@ -328,9 +364,24 @@ def build() -> list[dict]:
                 size = _size_to_int(size_key)
             except (TypeError, ValueError):
                 continue
-            # funded-sim and live accounts of several firms start at $0 balance
-            start = 0.0 if phase in ("funded_sim", "live") and firm_key in (
-                "topstep", "take_profit_trader", "my_funded_futures") else float(size)
+            # UNITS TRAP. Researchers recorded `buffer_required` in two
+            # different bases: Take Profit Trader wrote an ABSOLUTE balance
+            # (52,000 on a 50K = start + max drawdown) while MFF and Topstep
+            # wrote a PROFIT amount (1,600; 0.01). Mixing them silently made
+            # TPT look like it needed +$52,000 of profit before a withdrawal,
+            # which reported P(payout) = 0.0% -- a plausible-looking number
+            # that was pure units error.
+            #
+            # So derive the denomination from the data instead of assuming one
+            # per firm: a buffer near the account size means the account is
+            # denominated in absolute balance; anything small means it counts
+            # profit from zero.
+            raw_buf = _num(row.get("buffer_required"))
+            absolute = raw_buf is not None and raw_buf >= size * 0.5
+            if phase in ("funded_sim", "live"):
+                start = float(size) if absolute else 0.0
+            else:
+                start = float(size)
             hwm, breach = _bases_from_dd_type(row)
             if breach is None:
                 breach = facts["breach"]        # sourced firm-wide fact, see FIRM_FACTS
@@ -338,6 +389,14 @@ def build() -> list[dict]:
             unmodeled = row.get("phase_only_rules") or []
             if isinstance(unmodeled, str):
                 unmodeled = [unmodeled]
+            _parsed = dict(profit_split=_split(row.get("profit_split")),
+                           max_contracts=_contracts(row.get("max_contracts")))
+            for fname in ("max_withdrawal", "buffer_required", "min_payout",
+                          "profit_split", "max_contracts", "daily_loss_limit"):
+                if _prose(row.get(fname)) and _parsed.get(fname) is None:
+                    unmodeled = list(unmodeled) + [
+                        f"{fname} is conditional in the source "
+                        f'("{str(row[fname])[:70]}") and is not modelled']
             if lock == "VENDOR_DEPENDENT":
                 unmodeled = list(unmodeled) + [
                     "dd_lock_at is vendor-dependent (differs by trading platform)"]
@@ -361,7 +420,8 @@ def build() -> list[dict]:
                 max_contracts=_contracts(row.get("max_contracts")),
                 micro_ratio=_num(row.get("micro_ratio")),
                 profit_split=_split(row.get("profit_split")),
-                buffer_required=_num(row.get("buffer_required")),
+                # normalised to the same base as start_balance
+                buffer_required=raw_buf,
                 min_payout=_num(row.get("min_payout")),
                 max_withdrawal=_num(row.get("max_withdrawal")),
                 automation_allowed=facts["automation"],
@@ -459,6 +519,63 @@ def select(firm, variant, phase, size) -> RuleSet:
                 and rs.phase == phase and rs.size == size):
             return rs
     raise KeyError(f"no rule set for {firm}/{variant}/{phase}/{size}")
+
+
+def select_chain(firm, variant, size):
+    """(evaluation, funded_sim) for a variant, handling per-firm renames.
+
+    A variant does not keep its name across phases. Topstep's `standard_path`
+    evaluation becomes `xfa_standard` once funded; My Funded Futures keeps
+    `rapid`. And the chain is not even uniform in LENGTH -- Lucid's Direct plan
+    has no evaluation at all, and its Maxx plan goes straight from evaluation to
+    live with no funded-sim stage. So this resolves by structure rather than by
+    assuming the name carries over.
+
+    Returns (evaluation, funded, quality) where quality is:
+        "exact"    the same variant name exists in both phases
+        "family"   matched on the shared product-family name
+        "none"     no funded-sim phase exists for this variant and size
+        "inferred" GUESSED -- surface this to the user rather than trusting it
+    """
+    ev = select(firm, variant, "evaluation", size)
+    funded = [r for r in load()
+              if r.firm == firm and r.phase == "funded_sim" and r.size == size]
+    if not funded:
+        return ev, ev, "none"
+    exact = [r for r in funded if r.variant == variant]
+    if exact:
+        return ev, exact[0], "exact"
+    # no name match: prefer a live variant, then the one whose drawdown matches
+    # the evaluation's, which is what actually carries over in these programmes
+    live = [r for r in funded
+            if not any(k in r.variant.lower()
+                       for k in ("retired", "legacy", "sunset"))] or funded
+
+    # Match on the FAMILY name, not the drawdown. Firms keep a product family
+    # across phases and change the phase word: lucidpro_eval -> lucidpro_funded,
+    # standard_path -> xfa_standard. Matching on drawdown alone sent Topstep to
+    # `pro_account` (its restricted-jurisdiction substitute) and Lucid's Pro to
+    # LucidDirect -- both plausible-looking and both wrong.
+    GENERIC = {"eval", "evaluation", "funded", "sim", "s2f", "account",
+               "path", "default", "plan", "current"}
+    def stem(v):
+        return {w for w in v.lower().replace("-", "_").split("_")
+                if w and w not in GENERIC}
+    want = stem(variant)
+    sizes = {}
+    for r in load():
+        if r.firm == firm and r.phase == "funded_sim":
+            sizes[r.variant] = sizes.get(r.variant, 0) + 1
+    scored = sorted(live, key=lambda r: (-len(want & stem(r.variant)),
+                                         r.max_dd != ev.max_dd,
+                                         -sizes.get(r.variant, 0), r.variant))
+    best = scored[0]
+    # No shared family word means this is a guess. Topstep's
+    # `no_activation_fee_path` is the same product as `standard_path` with a
+    # different fee structure, but the names share nothing, so the chain cannot
+    # be derived. Say so instead of presenting a guess as a fact.
+    quality = "family" if (want & stem(best.variant)) else "inferred"
+    return ev, best, quality
 
 
 def firms():
