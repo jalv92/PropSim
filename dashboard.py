@@ -242,7 +242,8 @@ class Handler(BaseHTTPRequestHandler):
             if root:
                 ntdata.save_config(dict(ntdata.load_config(), nt_root=root))
             r = ntdata.resolve_root(root or None)
-            body = json.dumps(ntdata.inventory(r) if r else
+            force = bool(q.get("force"))
+            body = json.dumps(ntdata.inventory(r, force=force) if r else
                               dict(root=None, ok=False, tick={}, replay={},
                                    notes=["No NinjaTrader 8 folder found - "
                                           "enter the path to it."])).encode()

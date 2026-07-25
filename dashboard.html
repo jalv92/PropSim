@@ -56,10 +56,16 @@
   table.kv td{padding:3px 16px 3px 0;vertical-align:top}
   table.kv td:first-child{color:var(--dim)}
   .mono{font-family:var(--mono)}
+  /* The `hidden` attribute works through a UA rule ([hidden]{display:none})
+     with the lowest possible specificity, so an INLINE display would silently
+     beat it and the modal would never close. Layout lives here, and the
+     [hidden] rule is stated explicitly so it cannot be out-specified. */
+  #gate{position:fixed;inset:0;background:#000c;z-index:50;
+        display:flex;align-items:center;justify-content:center;padding:20px}
+  #gate[hidden]{display:none}
 </style>
 
-<div id="gate" hidden style="position:fixed;inset:0;background:#000c;z-index:50;
-     display:flex;align-items:center;justify-content:center;padding:20px">
+<div id="gate" hidden>
   <div style="max-width:620px;background:var(--panel);border:1px solid var(--line);
               border-radius:14px;padding:22px 24px">
     <h2 style="margin:0 0 10px;font-size:17px">Before you use this</h2>
@@ -188,10 +194,29 @@ function variantsOf(f){
 function sizesOf(f,v){
   return Object.keys(CFG.firms[f][v].evaluation||{}).map(Number).sort((a,b)=>a-b); }
 
+// A firm's "main" line is the variant offering the most account sizes --
+// derived from the data rather than a hardcoded favourite, so a new firm needs
+// no code change. Alphabetical order put MFF on `builder_addon`, a one-size
+// add-on, which is a poor thing to greet a user with.
+function retired(v){ return /retired|legacy|sunset|deprecat/i.test(v); }
+
+function defaultVariant(f){
+  const vs = variantsOf(f);
+  // Never greet someone with a product they cannot buy. The researchers marked
+  // discontinued plans in the variant name (Apex's legacy_full_trailing_RETIRED,
+  // Lucid's *_SUNSET); those stay SELECTABLE for grandfathered accounts but are
+  // sorted last. Among the rest, most account sizes = the firm's main line.
+  return vs.slice().sort((a,b) =>
+    (retired(a)?1:0) - (retired(b)?1:0) ||
+    Object.keys(CFG.firms[f][b].evaluation||{}).length -
+    Object.keys(CFG.firms[f][a].evaluation||{}).length ||
+    a.localeCompare(b))[0];
+}
+
 function syncPickers(keepV){
   const f = $("#firm").value;
   const vs = variantsOf(f);
-  fill($("#variant"), vs, keepV && vs.includes(keepV) ? keepV : vs[0]);
+  fill($("#variant"), vs, keepV && vs.includes(keepV) ? keepV : defaultVariant(f));
   const szs = sizesOf(f, $("#variant").value);
   fill($("#size"), szs.map(s=>s.toLocaleString()), (szs.includes(50000)?50000:szs[0]).toLocaleString());
   showWarnings();
@@ -539,8 +564,11 @@ document.querySelectorAll(".tab[data-p]").forEach(t=>t.onclick=()=>{
   if(t.dataset.p==="data") loadData();
 });
 
-function loadData(root){
-  const q = root ? "?root="+encodeURIComponent(root) : "";
+function loadData(root, force){
+  const parts = [];
+  if(root) parts.push("root="+encodeURIComponent(root));
+  if(force) parts.push("force=1");
+  const q = parts.length ? "?"+parts.join("&") : "";
   $("#dataBody").innerHTML = "<p>Scanning…</p>";
   fetch("/api/datasource"+q).then(r=>r.json()).then(d=>{
     $("#ntroot").value = d.root || "";
@@ -576,6 +604,6 @@ function loadData(root){
     $("#dataBody").innerHTML = html || "<p>Nothing found under that folder.</p>";
   }).catch(e=>{ $("#dataBody").innerHTML="<p class='r'>Scan failed.</p>"; });
 }
-$("#scan").onclick=()=>{ loadData($("#ntroot").value.trim()); loadAccounts(); };
+$("#scan").onclick=()=>{ loadData($("#ntroot").value.trim(), true); loadAccounts(); };
 addEventListener("resize", ()=>{ if(RES) render(); });
 </script>

@@ -32,6 +32,7 @@ the UI is better than a parser that returns plausible garbage.
 from __future__ import annotations
 
 import json
+import os
 import struct
 import sys
 from datetime import datetime, timedelta, timezone
@@ -115,9 +116,23 @@ def read_nrd_header(path: Path):
                 mean_depth_size=round(depth_vol / depth_n, 2) if depth_n else 0.0)
 
 
-def inventory(root: Path):
-    """Everything the app knows about a user's NinjaTrader folder."""
+_INV_CACHE: dict = {}
+
+
+def inventory(root: Path, force: bool = False):
+    """Everything the app knows about a user's NinjaTrader folder.
+
+    Cached, because this is expensive and the answer changes rarely. A tick
+    folder holds thousands of hourly files and the original implementation
+    called Path.stat() on every one of them -- measured at 10.4 s on a real
+    folder, every time the Data tab was opened. Two fixes: os.scandir(), whose
+    DirEntry carries the size without a second syscall, and this cache. The
+    Rescan button passes force=True.
+    """
     root = Path(root)
+    key = str(root)
+    if not force and key in _INV_CACHE:
+        return _INV_CACHE[key]
     db = root / "db"
     out = dict(root=str(root), ok=db.is_dir(), tick={}, replay={}, notes=[])
     if not out["ok"]:
@@ -128,11 +143,15 @@ def inventory(root: Path):
     tick = db / "tick"
     if tick.is_dir():
         for cdir in sorted(p for p in tick.iterdir() if p.is_dir()):
-            files = sorted(cdir.glob("*.Last.ncd"))
+            # one scandir pass: name and size come from the same directory
+            # entry, instead of a stat() syscall per file
+            with os.scandir(cdir) as it:
+                files = [(e.name, e.stat().st_size) for e in it
+                         if e.is_file() and e.name.endswith(".Last.ncd")]
             if not files:
                 continue
-            days = sorted({f.name[:8] for f in files})
-            size = sum(f.stat().st_size for f in files)
+            days = sorted({n[:8] for n, _ in files})
+            size = sum(sz for _, sz in files)
             out["tick"][cdir.name] = dict(
                 days=len(days), first=days[0], last=days[-1],
                 files=len(files), mb=round(size / 1e6, 1),
@@ -144,12 +163,16 @@ def inventory(root: Path):
     replay = db / "replay"
     if replay.is_dir():
         for cdir in sorted(p for p in replay.iterdir() if p.is_dir()):
-            files = sorted(cdir.glob("*.nrd"))
-            if not files:
+            with os.scandir(cdir) as it:
+                entries = [(e.name, e.path, e.stat().st_size) for e in it
+                           if e.is_file() and e.name.endswith(".nrd")]
+            if not entries:
                 continue
-            days = sorted({f.stem[:8] for f in files})
-            size = sum(f.stat().st_size for f in files)
-            sample = read_nrd_header(max(files, key=lambda f: f.stat().st_size))
+            files = [Path(pth) for _, pth, _ in entries]
+            days = sorted({n[:8] for n, _, _ in entries})
+            size = sum(sz for _, _, sz in entries)
+            # one header read, on the biggest file, to gauge depth quality
+            sample = read_nrd_header(Path(max(entries, key=lambda e: e[2])[1]))
             out["replay"][cdir.name] = dict(
                 days=len(days), first=days[0], last=days[-1],
                 gb=round(size / 1e9, 2),
@@ -164,8 +187,9 @@ def inventory(root: Path):
             "requires NinjaTrader's own decoder. The tape (db/tick) is used "
             "instead.")
     if not out["tick"]:
-        out["notes"].append("No usable tape found. You can still load an "
-                            "exported trade list (CSV).")
+        out["notes"].append("No usable tape found. Your trades are still read "
+                            "from NinjaTrader's database.")
+    _INV_CACHE[key] = out
     return out
 
 
