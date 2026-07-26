@@ -36,6 +36,7 @@ import nttrades
 import ntdata
 import ntimport
 import ledger
+import nt8gen
 import optimize
 import plugins
 import slippage
@@ -512,6 +513,41 @@ class Handler(BaseHTTPRequestHandler):
                     "application/json")
             return self._send(200, json.dumps(dict(
                 runs=runs, dir=str(ntimport.RUNS_DIR))).encode(), "application/json")
+        if u.path == "/api/nt8gen":
+            q = parse_qs(u.query)
+            strategy = (q.get("strategy", [""])[0] or "").strip()
+            params = {}
+            for k, v in q.items():
+                if k.startswith("p_") and v and v[0] != "":
+                    try:
+                        params[k[2:]] = float(v[0])
+                    except ValueError:
+                        pass
+            meta = {k: (q.get(k, [""])[0] or None) for k in
+                    ("contract", "start", "end", "timeframe", "verdict", "reason")}
+            for k in ("trades", "days", "trials", "slippage_ticks"):
+                try:
+                    meta[k] = int(float(q.get(k, [""])[0]))
+                except (TypeError, ValueError):
+                    meta[k] = None
+            for k in ("pnl", "t_daily", "noise_t"):
+                try:
+                    meta[k] = float(q.get(k, [""])[0])
+                except (TypeError, ValueError):
+                    meta[k] = None
+            try:
+                res = nt8gen.generate(strategy, params, meta=meta)
+                path = nt8gen.write_out(res) if res["compiles"] is not False else None
+                out = dict(res, path=str(path) if path else None,
+                           dir=str(nt8gen.OUT_DIR))
+            except nt8gen.GenError as exc:
+                out = dict(error=str(exc), available=nt8gen.available())
+            except Exception as exc:
+                out = dict(error=f"{type(exc).__name__}: {exc}")
+            return self._send(200, json.dumps(out).encode(), "application/json")
+        if u.path == "/api/nt8gen/templates":
+            return self._send(200, json.dumps(
+                dict(available=nt8gen.available())).encode(), "application/json")
         if u.path == "/api/slippage":
             q = parse_qs(u.query)
             c = (q.get("contract", [""])[0] or "").strip()

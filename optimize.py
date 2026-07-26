@@ -213,6 +213,7 @@ def sweep(contract, strategy, timeframe=5, start=None, end=None, ranges=None,
 
     return dict(strategy=strategy, label=engine.LIBRARY[strategy].label,
                 contract=contract, timeframe=timeframe,
+                start=ctx["start"], end=ctx["end"], days=ctx["days"],
                 combos=len(combos), ranges={k: list(v) for k, v in ranges.items()},
                 elapsed=round(time.time() - t0, 1),
                 noise_t=round(noise_t, 2),

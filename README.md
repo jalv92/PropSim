@@ -161,7 +161,34 @@ A configuration clears the bar at **t ≥ 1.5, ≥ 80 trades, and positive in at
 2 of 3 sub-periods** — and then it has earned *one forward test*, not a funded
 account. Nothing on data you already own is validation.
 
-### 6. Imported — backtests of your own NinjaTrader strategies
+### 6. Take it to NinjaTrader — a `.cs` proven to compile
+
+The Optimize tab's **Generate the .cs and compile it** button writes a real
+NinjaScript strategy with the winning values, and then **compiles it with the same
+Roslyn setup the NinjaScript editor uses** (via [`nt8c`](https://github.com/jalv92))
+before handing it over. A file that will not compile never reaches you.
+
+```bash
+python3 nt8gen.py --list
+python3 nt8gen.py --strategy orb --params range_min=15,stop_ticks=30,rr=1,one_per_day=1
+```
+
+Templates exist today for `orb` and `ma_cross`. A strategy without one is refused
+with that reason rather than half-generated.
+
+**Two verdicts, never merged.** The compiler proves the file *compiles*. Nothing
+proves it *behaves* like the Python it came from — bar construction, session
+anchoring and fill resolution all differ between the two engines. So the output
+carries a compile result and a **fidelity checklist** separately, and the checklist
+is a list of things for you to verify, not a claim. The provenance and the caveats
+are written **inside the `.cs` file**, because a generated strategy outlives the
+session that produced it.
+
+The last step closes the loop: run the generated strategy in the Strategy Analyzer
+with the PropSim fitness, import it on the **Imported** tab, and compare the two
+trade lists. That is what turns "it compiles" into "it behaves the same".
+
+### 7. Imported — backtests of your own NinjaTrader strategies
 
 Runs captured by the add-on, each labelled with whether its fills can be believed:
 
@@ -173,7 +200,7 @@ Runs captured by the add-on, each labelled with whether its fills can be believe
 
 `score →` scores the run, carrying that label onto the results page.
 
-### 7. Trials — how many times you have looked
+### 8. Trials — how many times you have looked
 
 Every run is recorded in an append-only, hash-chained ledger **before** its
 result is drawn, and this tab shows the count next to your best t-statistic
@@ -184,7 +211,7 @@ best of one — after 40 searches, noise alone reaches t ≈ 2.2, and a 5% claim
 needs 3.2. Searching counts (backtests, imported runs, sweeps); scoring the same
 trade list again does not.
 
-### 8. Verdict — should you believe the numbers
+### 9. Verdict — should you believe the numbers
 
 Where each rule came from, when it was read, what is **unverified**, and which
 rules the simulator does not model at all.
@@ -271,6 +298,7 @@ python3 ledger.py --selfcheck     # hash chain, trial counting, noise baseline
 python3 ntimport.py --selfcheck   # add-on format round-trip, fidelity, dedup
 python3 slippage.py --selfcheck   # spread measurement and the session filter
 python3 plugins.py --selfcheck    # the allowlist, the refusals, the output contract
+python3 nt8gen.py --selfcheck     # templates render, compile, and the retry loop works
 python3 optimize.py --selfcheck   # grid, sub-periods, the gate, the noise ceiling
 python3 optimize.py --contract "NQ 09-26" --strategy orb --range stop_ticks=20:60:10
 python3 nttrades.py --list        # your accounts and their detected firm
@@ -295,6 +323,7 @@ signal level while the engine filled at a later tick.
 | `ntimport.py` | importing runs captured by the NinjaScript add-on |
 | `optimize.py` | parameter sweeps and the pre-registered gate |
 | `plugins.py` | loading, validating and smoke-testing your own strategy files |
+| `nt8gen.py`, `nt8gen/` | NinjaScript generation and the compile-verify loop |
 | `ledger.py` | the append-only trial ledger |
 | `dashboard.py/.html` | the local server and the whole UI |
 | `nt8/` | the NinjaScript add-on and its importable archive |

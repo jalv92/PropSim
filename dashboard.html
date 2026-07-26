@@ -327,6 +327,8 @@
             background:#0e0f12;color:#cfd3d8;border:1px solid var(--line);
             border-radius:8px;padding:10px;font:12px ui-monospace,monospace"></textarea>
           <button id="op_copy" class="mini">copy</button>
+          <button id="op_gen" class="primary" style="margin-left:8px">Generate the .cs and compile it</button>
+          <div id="op_gen_out" style="margin-top:12px"></div>
         </div>
       </div>
     </div>
@@ -1340,6 +1342,46 @@ $("#op_params").oninput=opCount;
 $("#op_run").onclick=opRun;
 $("#op_copy").onclick=()=>{ $("#op_export").select();
   document.execCommand("copy"); $("#op_copy").textContent="copied"; };
+$("#op_gen").onclick=()=>{
+  if(!OP||!OP.rows.length) return;
+  const best=OP.rows[0];
+  const q=new URLSearchParams({strategy:OP.strategy, contract:OP.contract,
+    timeframe:String(OP.timeframe), start:OP.start||"", end:OP.end||"",
+    trades:String(best.trades),
+    days:String(best.days), pnl:String(best.pnl),
+    t_daily:best.t_daily==null?"":String(best.t_daily),
+    trials:String(OP.trials_after), noise_t:String(OP.noise_t),
+    verdict:best.verdict, reason:best.reason,
+    slippage_ticks:String(OP.slippage_ticks)});
+  for(const [k,v] of Object.entries(best.params)) q.set("p_"+k, String(v));
+  $("#op_gen").disabled=true;
+  $("#op_gen_out").innerHTML = "<p class='hint'>Rendering and compiling…</p>";
+  fetch("/api/nt8gen?"+q).then(r=>r.json()).then(d=>{
+    $("#op_gen").disabled=false;
+    if(d.error){
+      $("#op_gen_out").innerHTML = `<div class="warn">${d.error}</div>`;
+      return;
+    }
+    const att = (d.attempts||[]).map(a=>
+      `<div>attempt ${a.attempt}: <b class="${a.ok?'g':(a.ok===null?'a':'r')}">`
+      + `${a.ok?"compiles":(a.ok===null?"not checked":"failed")}</b>`
+      + (a.errors&&a.errors.length ? `<ul>${a.errors.map(e=>`<li>${e}</li>`).join("")}</ul>` : "")
+      + `</div>`).join("");
+    // Two verdicts, never merged: the compiler proves one thing and one only.
+    $("#op_gen_out").innerHTML = `
+      <div class="${d.compiles?'':'warn'}">${att}
+        ${d.compiler?`<div class="hint">compiled with ${d.compiler}</div>`:""}
+        ${d.note?`<div class="hint">${d.note}</div>`:""}</div>
+      ${d.path?`<p class="hint">Written to <code>${d.path}</code> — copy it into
+        <code>Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\</code> and press F5.</p>`:""}
+      <div class="warn" style="margin-top:10px"><b>It compiles. That is all the
+        compiler can tell you.</b> Whether it behaves like the Python it came from
+        is a separate question:
+        <ul>${(d.notes||[]).map(n=>`<li>${n}</li>`).join("")}</ul></div>`;
+    $("#op_export").value = d.source || $("#op_export").value;
+  }).catch(()=>{ $("#op_gen").disabled=false;
+    $("#op_gen_out").innerHTML="<div class='warn'>Could not generate the file.</div>"; });
+};
 $("#op_score").onclick=()=>{
   // The winning parameter set becomes a normal backtest, which becomes a trade
   // source. The sweep never touches the prop-firm numbers itself.

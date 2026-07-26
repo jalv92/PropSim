@@ -21,9 +21,12 @@ a = Analysis(
         (os.path.join(ROOT, "prop_rules.json"), "."),
         (os.path.join(ROOT, "account_patterns.json"), "."),
         (os.path.join(ROOT, "dashboard.html"), "."),
+        # NinjaScript templates: without them the export tab has nothing to render
+        (os.path.join(ROOT, "nt8gen"), "nt8gen"),
     ],
     hiddenimports=["nttrades", "ntdata", "ncd_parse", "prop_rules", "sim",
-                   "tape", "engine"],
+                   "tape", "engine", "optimize", "plugins", "ledger", "ntimport",
+                   "slippage", "nt8gen"],
     hookspath=[],
     excludes=[
         # numpy is required; these are not, and each drags in tens of MB
