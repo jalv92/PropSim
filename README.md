@@ -12,7 +12,7 @@ Everything runs on your machine. There is no account, no upload, and no network
 call except an optional check for a newer rule file.
 
 ```
-Prop Firm   Verdict   Risk & Monte Carlo   Backtest   Imported   Trials   Data
+Prop Firm   Verdict   Risk & Monte Carlo   Backtest   Optimize   Imported   Trials   Data
 ```
 
 ---
@@ -108,7 +108,32 @@ you the *stress* value; run both.
 
 Then **Score this against a prop firm →** hands the trades to the Prop Firm tab.
 
-### 4. Imported — backtests of your own NinjaTrader strategies
+### 4. Optimize — sweep parameters, take the values to NinjaTrader
+
+Give any parameter a range (`from:to:step`) and PropSim runs every combination
+over your tick data — about 0.18 s each, so a 200-combination sweep takes half a
+minute. Results are ranked by the cluster-robust **daily** t-statistic and each
+row carries a verdict.
+
+The winner comes with a NinjaScript block to paste into your own strategy's
+`State.SetDefaults`, with the caveats inside the snippet: a parameter set copied
+out of a results table arrives stripped of every qualification unless the
+qualification travels with it.
+
+**Every combination is a trial, and the ledger is told so.** The winner is judged
+against the best t-statistic pure noise reaches over that many trials — the best
+of 200 null searches reaches 2.74 by chance. A sweep buys speed and spends
+credibility, and the tab shows the price before you press the button.
+
+**P(pass) is never the objective.** It is a bounded, highly non-linear transform of
+the edge, so an optimiser pointed at it finds lottery tickets rather than edge. The
+search ranks on expectancy; the prop-firm Monte Carlo runs afterwards, on a result.
+
+A configuration clears the bar at **t ≥ 1.5, ≥ 80 trades, and positive in at least
+2 of 3 sub-periods** — and then it has earned *one forward test*, not a funded
+account. Nothing on data you already own is validation.
+
+### 5. Imported — backtests of your own NinjaTrader strategies
 
 Runs captured by the add-on, each labelled with whether its fills can be believed:
 
@@ -120,7 +145,7 @@ Runs captured by the add-on, each labelled with whether its fills can be believe
 
 `score →` scores the run, carrying that label onto the results page.
 
-### 5. Trials — how many times you have looked
+### 6. Trials — how many times you have looked
 
 Every run is recorded in an append-only, hash-chained ledger **before** its
 result is drawn, and this tab shows the count next to your best t-statistic
@@ -131,7 +156,7 @@ best of one — after 40 searches, noise alone reaches t ≈ 2.2, and a 5% claim
 needs 3.2. Searching counts (backtests, imported runs, sweeps); scoring the same
 trade list again does not.
 
-### 6. Verdict — should you believe the numbers
+### 7. Verdict — should you believe the numbers
 
 Where each rule came from, when it was read, what is **unverified**, and which
 rules the simulator does not model at all.
@@ -217,7 +242,10 @@ python3 tape.py --selfcheck       # tick ordering, RTH filter, bar integrity
 python3 ledger.py --selfcheck     # hash chain, trial counting, noise baseline
 python3 ntimport.py --selfcheck   # add-on format round-trip, fidelity, dedup
 python3 slippage.py --selfcheck   # spread measurement and the session filter
+python3 optimize.py --selfcheck   # grid, sub-periods, the gate, the noise ceiling
+python3 optimize.py --contract "NQ 09-26" --strategy orb --range stop_ticks=20:60:10
 python3 nttrades.py --list        # your accounts and their detected firm
+python3 nttrades.py --strategies  # per NinjaScript strategy, from the database
 python3 ledger.py                 # your trial log
 ```
 
@@ -236,6 +264,7 @@ signal level while the engine filled at a later tick.
 | `engine.py` | the backtest engine and strategy library |
 | `slippage.py` | spread and tick-gap measurement |
 | `ntimport.py` | importing runs captured by the NinjaScript add-on |
+| `optimize.py` | parameter sweeps and the pre-registered gate |
 | `ledger.py` | the append-only trial ledger |
 | `dashboard.py/.html` | the local server and the whole UI |
 | `nt8/` | the NinjaScript add-on and its importable archive |

@@ -36,6 +36,7 @@ import nttrades
 import ntdata
 import ntimport
 import ledger
+import optimize
 import slippage
 import tape as tp
 import engine
@@ -143,6 +144,14 @@ def backtest_stream(q, write):
     # first glance -- which are exactly the runs that make the twentieth t-stat
     # meaningless.
     ledger.append("backtest", strategy=strategy, contract=contract,
+                  # Same inputs, same number: an identical re-run is one look, not
+                  # two. Without this, clicking Run twice on the same settings
+                  # raised the user's own noise ceiling for nothing.
+                  fp=ledger.fingerprint(kind="backtest", strategy=strategy,
+                                        contract=contract, tf=tf,
+                                        start=meta["start"], end=meta["end"],
+                                        params=meta["params"],
+                                        slip=slip, comm=comm),
                   timeframe=f"{tf}m", start=meta["start"], end=meta["end"],
                   params=meta["params"], trades=len(trades),
                   pnl=round(summary["pnl"], 2),
@@ -167,6 +176,55 @@ def backtest_stream(q, write):
                      pnl=round(t.pnl, 2), mae=round(t.mae, 2), reason=t.reason)
                 for t in trades[:200]],
         n_shown=min(len(trades), 200)))
+
+
+def optimize_stream(q, write):
+    """Sweep a parameter grid and rank it against the pre-registered gate."""
+    contract = q.get("contract", [""])[0]
+    strategy = q.get("strategy", ["orb"])[0]
+    tf = int(q.get("tf", ["5"])[0])
+    start = q.get("start", [""])[0] or None
+    end = q.get("end", [""])[0] or None
+    costs = engine.Costs(slippage_ticks=float(q.get("slippage", ["2"])[0]),
+                         commission=float(q.get("commission", ["5"])[0]))
+
+    ranges = {}
+    S = engine.LIBRARY[strategy]
+    for k in S.params:
+        spec = q.get("r_" + k, [""])[0]
+        if not spec.strip():
+            continue
+        _, vals = optimize.parse_range(f"{k}={spec.strip()}")
+        if vals:
+            ranges[k] = vals
+    if not ranges:
+        raise SystemExit("give at least one parameter a range to sweep")
+
+    write("meta", dict(strategy=strategy, contract=contract, timeframe=tf,
+                       combos=len(optimize.grid(ranges)),
+                       ranges={k: list(v) for k, v in ranges.items()}))
+
+    def prog(done, total, secs):
+        write("progress", dict(done=done, total=total, secs=round(secs, 1),
+                               pct=round(100 * done / max(total, 1), 1)))
+
+    res = optimize.sweep(contract, strategy, tf, start, end, ranges, costs,
+                         on_progress=prog)
+    best = res["rows"][0] if res["rows"] else None
+    res["export"] = optimize.ninjascript_block(res, best) if best else ""
+    # The bar can be structurally unreachable on this data -- a one-trade-a-day
+    # strategy over 28 sessions can never show 80 trades, no matter the
+    # parameters. Say that instead of letting every row read "below the bar" as
+    # if the parameters were the problem.
+    if best and all(r["trades"] < optimize.MIN_TRADES for r in res["rows"]):
+        res["unreachable"] = (
+            f"No configuration can clear the bar on this data: the best of them "
+            f"takes {max(r['trades'] for r in res['rows'])} trades and the gate "
+            f"needs {optimize.MIN_TRADES}. That is a sample-size problem, not a "
+            f"parameter problem — widen the date range or use a strategy that "
+            f"trades more often.")
+    res["rows"] = res["rows"][:200]
+    write("result", res)
 
 
 def run_stream(q, write):
@@ -455,6 +513,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._sse(parse_qs(u.query), prepare_stream)
         if u.path == "/api/backtest":
             return self._sse(parse_qs(u.query), backtest_stream)
+        if u.path == "/api/optimize":
+            return self._sse(parse_qs(u.query), optimize_stream)
         if u.path == "/api/startup":
             cfg = ntdata.load_config()
             q = parse_qs(u.query)

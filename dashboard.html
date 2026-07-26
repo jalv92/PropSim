@@ -119,6 +119,7 @@
     <div class="tab alt off" title="disabled on purpose — see the Verdict tab">Regimes</div>
     <div class="tab alt" data-p="mc">Risk &amp; Monte Carlo</div>
     <div class="tab alt" data-p="backtest">Backtest</div>
+    <div class="tab alt" data-p="optimize">Optimize</div>
     <div class="tab alt" data-p="imported">Imported</div>
     <div class="tab alt" data-p="trials">Trials</div>
     <div class="tab alt" data-p="data">Data</div>
@@ -255,6 +256,75 @@
             <button id="bt_score" class="primary">Score this against a prop firm →</button>
           </div>
           <div id="bt_trades" style="max-height:320px;overflow:auto"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pane-optimize" hidden>
+    <div class="panebody">
+      <p>Sweep parameter ranges over your own tick data, rank the results, and take
+      the winning values to NinjaTrader. A 200-combination sweep over 28 sessions
+      runs in about half a minute here.</p>
+
+      <div class="warn"><b>Every combination is a trial, and the ledger is told
+      so.</b> The winner is judged against the best t-statistic that <i>pure
+      noise</i> reaches over that many trials — the best of 200 null searches
+      reaches 2.74 by chance. A sweep therefore buys speed and spends credibility;
+      the wider the grid, the higher the bar its own winner has to clear.
+      P(pass) is never the objective here: the search ranks on the cluster-robust
+      daily t-statistic, and the prop-firm Monte Carlo runs afterwards, on a
+      result, never inside the search.</div>
+
+      <div class="row">
+        <label>Market data <select id="op_contract"></select>
+          <span class="hint" id="op_range">—</span></label>
+      </div>
+      <div class="row">
+        <label>Dates <input type="date" id="op_start"> <span class="hint">to</span>
+          <input type="date" id="op_end"></label>
+        <label>Strategy <select id="op_strategy"></select></label>
+        <label>Timeframe <select id="op_tf">
+          <option>1</option><option>3</option><option selected>5</option>
+          <option>15</option><option>30</option><option>60</option>
+        </select><span class="hint">minute bars</span></label>
+      </div>
+
+      <div id="op_params" class="params"></div>
+      <p class="hint" style="margin:-4px 0 12px">Each range is
+      <code>from:to:step</code>, or a comma-separated list. Leave a parameter blank
+      to hold it at its default.</p>
+
+      <div class="row">
+        <label>Slippage <input type="number" id="op_slip" value="2" step="0.5"
+               min="0" max="20" style="width:70px"><span class="hint">ticks each way</span></label>
+        <label>Commission <input type="number" id="op_comm" value="5" step="0.5"
+               min="0" style="width:70px"><span class="hint">$ per round trip</span></label>
+        <span class="hint" id="op_count"></span>
+      </div>
+
+      <button id="op_run" class="primary big">Run sweep</button>
+      <span id="op_status" class="hint"></span>
+
+      <div id="op_out" hidden>
+        <div id="op_head" style="margin-top:18px"></div>
+        <div class="sec">
+          <h3>Results</h3>
+          <div id="op_table" style="max-height:460px;overflow:auto"></div>
+        </div>
+        <div class="sec">
+          <div style="display:flex;justify-content:space-between;align-items:baseline">
+            <h3>Take it to NinjaTrader</h3>
+            <button id="op_score" class="primary">Score the winner against a prop firm →</button>
+          </div>
+          <p class="hint">Paste this into your NinjaScript <code>State.SetDefaults</code>
+          block. The caveats are inside the snippet on purpose — a parameter set
+          copied out of a results table arrives stripped of every qualification
+          unless the qualification travels with it.</p>
+          <textarea id="op_export" readonly style="width:100%;height:190px;
+            background:#0e0f12;color:#cfd3d8;border:1px solid var(--line);
+            border-radius:8px;padding:10px;font:12px ui-monospace,monospace"></textarea>
+          <button id="op_copy" class="mini">copy</button>
         </div>
       </div>
     </div>
@@ -825,6 +895,141 @@ function drawCurve(){
   x.fillText("trade "+e.length, w-R-24, h-6);
 }
 
+/* ---------- optimize tab ---------- */
+let OP=null;
+
+let opTries = 0;
+function opInit(){
+  // Both lists are fetched asynchronously by the Backtest tab, and the contract
+  // list lands AFTER the strategy list. Waiting on only one of them left this tab
+  // permanently showing "prepare a contract first" while a prepared contract sat
+  // right there.
+  if(!STRATS.length || !TAPE.length){
+    btInit();
+    if(opTries++ < 25) setTimeout(opInit, 400);
+    else $("#op_status").textContent = "Could not load the contract list.";
+    return;
+  }
+  opTries = 0;
+  if(!$("#op_strategy").options.length){
+    $("#op_strategy").innerHTML = STRATS.map(s=>
+      `<option value="${s.name}">${s.label}</option>`).join("");
+    opParams();
+  }
+  const ready = TAPE.filter(c=>c.ready).sort((a,b)=>a.contract.localeCompare(b.contract));
+  const keep = $("#op_contract").value;
+  $("#op_contract").innerHTML = ready.map(c=>
+    `<option value="${c.contract}">${c.contract}</option>`).join("")
+    || `<option value="">— prepare a contract on the Backtest tab first —</option>`;
+  if(keep && ready.some(c=>c.contract===keep)) $("#op_contract").value = keep;
+  opContract(); opCount();
+}
+
+function opContract(){
+  const c = TAPE.find(x=>x.contract===$("#op_contract").value);
+  if(!c) return;
+  $("#op_range").textContent = `${c.days} sessions, ${c.first} to ${c.last}`;
+  for(const id of ["#op_start","#op_end"]){ $(id).min=c.first; $(id).max=c.last; }
+  $("#op_start").value=c.first; $("#op_end").value=c.last;
+}
+
+function opParams(){
+  const s = STRATS.find(x=>x.name===$("#op_strategy").value);
+  if(!s) return;
+  // Pre-fill a modest grid around each default. Coarse on purpose: a fine grid
+  // over a wide range is how a sweep finds the one cell where noise lined up, and
+  // every cell it visits is charged to the ledger.
+  $("#op_params").innerHTML = s.params.map(p=>{
+    const flag = (p.hi - p.lo) <= 1;
+    const lo = Math.max(p.lo, p.default/2), hi = Math.min(p.hi, p.default*2 || p.hi);
+    const step = Math.max((hi-lo)/3, (p.default % 1) ? 0.1 : 1);
+    const val = flag ? "" : `${+lo.toFixed(2)}:${+hi.toFixed(2)}:${+step.toFixed(2)}`;
+    return `<label>${p.key.replace(/_/g," ")}
+      <input type="text" id="op_r_${p.key}" value="${val}"
+             placeholder="from:to:step" style="width:130px">
+      <span class="d">${p.desc}${flag?" — a flag, left fixed":""}</span></label>`;
+  }).join("");
+  opCount();
+}
+
+function opCount(){
+  const s = STRATS.find(x=>x.name===$("#op_strategy").value);
+  if(!s) return;
+  let n = 1, any=false;
+  for(const p of s.params){
+    const v = ($("#op_r_"+p.key)||{}).value || "";
+    if(!v.trim()) continue;
+    any = true;
+    let k;
+    if(v.includes(":")){
+      const [lo,hi,st] = v.split(":").map(Number);
+      k = (!st || st<=0) ? 1 : Math.max(Math.round((hi-lo)/st)+1, 1);
+    } else k = v.split(",").filter(x=>x.trim()).length;
+    n *= Math.max(k,1);
+  }
+  // Show the price of the sweep BEFORE it runs: the noise ceiling it will create.
+  const noise = n<=1 ? 0 : Math.sqrt(2*Math.log(n));   // rough, the server is exact
+  $("#op_count").innerHTML = !any ? "give at least one parameter a range"
+    : `<b>${n.toLocaleString()}</b> combinations ≈ ${(n*0.18).toFixed(0)}s — `
+      + `noise alone will reach t ≈ ${noise.toFixed(2)} over that many trials`;
+  $("#op_run").disabled = !any || !$("#op_contract").value;
+}
+
+function opRun(){
+  const s = STRATS.find(x=>x.name===$("#op_strategy").value);
+  const q = new URLSearchParams({contract:$("#op_contract").value,
+    strategy:s.name, tf:$("#op_tf").value,
+    start:$("#op_start").value, end:$("#op_end").value,
+    slippage:$("#op_slip").value, commission:$("#op_comm").value});
+  for(const p of s.params){
+    const v = ($("#op_r_"+p.key)||{}).value || "";
+    if(v.trim()) q.set("r_"+p.key, v.trim());
+  }
+  $("#op_run").disabled=true; $("#op_status").textContent="Starting…";
+  const es = new EventSource("/api/optimize?"+q);
+  es.addEventListener("meta", e=>{ const m=JSON.parse(e.data);
+    $("#op_status").textContent = `${m.combos} combinations…`; });
+  es.addEventListener("progress", e=>{ const p=JSON.parse(e.data);
+    $("#op_status").textContent = `${p.done}/${p.total} combinations (${p.secs}s)`; });
+  es.addEventListener("result", e=>{
+    OP=JSON.parse(e.data); opRender();
+    $("#op_run").disabled=false; $("#op_status").textContent=""; es.close(); });
+  es.addEventListener("error", e=>{ let m="the sweep failed";
+    try{ m=JSON.parse(e.data).message; }catch(_){}
+    $("#op_status").textContent=m; $("#op_run").disabled=false; es.close(); });
+}
+
+function opRender(){
+  $("#op_out").hidden=false;
+  const keys = Object.keys(OP.ranges);
+  const cls = v => v==="earns a forward test" ? "g"
+                 : (v==="indistinguishable from noise" ? "a" : "");
+  $("#op_head").innerHTML = `
+    <div class="meta"><b>${OP.label}</b> · ${OP.contract} ·
+      <b>${OP.timeframe}-minute bars</b> · ${OP.combos} combinations in
+      ${OP.elapsed}s · slippage ${OP.slippage_ticks} ticks/side</div>
+    <div class="warn" style="margin-top:10px">Your ledger went from
+      <b>${OP.trials_before}</b> to <b>${OP.trials_after}</b> trials. The best of
+      ${OP.trials_after} null trials reaches <b>t = ${OP.noise_t}</b> by chance, and
+      a 5% claim now needs <b>${OP.threshold_t}</b>. Any row below
+      ${OP.noise_t} is not a finding.</div>
+    ${OP.unreachable ? `<div class="warn bad" style="margin-top:10px"><b>⚠ </b>${OP.unreachable}</div>` : ""}`;
+  const rows = OP.rows.map(r=>{
+    const vals = keys.map(k=>`<td>${r.params[k]}</td>`).join("");
+    const t = r.t_daily==null ? "—" : r.t_daily.toFixed(2);
+    return `<tr>${vals}<td>${r.trades}</td>
+      <td class="${r.pnl>=0?'g':'r'}">${fmt$(r.pnl)}</td>
+      <td>${fmt$(r.mean)}</td><td>${t}</td>
+      <td>${r.positive_subperiods}/3</td>
+      <td class="${cls(r.verdict)}">${r.verdict}</td></tr>`;
+  }).join("");
+  $("#op_table").innerHTML =
+    `<table class="tr"><tr>${keys.map(k=>`<th>${k.replace(/_/g," ")}</th>`).join("")}
+     <th>trades</th><th>P&L</th><th>avg</th><th>t (daily)</th><th>sub+</th>
+     <th>verdict</th></tr>${rows}</table>`;
+  $("#op_export").value = OP.export || "";
+}
+
 /* ---------- imported runs (the NinjaTrader add-on) ---------- */
 let IMPORTS=[];
 
@@ -1092,14 +1297,36 @@ $("#scrub").oninput=e=>drawPaths(+e.target.value);
 document.querySelectorAll(".tab[data-p]").forEach(t=>t.onclick=()=>{
   document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
   t.classList.add("on");
-  for(const p of ["prop","verdict","mc","data","backtest","imported","trials"])
+  for(const p of ["prop","verdict","mc","data","backtest","optimize","imported","trials"])
     $("#pane-"+p).hidden = (p!==t.dataset.p);
   if(t.dataset.p==="data") loadData();
   if(t.dataset.p==="backtest") btInit();
+  if(t.dataset.p==="optimize") opInit();
   if(t.dataset.p==="imported") loadImports();
   if(t.dataset.p==="trials") loadTrials();
 });
 $("#im_refresh").onclick=loadImports;
+$("#op_contract").onchange=()=>{opContract();opCount();};
+$("#op_strategy").onchange=opParams;
+$("#op_params").oninput=opCount;
+$("#op_run").onclick=opRun;
+$("#op_copy").onclick=()=>{ $("#op_export").select();
+  document.execCommand("copy"); $("#op_copy").textContent="copied"; };
+$("#op_score").onclick=()=>{
+  // The winning parameter set becomes a normal backtest, which becomes a trade
+  // source. The sweep never touches the prop-firm numbers itself.
+  if(!OP||!OP.rows.length) return;
+  const best=OP.rows[0];
+  document.querySelector('.tab[data-p="backtest"]').click();
+  $("#bt_contract").value=OP.contract; btContract();
+  $("#bt_strategy").value=OP.strategy; btParams();
+  $("#bt_tf").value=String(OP.timeframe);
+  for(const [k,v] of Object.entries(best.params)){
+    const el=$("#bt_p_"+k); if(el) el.value=v;
+  }
+  $("#bt_slip").value=OP.slippage_ticks; $("#bt_comm").value=OP.commission;
+  $("#bt_run").click();
+};
 $("#bt_measure").onclick=()=>{
   const c=$("#bt_contract").value;
   $("#bt_measure").disabled=true;

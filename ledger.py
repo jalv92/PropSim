@@ -120,15 +120,48 @@ def threshold_t(n: int, alpha: float = 0.05) -> float:
     return NormalDist().inv_cdf(1.0 - alpha / (2.0 * n))
 
 
+def fingerprint(**inputs) -> str:
+    """Identity of a run's INPUTS, so an identical re-run is not a new look.
+
+    "Any evaluation whose result influences a subsequent modelling choice" is a
+    trial. Running the same strategy, on the same data, with the same parameters
+    and the same costs a second time influences nothing -- it produces the
+    identical number. Counting it again inflates the multiplicity debt and makes
+    the noise ceiling unfairly harsh, which is just as dishonest as the
+    undercounting this ledger exists to prevent.
+    """
+    clean = {k: v for k, v in inputs.items() if v is not None}
+    return hashlib.sha256(
+        json.dumps(clean, sort_keys=True, default=str).encode()).hexdigest()[:12]
+
+
 def stats(path: Path | None = None) -> dict:
     rows = [r for r in read(path) if r.get("kind")]
     search = [r for r in rows if r["kind"] in SEARCH_KINDS]
+    # Distinct looks: identical re-runs collapse, everything without a
+    # fingerprint counts on its own.
+    seen, dedup = set(), []
+    for r in search:
+        fp = r.get("fp")
+        if fp and fp in seen:
+            continue
+        if fp:
+            seen.add(fp)
+        dedup.append(r)
+    repeats = len(search) - len(dedup)
+    search = dedup
     ts = [float(r["t_daily"]) for r in search
           if isinstance(r.get("t_daily"), (int, float))
           and not math.isnan(float(r["t_daily"]))]
-    n = len(search)
+    # A sweep is not one look. "A parameter change is a trial" -- so a record may
+    # declare how many it stands for, and the multiplicity arithmetic uses that.
+    # A 200-combination sweep raises the noise bar for every result that follows
+    # it, permanently, and that is the honest accounting.
+    n = sum(int(r.get("n_trials") or 1) for r in search)
     return dict(
-        trials=n, scores=len(rows) - n, total=len(rows),
+        trials=n, repeats=repeats,
+        scores=sum(1 for r in rows if r["kind"] not in SEARCH_KINDS),
+        total=len(rows),
         best_t=max(ts, default=None), tested=len(ts),
         expected_max_t=round(expected_max_t(n), 2) if n else 0.0,
         threshold_t=round(threshold_t(n), 2) if n else 0.0,
@@ -156,6 +189,18 @@ def selfcheck():
     # A scoring run must not inflate the multiplicity correction.
     assert s["trials"] == 2 and s["scores"] == 1, s
     assert s["best_t"] == 2.4, s
+
+    # An identical re-run is the same look, not a new one.
+    fp = fingerprint(strategy="orb", contract="NQ", params={"a": 1})
+    append("backtest", path=p, fp=fp, strategy="orb", t_daily=3.0)
+    append("backtest", path=p, fp=fp, strategy="orb", t_daily=3.0)
+    s2 = stats(p)
+    assert s2["trials"] == 3, s2          # 2 + one new fingerprint, not two
+    assert s2["repeats"] == 1, s2
+    # ...but a different parameter set is a different look
+    append("backtest", path=p, fp=fingerprint(strategy="orb", contract="NQ",
+                                              params={"a": 2}), t_daily=1.0)
+    assert stats(p)["trials"] == 4, stats(p)
 
     # Tampering has to be detectable, or "append-only" is decoration.
     lines = p.read_text().splitlines()
