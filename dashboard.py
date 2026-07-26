@@ -201,6 +201,8 @@ def run_stream(q, write):
         pool=(None if not pool else dict(
             n_trades=pool["n_trades"], n_days=pool["n_days"],
             have_mae=pool["have_mae"], mean=round(pool["mean"], 2),
+            distinct_days=pool.get("distinct_days"),
+            trades_per_day=round(pool.get("trades_per_day", 0), 1),
             source=src or pool["source"])),
     ))
 

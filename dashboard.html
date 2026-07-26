@@ -46,6 +46,11 @@
   .meta{color:var(--dim);font-size:12px;margin:5px 0 9px}
   .meta b{color:var(--txt);font-weight:600}
   canvas{display:block;width:100%}
+  /* explicit heights: a canvas with width:100% and only a height ATTRIBUTE is
+     stretched by its 300x150 intrinsic ratio until the first paint sets a
+     style height. Pinning them here removes that flash entirely. */
+  #donut{height:330px} #spaghetti{height:430px} #hist{height:190px}
+  #bt_curve{height:240px}
   input[type=range]{width:100%;accent-color:#9aa0a6}
   .foot{color:var(--dimmer);font-size:11px;margin-top:14px;
         border-top:1px solid var(--line);padding-top:10px;white-space:pre-line}
@@ -267,11 +272,28 @@ let CFG=null, RES=null, META=null, ES=null, ACCOUNTS=[], PHASE="challenge", V=nu
 
 /* ---------- crisp canvas ---------- */
 function ctxOf(c){
-  const r = window.devicePixelRatio||1, w = c.clientWidth, h = c.height;
-  if(c.width !== w*r || c._h !== h*r){ c.width = w*r; c._h = h*r; c.style.height = h+"px";
-    c.height = h*r; }
-  const x = c.getContext("2d"); x.setTransform(r,0,0,r,0,0);
-  x.clearRect(0,0,w,h); return [x,w,h];
+  const r = window.devicePixelRatio || 1;
+  // The intended CSS height, captured ONCE from the markup.
+  //
+  // The previous version read h = c.height -- the backing store, already
+  // multiplied by the device pixel ratio -- and then wrote c.height = h*r.
+  // That multiplies the canvas by r on EVERY repaint. At dpr 1 it is a no-op,
+  // which is why it survived testing; at dpr 1.5 (Windows display scaling at
+  // 150%) the donut, which repaints on every SSE progress event, went from
+  // 330px to 730,521px in a single run and took the page to 488,200px tall.
+  // A second run reached 1.6 BILLION pixels.
+  //
+  // Fix: always derive the backing store from the fixed CSS height, never from
+  // the current backing store.
+  if(!c.dataset.cssh) c.dataset.cssh = c.getAttribute("height") || String(c.height);
+  const H = +c.dataset.cssh, W = c.clientWidth;
+  const bw = Math.round(W * r), bh = Math.round(H * r);
+  if(c.width !== bw || c.height !== bh){ c.width = bw; c.height = bh; }
+  if(c.style.height !== H + "px") c.style.height = H + "px";
+  const x = c.getContext("2d");
+  x.setTransform(r, 0, 0, r, 0, 0);
+  x.clearRect(0, 0, W, H);
+  return [x, W, H];
 }
 
 /* ---------- pickers ---------- */
@@ -385,8 +407,11 @@ function drawPaths(upto){
   x.lineWidth=1;
   for(let k=0;k<P.length;k++){
     const oc=V.outcome[k];
-    x.strokeStyle = oc===1 ? "rgba(52,211,153,.34)"
-                  : oc===2 ? "rgba(242,99,95,.30)" : "rgba(240,180,41,.30)";
+    // Low alpha on purpose: with a coarse pool many paths land on identical
+    // trajectories, and heavy strokes turn that into a moire pattern that reads
+    // as a rendering bug. Faint lines let the overlap show as density instead.
+    x.strokeStyle = oc===1 ? "rgba(52,211,153,.13)"
+                  : oc===2 ? "rgba(242,99,95,.11)" : "rgba(240,180,41,.12)";
     x.beginPath(); let started=false;
     for(let i=0;i<=n;i++){ const v=P[k][i]; if(v==null){ break; }
       const px=X(i), py=Y(v);
@@ -445,9 +470,23 @@ function run(){
   RES=null;
   ES=new EventSource("/api/run?"+q);
   ES.addEventListener("meta", ev=>{ META=JSON.parse(ev.data);
+    // Drop the warnings the PREVIOUS run added. Account-level warnings are
+    // rebuilt by showWarnings(); these are run-level and were stacking up one
+    // copy per run until the panel was a wall of duplicates.
+    document.querySelectorAll("#warns .run-warn").forEach(el=>el.remove());
+    if(META.pool && META.pool.distinct_days != null && META.pool.distinct_days < 10){
+      $("#warns").insertAdjacentHTML("beforeend",
+        `<div class="warn run-warn"><b>The equity paths below will look like a repeating
+         pattern, and that is the data, not a drawing error.</b> This strategy
+         produced only <b>${META.pool.distinct_days} distinct daily outcomes</b>
+         (${META.pool.trades_per_day} trade(s) per day), so resampling them
+         1,000 times reuses the same few days over and over. The pass rate is
+         still computed correctly, but treat the spread of paths as a rough
+         range, not as 1,000 independent futures.</div>`);
+    }
     if(META.pool && META.pool.n_days < 20){
       $("#warns").insertAdjacentHTML("beforeend",
-        `<div class="warn">Only <b>${META.pool.n_days} trading day(s)</b> of real
+        `<div class="warn run-warn">Only <b>${META.pool.n_days} trading day(s)</b> of real
          trades in this account. The bootstrap resamples whole days, so with this
          few blocks the equity paths are coarse and the pass rate carries wide
          uncertainty — treat it as indicative, not as a measurement.</div>`);

@@ -207,8 +207,18 @@ def to_pool(trades: list[Trade], friction: float = 0.0) -> dict:
             pnl[i, j] = t.pnl - friction
             mae[i, j] = t.mae - friction
             mask[i, j] = True
+    # How many DISTINCT daily totals the bootstrap can draw from. This, not the
+    # number of days, is what decides whether the simulated equity paths look
+    # like a spread of futures or a lattice: a strategy taking one trade a day
+    # with three possible outcomes gives four distinct days no matter how many
+    # weeks it ran, and 1,000 resampled paths then collapse onto a handful of
+    # trajectories. The chart is honest; without this number it reads as broken.
+    daily = (pnl * mask).sum(axis=1)
+    distinct = int(len(np.unique(np.round(daily, 2))))
     return dict(pnl=pnl, mae=mae, mask=mask, n_days=len(days), width=width,
                 n_trades=int(mask.sum()), have_mae=True,
+                distinct_days=distinct,
+                trades_per_day=float(mask.sum(axis=1).mean()),
                 mean=float(pnl[mask].mean()), source="NinjaTrader.sqlite")
 
 
