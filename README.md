@@ -12,7 +12,7 @@ Everything runs on your machine. There is no account, no upload, and no network
 call except an optional check for a newer rule file.
 
 ```
-Prop Firm   Verdict   Risk & Monte Carlo   Backtest   Optimize   Imported   Trials   Data
+Prop Firm   Verdict   Risk & Monte Carlo   Backtest   Optimize   AI author   Imported   Trials   Data
 ```
 
 ---
@@ -24,6 +24,8 @@ Prop Firm   Verdict   Risk & Monte Carlo   Backtest   Optimize   Imported   Tria
 - Windows (for the NinjaTrader data; the Python side also runs on Linux/WSL)
 - **Python 3.9+** and **numpy** — that is the whole dependency list
 - NinjaTrader 8 with tick data and/or trade history
+- Optional, for the **AI author** tab only: `pip install anthropic` and your own
+  Anthropic API key. Every other tab works without it.
 
 ### Run from source
 
@@ -188,7 +190,64 @@ The last step closes the loop: run the generated strategy in the Strategy Analyz
 with the PropSim fitness, import it on the **Imported** tab, and compare the two
 trade lists. That is what turns "it compiles" into "it behaves the same".
 
-### 7. Imported — backtests of your own NinjaTrader strategies
+### 7. AI author — have Claude write the strategy, and prove it is causal
+
+**Optional, and it runs on your own Anthropic API key.** Describe a strategy in
+English and Claude writes the PropSim file; or pick a strategy with no NinjaScript
+template and have it ported to C#.
+
+```bash
+pip install anthropic                  # optional: only this tab needs it
+echo "sk-ant-..." > ~/.prop-sim/anthropic-api-key.txt
+
+python3 aiauthor.py --status
+python3 aiauthor.py --write "when a bar closes above the previous 20 bars' high,
+   enter long on the next bar; stop 40 ticks below, target 2R" --name breakout --install
+python3 aiauthor.py --translate fvg    # port a strategy to NinjaScript
+```
+
+The key is read from `ANTHROPIC_API_KEY`, then `~/.prop-sim/anthropic-api-key.txt`,
+then `anthropic_api_key` in `~/.prop-sim/config.json` — all outside the repository.
+It is never written into a generated file, the ledger, or an API response, and every
+message that can reach the screen is scrubbed of anything key-shaped first, because
+an SDK-level HTTP error can quote the request it failed on. Set `anthropic_model` in
+the same config file to use a different model; the default is `claude-opus-5`.
+
+**A model writing a strategy is not an edge, and nothing here pretends otherwise.**
+What it writes goes through the plugin validation above, and then one more check:
+
+**The lookahead probe.** The tape is re-run with prices *after* a real trade shifted
+by 100 ticks, and every trade decided before that moment must come out identical —
+same existence, direction, stop and target. A causal strategy cannot notice. One that
+reads its own entry bar's high, or takes a mean over the whole array, changes its
+mind, and the rejection names the trade that changed:
+
+> the target of 1 of 1 trades changed when only prices AFTER tick 357549 were
+> changed — e.g. the trade entering at tick 357549: target 23470.75 became
+> 23495.75. entries() is reading data from at or after the entry it is deciding.
+
+That message goes straight back to the model, which gets three attempts in total.
+The cut is placed one tick *after* a real entry on purpose: an earlier version cut at
+fixed fractions of the tape and cleared a strategy that reads its own entry bar's
+high, because no trade happened to land on the straddling bar.
+
+For the port to NinjaScript, the model's C# goes through the same `nt8c` compiler as
+a template does, and Roslyn's own errors are handed back for another attempt. A file
+that will not compile never reaches you — and the same two-verdict rule applies: it
+compiles, which is all the compiler can tell you.
+
+**Generation is free; evaluation is charged.** Writing a strategy costs nothing
+against the trial ledger, and this tab deliberately does **not** report the
+validation run's P&L or t-statistic. Reporting them would make generation a free
+search over your data, which is the exact thing the ledger exists to count. You get
+"it runs, it takes N trades". The number that means something comes from the Backtest
+and Optimize tabs, which charge.
+
+The request, the model, what the validation did and what it did **not** prove are all
+written into the top of the generated `.py` file, for the same reason the `.cs`
+carries its caveats: the file outlives the conversation that produced it.
+
+### 8. Imported — backtests of your own NinjaTrader strategies
 
 Runs captured by the add-on, each labelled with whether its fills can be believed:
 
@@ -200,7 +259,7 @@ Runs captured by the add-on, each labelled with whether its fills can be believe
 
 `score →` scores the run, carrying that label onto the results page.
 
-### 8. Trials — how many times you have looked
+### 9. Trials — how many times you have looked
 
 Every run is recorded in an append-only, hash-chained ledger **before** its
 result is drawn, and this tab shows the count next to your best t-statistic
@@ -211,7 +270,7 @@ best of one — after 40 searches, noise alone reaches t ≈ 2.2, and a 5% claim
 needs 3.2. Searching counts (backtests, imported runs, sweeps); scoring the same
 trade list again does not.
 
-### 9. Verdict — should you believe the numbers
+### 10. Verdict — should you believe the numbers
 
 Where each rule came from, when it was read, what is **unverified**, and which
 rules the simulator does not model at all.

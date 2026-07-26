@@ -26,7 +26,12 @@ a = Analysis(
     ],
     hiddenimports=["nttrades", "ntdata", "ncd_parse", "prop_rules", "sim",
                    "tape", "engine", "optimize", "plugins", "ledger", "ntimport",
-                   "slippage", "nt8gen"],
+                   "slippage", "nt8gen", "aiauthor",
+                   # The AI author's SDK. Bundled so the tab works in the packaged
+                   # build; aiauthor imports it lazily, so a build without it
+                   # (PyInstaller simply omits a missing module) loses that tab and
+                   # nothing else.
+                   "anthropic"],
     hookspath=[],
     excludes=[
         # numpy is required; these are not, and each drags in tens of MB

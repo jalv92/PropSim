@@ -222,14 +222,24 @@ def fidelity_notes(strategy: str) -> list[str]:
 
 
 def generate(strategy: str, params: dict, meta: dict | None = None,
-             fixer=None, max_attempts=MAX_ATTEMPTS, on_attempt=None) -> dict:
+             fixer=None, max_attempts=MAX_ATTEMPTS, on_attempt=None,
+             source: str | None = None, class_name: str | None = None) -> dict:
     """Render, compile, and retry with `fixer` while the compiler complains.
 
     `fixer(src, errors, attempt) -> new_src` is where a model plugs in. Without
     one, a failing template is reported rather than silently shipped -- and a
     failing template is a bug in this file, not in the user's parameters.
+
+    `source` skips the template: a strategy with no template has to be TRANSLATED
+    rather than filled in, and `aiauthor.translate` hands the model's C# in here so
+    it goes through the same compiler, the same retries and the same two-label
+    verdict as a template does. Whoever wrote the file, it only leaves this function
+    with a compile result attached.
     """
-    src, cls = render(strategy, params, meta)
+    if source is None:
+        src, cls = render(strategy, params, meta)
+    else:
+        src, cls = source, (class_name or f"PropSim{strategy.title().replace('_', '')}")
     attempts = []
     for i in range(1, max_attempts + 1):
         res = compile_check(src, cls)

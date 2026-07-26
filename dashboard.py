@@ -37,6 +37,7 @@ import ntdata
 import ntimport
 import ledger
 import nt8gen
+import aiauthor
 import optimize
 import plugins
 import slippage
@@ -186,6 +187,89 @@ def _reload_plugins():
     global PLUGIN_REPORT
     PLUGIN_REPORT = plugins.register_all()
     return PLUGIN_REPORT
+
+
+def ai_write_stream(q, write):
+    """Have Claude write a strategy, streaming each attempt's verdict.
+
+    Streamed rather than a plain GET because each attempt is a model call plus a run
+    over real ticks: a minute is normal, three attempts is not unusual, and a spinner
+    that says nothing for that long is indistinguishable from a hang.
+
+    Nothing here is charged to the trial ledger -- and no P&L is sent to the browser.
+    See aiauthor's module docstring: reporting the smoke test's numbers would turn
+    generation into a free search over the user's data.
+    """
+    description = q.get("description", [""])[0]
+    name = (q.get("name", [""])[0] or "").strip() or None
+    contract = (q.get("contract", [""])[0] or "").strip() or None
+    tf = int(q.get("tf", ["5"])[0])
+    write("meta", dict(model=aiauthor.model_name(),
+                       max_attempts=aiauthor.MAX_ATTEMPTS,
+                       key_source=aiauthor.key_source()))
+
+    def on_attempt(a):
+        write("attempt", dict(attempt=a["attempt"], ok=a["ok"], name=a.get("name"),
+                              problems=aiauthor.redact(a.get("problems") or ""),
+                              tokens=a["usage"]))
+
+    res = aiauthor.write_strategy(description, name, contract=contract, timeframe=tf,
+                                  on_attempt=on_attempt)
+    installed = None
+    if res["ok"] and q.get("install"):
+        installed = str(aiauthor.install(res, overwrite=bool(q.get("overwrite"))))
+        _reload_plugins()
+    write("result", dict(
+        ok=res["ok"], source=res["source"], header=res["header"],
+        info=res["info"], tokens=res["tokens"], model=res["model"],
+        problems=aiauthor.redact(res["problems"] or ""),
+        attempts=len(res["attempts"]), installed=installed,
+        dir=str(plugins.USER_DIR)))
+
+
+def ai_translate_stream(q, write):
+    """Port a strategy to NinjaScript, streaming each compile attempt."""
+    strategy = (q.get("strategy", [""])[0] or "").strip()
+    params = {}
+    for k, v in q.items():
+        if k.startswith("p_") and v and v[0] != "":
+            try:
+                params[k[2:]] = float(v[0])
+            except ValueError:
+                pass
+    if not params:
+        S = engine.LIBRARY.get(strategy)
+        if S is None:
+            raise SystemExit(f"no strategy called {strategy!r}")
+        params = {k: p.default for k, p in S.params.items()}
+    meta = {k: (q.get(k, [""])[0] or None) for k in ("contract", "start", "end",
+                                                     "timeframe", "verdict", "reason")}
+    for k in ("trades", "days", "trials", "slippage_ticks"):
+        try:
+            meta[k] = int(float(q.get(k, [""])[0]))
+        except (TypeError, ValueError):
+            meta[k] = None
+    for k in ("pnl", "t_daily", "noise_t"):
+        try:
+            meta[k] = float(q.get(k, [""])[0])
+        except (TypeError, ValueError):
+            meta[k] = None
+
+    write("meta", dict(model=aiauthor.model_name(), strategy=strategy, params=params,
+                       max_attempts=aiauthor.MAX_ATTEMPTS))
+
+    def on_attempt(a):
+        write("attempt", dict(attempt=a["attempt"], ok=a["ok"],
+                              errors=[aiauthor.redact(e) for e in a.get("errors") or []],
+                              warnings=a.get("warnings", 0)))
+
+    res = aiauthor.translate(strategy, params, meta=meta, on_attempt=on_attempt)
+    path = nt8gen.write_out(res) if res["compiles"] is not False else None
+    write("result", dict(compiles=res["compiles"], source=res["source"],
+                         class_name=res["class_name"], notes=res["notes"],
+                         attempts=res["attempts"], tokens=res["tokens"],
+                         model=res["model"], note=res.get("note"),
+                         path=str(path) if path else None, dir=str(nt8gen.OUT_DIR)))
 
 
 def optimize_stream(q, write):
@@ -548,6 +632,18 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/nt8gen/templates":
             return self._send(200, json.dumps(
                 dict(available=nt8gen.available())).encode(), "application/json")
+        if u.path == "/api/ai":
+            # Whether the feature is usable, and never the key itself: this response
+            # is the one thing on this server a screenshot is likely to include.
+            try:
+                body = aiauthor.status()
+            except Exception as exc:
+                body = dict(error=aiauthor.redact(f"{type(exc).__name__}: {exc}"))
+            return self._send(200, json.dumps(body).encode(), "application/json")
+        if u.path == "/api/ai/write":
+            return self._sse(parse_qs(u.query), ai_write_stream)
+        if u.path == "/api/ai/translate":
+            return self._sse(parse_qs(u.query), ai_translate_stream)
         if u.path == "/api/slippage":
             q = parse_qs(u.query)
             c = (q.get("contract", [""])[0] or "").strip()
@@ -628,16 +724,21 @@ class Handler(BaseHTTPRequestHandler):
             (runner or run_stream)(q, write)
         except ClientGone:
             return
-        except SystemExit as exc:
-            # engine/tape raise SystemExit for conditions the USER must see
+        except (SystemExit, aiauthor.AuthorError) as exc:
+            # engine/tape raise SystemExit, aiauthor raises AuthorError, for conditions
+            # the USER must see. Both are already prose; neither needs a class name.
             try:
-                write("error", dict(message=str(exc) or "the run could not start"))
+                write("error", dict(message=aiauthor.redact(exc) or
+                                    "the run could not start"))
             except Exception:
                 pass
         except Exception as exc:
             traceback.print_exc()
             try:
-                write("error", dict(message=f"{type(exc).__name__}: {exc}"))
+                # Redacted because an SDK-level HTTP error can quote the request it
+                # failed on, and this string is rendered into a browser.
+                write("error", dict(
+                    message=aiauthor.redact(f"{type(exc).__name__}: {exc}")))
             except Exception:
                 pass
 

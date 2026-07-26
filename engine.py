@@ -632,10 +632,16 @@ def selfcheck():
     b = summarise(*backtest(c, "orb", 5, costs=Costs(slippage_ticks=5)))
     assert b["pnl"] < a["pnl"], f"slippage did not hurt: {a['pnl']} -> {b['pnl']}"
 
-    # 4. A date range must actually restrict the data.
+    # 4. A date range must actually restrict the data. The cut is derived from what
+    #    this contract actually holds: a hardcoded date silently stopped restricting
+    #    anything the day a contract whose tape ends earlier became `contracts[0]`,
+    #    and the test failed for the data rather than for the code.
+    lo, hi, _ = tp.available_range(c)
+    cut = tp.date_str(np.unique(tp.day_index(tp.load_cache(c)["ts"]))[-2])
     full = summarise(*backtest(c, "orb", 5))
-    half = summarise(*backtest(c, "orb", 5, start=None, end="2026-06-30"))
-    assert half["days"] < full["days"], "date range had no effect"
+    half = summarise(*backtest(c, "orb", 5, start=None, end=cut))
+    assert half["days"] < full["days"], (
+        f"date range had no effect: {c} spans {lo}..{hi}, cut at {cut}")
 
     # 5. Every trade must resolve to a real exit reason.
     tr, _ = backtest(c, "orb", 5)

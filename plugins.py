@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import re
 import subprocess
 import sys
 import textwrap
@@ -189,6 +190,14 @@ def load_source(src: str, filename="<plugin>") -> type:
     for attr in ("name", "label"):
         if not isinstance(getattr(S, attr, None), str) or not getattr(S, attr):
             raise Rejected(f"the class needs a {attr} string")
+    # `name` becomes a filename, a URL parameter and a ledger key. Constraining it
+    # here means nothing downstream has to sanitise it -- and the AI author writes
+    # the file at `<name>.py`, so a name of "../../x" would otherwise escape the
+    # folder entirely.
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", S.name):
+        raise Rejected(f"name {S.name!r} must be lowercase snake_case, up to 40 "
+                       f"characters, starting with a letter — it is used as a "
+                       f"filename and a ledger key")
     if not isinstance(getattr(S, "params", None), dict):
         raise Rejected("params must be a dict of name -> Param")
     for k, v in S.params.items():
@@ -198,6 +207,9 @@ def load_source(src: str, filename="<plugin>") -> type:
             raise Rejected(f"params[{k!r}]: default {v.default} outside [{v.lo}, {v.hi}]")
     if "entries" not in vars(S):
         raise Rejected("the class must define entries(self, bars, tape, p)")
+    # A plugin class has no file to `inspect.getsource`, so keep the text on it.
+    # The NinjaScript translator has to SHOW a model the Python it is translating.
+    S._source = src
     return S
 
 
@@ -476,6 +488,12 @@ def selfcheck():
         # np.load with a pickle is arbitrary code execution wearing a friendly name
         "class A(Strategy):\n name=label='a'\n params={}\n def entries(s,b,t,p):\n  return np.load('/tmp/x.npy', allow_pickle=True)":
             "filesystem",
+        # `name` becomes a filename. The AI author writes `<name>.py`, so a name that
+        # walks out of the folder has to be refused at the contract, not downstream.
+        "class A(Strategy):\n name='../../evil'\n label='e'\n params={}\n def entries(s,b,t,p): pass":
+            "snake_case",
+        "class A(Strategy):\n name='Has Spaces'\n label='e'\n params={}\n def entries(s,b,t,p): pass":
+            "snake_case",
     }
     for src, expect in cases.items():
         try:

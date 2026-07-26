@@ -174,6 +174,63 @@ real edge.
 
 ---
 
+## AI author
+
+**Where it comes from:** the Anthropic Messages API, called with **your** key, by
+`aiauthor.py`. It is the only tab that makes a network request to anything other
+than the rule-file repo, and it makes none unless you press a button.
+
+The key is read from `ANTHROPIC_API_KEY`, then `~/.prop-sim/anthropic-api-key.txt`,
+then `anthropic_api_key` in `~/.prop-sim/config.json` — all outside the repository.
+`/api/ai` reports *whether* a key was found and *where from*, never its value, and
+every message that can reach the screen passes through `redact()` first, because an
+SDK-level HTTP error can quote the request it failed on. `pip install anthropic` is
+required for this tab and nothing else; without it the tab says so and the rest of
+the program is unaffected.
+
+**Write a strategy.** The system prompt embeds `plugins.TEMPLATE` verbatim — the
+same file `plugins.py --install-template` writes — rather than paraphrasing it, so
+there is one contract and not two that drift. What comes back goes through the
+plugin validation (allowlist → subprocess load → in-process load → smoke test →
+output contract) and then the lookahead probe. Three attempts; the validator's own
+message is handed back between them, unedited.
+
+**The lookahead probe** (`aiauthor.lookahead_probe`) is the check that is specific
+to generated code. It re-runs `entries()` on a tape whose prices *after* a chosen
+tick are shifted 100 ticks and whose aggressor side is flipped, then requires every
+trade decided at or before that tick to come out identical — same existence, same
+direction, same stop, same target. Bar boundaries come from timestamps only, so the
+comparison is exact rather than approximate.
+
+The cut is placed **one tick after a real entry**, at up to six entries spread
+across the trade list. That detail is the whole test: an earlier version cut at
+fixed fractions of the tape and *cleared* a strategy that reads its own entry bar's
+high, because no trade happened to land on the straddling bar. Cutting at the trades
+themselves makes the detection deterministic for every sampled trade, and the
+rejection names the trade and both values.
+
+It probes the last 15 sessions by default (widening once if that tail is too quiet),
+because causality does not need six months of ticks to show itself and the probe
+re-runs the strategy once per cut. What it cannot see: a peek that affects only
+unsampled trades, and anything at all about profitability.
+
+**Port to NinjaScript.** For strategies with no hand-written template. The model is
+shown the Python source (kept on the class as `_source` at load time, since a plugin
+class has no file to `inspect.getsource`), the parameter values and the provenance
+header, then its C# goes through `nt8gen.generate(source=…)` — the same Roslyn
+compiler, the same bounded retry, the same two-label verdict. Roslyn's own errors go
+back to the model verbatim.
+
+**Generation is free; evaluation is charged.** Nothing on this tab touches the trial
+ledger, and the validation run's P&L and t-statistic are deliberately withheld from
+the UI and the API response. Reporting them would turn generation into an unlimited
+free search over your own data, which is exactly what the ledger exists to count.
+Measured on the strategies written during development: one passed validation with 264
+causally-clean trades and then scored **t = −3.11** the moment it was backtested on
+the Backtest tab. The validation says the code is honest. It does not say the idea is.
+
+---
+
 ## Imported
 
 **Where it comes from:** `~/.prop-sim/backtests/*.json`, written by the NinjaScript
@@ -241,8 +298,18 @@ python3 tape.py --selfcheck      # tick ordering, RTH filter, bar integrity
 python3 ledger.py --selfcheck    # hash chain, trial counting, noise baseline
 python3 ntimport.py --selfcheck  # add-on format, fidelity, accounting, dedup
 python3 slippage.py --selfcheck  # spread measurement, session filter
+python3 plugins.py --selfcheck   # allowlist, 9 refusals, output contract
+python3 aiauthor.py --selfcheck  # prompt, redaction, lookahead probe (no API call)
+python3 nt8gen.py --selfcheck    # templates render AND compile, retry loop
 python3 prop_rules.py            # 148 rule sets, 5 firms, 38 flagged unverified
 ```
+
+`aiauthor.py --selfcheck` makes **no API call and needs no key**. It pins the
+redaction (three key-shaped strings in three error shapes, plus `/api/ai` and both
+system prompts), the key parser against every way a key gets pasted, and — the one
+that matters — the lookahead probe against two fixtures on real ticks: an honest
+breakout it must clear, and a peeker that reads its own entry bar's high, which it
+must catch. The peeker fixture is the exact bug that once scored a 79% win rate here.
 
 What `engine.py --selfcheck` pins, across **every** strategy in the library:
 

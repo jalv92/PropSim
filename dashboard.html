@@ -120,6 +120,7 @@
     <div class="tab alt" data-p="mc">Risk &amp; Monte Carlo</div>
     <div class="tab alt" data-p="backtest">Backtest</div>
     <div class="tab alt" data-p="optimize">Optimize</div>
+    <div class="tab alt" data-p="ai">AI author</div>
     <div class="tab alt" data-p="imported">Imported</div>
     <div class="tab alt" data-p="trials">Trials</div>
     <div class="tab alt" data-p="data">Data</div>
@@ -329,6 +330,82 @@
           <button id="op_copy" class="mini">copy</button>
           <button id="op_gen" class="primary" style="margin-left:8px">Generate the .cs and compile it</button>
           <div id="op_gen_out" style="margin-top:12px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pane-ai" hidden>
+    <div class="panebody">
+      <p>Describe a strategy in English and have Claude write it as a PropSim
+      strategy file, or port one you already have to NinjaScript. It runs on
+      <b>your own Anthropic API key</b> and your own bill — PropSim sends the request
+      to <code>api.anthropic.com</code> and nothing else leaves the machine.</p>
+
+      <div class="warn"><b>A model writing a strategy is not an edge, and this
+      does not pretend otherwise.</b> What it writes is parsed against the plugin
+      allowlist, executed in the restricted namespace, run on your real ticks, and
+      then <b>probed for lookahead</b>: the tape is re-run with prices <i>after</i> a
+      trade changed, and every trade decided before that moment must come out
+      identical. If one moves, the file is rejected and the model is handed the trade
+      that moved. That proves the code is causal — it says nothing about whether it
+      makes money.
+      <div style="margin-top:8px">Writing costs you nothing against the trial
+      ledger, and this tab deliberately does <b>not</b> show the validation run's P&amp;L
+      or t-statistic. Reporting them would make generation a free search over your
+      data, which is the exact thing the ledger exists to count. Backtest it on the
+      Backtest tab, sweep it on Optimize, and let the ledger price the result.</div></div>
+
+      <div id="ai_status" class="meta">checking…</div>
+
+      <div class="sec">
+        <h3>Write a strategy</h3>
+        <p class="hint">Be concrete about the <i>entry moment</i>, the stop and the
+        target. "When a bar closes above the previous 20 bars' high, enter on the next
+        bar" is buildable; "buy strength" is not.</p>
+        <textarea id="ai_desc" style="width:100%;height:110px;background:#0e0f12;
+          color:#cfd3d8;border:1px solid var(--line);border-radius:8px;padding:10px;
+          font:12.5px var(--mono)" placeholder="Fade a failed breakout of the opening range on NQ: build the high and low of the first 30 minutes of the session, then when price breaks beyond one edge and a later bar closes back inside, take the reversal. Stop beyond the failed extreme, target the opposite edge. One trade a session."></textarea>
+        <div class="row">
+          <label>Name <input id="ai_name" placeholder="range_fade" style="width:150px"></label>
+          <label>Validate on <select id="ai_contract"></select></label>
+          <label>Timeframe <select id="ai_tf">
+            <option>1</option><option>3</option><option selected>5</option>
+            <option>15</option><option>30</option><option>60</option>
+          </select><span class="hint">minute bars</span></label>
+          <label><input type="checkbox" id="ai_install" checked>
+            <span class="hint">install it if it passes</span></label>
+        </div>
+        <button id="ai_write" class="primary big">Write it</button>
+        <span id="ai_wstatus" class="hint"></span>
+        <div id="ai_wlog" style="margin-top:12px"></div>
+        <div id="ai_wout" hidden style="margin-top:12px">
+          <div id="ai_wverdict"></div>
+          <pre id="ai_wsrc" style="max-height:420px;overflow:auto;background:#0e0f12;
+            border:1px solid var(--line);border-radius:8px;padding:10px;
+            font:11.5px var(--mono);color:#cfd3d8;white-space:pre"></pre>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h3>Port a strategy to NinjaScript</h3>
+        <p class="hint">For the strategies with no hand-written template. The model's
+        C# goes through the same Roslyn compiler the NinjaScript editor uses, and its
+        errors go back to the model — so a file that will not compile never reaches
+        you. Whether it <i>behaves</i> like the Python is a separate question, and
+        the checklist under the result is what to verify.</p>
+        <div class="row">
+          <label>Strategy <select id="ai_tstrategy"></select></label>
+          <span class="hint" id="ai_thas"></span>
+        </div>
+        <button id="ai_translate" class="primary">Port it and compile it</button>
+        <span id="ai_tstatus" class="hint"></span>
+        <div id="ai_tlog" style="margin-top:12px"></div>
+        <div id="ai_tout" hidden style="margin-top:12px">
+          <div id="ai_tverdict"></div>
+          <pre id="ai_tsrc" style="max-height:420px;overflow:auto;background:#0e0f12;
+            border:1px solid var(--line);border-radius:8px;padding:10px;
+            font:11.5px var(--mono);color:#cfd3d8;white-space:pre"></pre>
         </div>
       </div>
     </div>
@@ -1052,6 +1129,176 @@ function opRender(){
   $("#op_export").value = OP.export || "";
 }
 
+/* ---------- AI author ---------- */
+let AI={}, aiTries=0;
+
+function aiInit(){
+  if(!STRATS.length || !TAPE.length){
+    btInit();
+    if(aiTries++ < 25) setTimeout(aiInit, 400);
+    else $("#ai_status").textContent = "Could not load the strategy list.";
+    return;
+  }
+  aiTries=0;
+  const ready = TAPE.filter(c=>c.ready).sort((a,b)=>a.contract.localeCompare(b.contract));
+  const keep = $("#ai_contract").value;
+  $("#ai_contract").innerHTML = ready.map(c=>
+    `<option value="${c.contract}">${c.contract}</option>`).join("")
+    || `<option value="">— prepare a contract on the Backtest tab first —</option>`;
+  if(keep && ready.some(c=>c.contract===keep)) $("#ai_contract").value = keep;
+  if(!$("#ai_tstrategy").options.length){
+    $("#ai_tstrategy").innerHTML = STRATS.map(s=>
+      `<option value="${s.name}">${s.label}</option>`).join("");
+    aiTemplates();
+  }
+  fetch("/api/ai").then(r=>r.json()).then(d=>{
+    AI.status=d;
+    const bad = !d.key || !d.sdk;
+    const bits=[];
+    // Say which of the two is missing and exactly how to fix it. "AI unavailable"
+    // is the same message for a missing key and a missing package.
+    if(!d.sdk) bits.push(`the Anthropic SDK is not installed — run
+      <code>pip install anthropic</code> (add <code>--user</code> if pip refuses)`);
+    if(!d.key) bits.push(`no API key — put yours on one line in
+      <code>${d.key_file}</code>, or set <code>ANTHROPIC_API_KEY</code>`);
+    if(!bad) bits.push(`key read from <code>${d.key_source}</code> ·
+      model <b>${d.model}</b> · files go to <code>${d.strategies_dir}</code>`);
+    if(!d.nt8c) bits.push(`<span class="a">nt8c is not installed, so a ported .cs
+      cannot be compile-checked here</span>`);
+    $("#ai_status").className = bad ? "warn bad" : "meta";
+    $("#ai_status").innerHTML = bits.join(" · ");
+    $("#ai_write").disabled = bad;
+    $("#ai_translate").disabled = bad;
+  }).catch(()=>{ $("#ai_status").textContent="Could not read /api/ai."; });
+}
+
+function aiTemplates(){
+  fetch("/api/nt8gen/templates").then(r=>r.json()).then(d=>{
+    AI.templates = d.available||[];
+    aiHas();
+  });
+}
+function aiHas(){
+  const n = $("#ai_tstrategy").value;
+  const has = (AI.templates||[]).includes(n);
+  // A template is deterministic and always compiles; say so rather than letting a
+  // user pay a model to reproduce one.
+  $("#ai_thas").innerHTML = has
+    ? `<span class="a">${n} already has a hand-written template — use
+       <b>Generate the .cs</b> on the Optimize tab instead; it is free and always
+       compiles.</span>`
+    : `no template for <code>${n}</code>, so it has to be translated.`;
+}
+
+function aiAttempt(box, html){ $(box).insertAdjacentHTML("beforeend", html); }
+
+function aiWrite(){
+  const desc = $("#ai_desc").value.trim();
+  if(!desc){ $("#ai_wstatus").textContent="describe the strategy first"; return; }
+  const q = new URLSearchParams({description:desc, name:$("#ai_name").value.trim(),
+    contract:$("#ai_contract").value, tf:$("#ai_tf").value});
+  if($("#ai_install").checked){ q.set("install","1"); q.set("overwrite","1"); }
+  $("#ai_write").disabled=true; $("#ai_wout").hidden=true;
+  $("#ai_wlog").innerHTML="";
+  $("#ai_wstatus").textContent="thinking… a strategy takes a minute or two per attempt";
+  const es = new EventSource("/api/ai/write?"+q);
+  es.addEventListener("meta", e=>{ const m=JSON.parse(e.data);
+    aiAttempt("#ai_wlog", `<div class="hint">${m.model}, up to ${m.max_attempts}
+      attempts, key from <code>${m.key_source}</code></div>`); });
+  es.addEventListener("attempt", e=>{ const a=JSON.parse(e.data);
+    aiAttempt("#ai_wlog", `<div>attempt ${a.attempt}:
+      <b class="${a.ok?'g':'r'}">${a.ok?"passed validation":"rejected"}</b>
+      ${a.name?`— <code>${a.name}</code>`:""}
+      <span class="hint">(${a.tokens.output.toLocaleString()} output tokens)</span>
+      ${a.problems?`<div class="hint" style="white-space:pre-wrap;margin:4px 0 8px 14px">${a.problems}</div>`:""}
+      </div>`);
+    $("#ai_wstatus").textContent = a.ok ? "" : "handing the checker's message back…"; });
+  es.addEventListener("result", e=>{
+    const d=JSON.parse(e.data); AI.write=d;
+    $("#ai_write").disabled=false; $("#ai_wstatus").textContent=""; es.close();
+    $("#ai_wout").hidden=false;
+    const sm=(d.info||{}).smoke||{}, lk=(d.info||{}).lookahead||{};
+    $("#ai_wsrc").textContent = d.ok ? (d.header+"\n\n"+d.source) : (d.source||"");
+    if(!d.ok){
+      $("#ai_wverdict").innerHTML = `<div class="warn bad"><b>It gave up after
+        ${d.attempts} attempts.</b> Nothing was installed. The last problem was:
+        <div style="white-space:pre-wrap;margin-top:6px">${d.problems}</div>
+        <div style="margin-top:8px">The source it last tried is below. Rephrase the
+        request — being explicit about the entry moment usually fixes it.</div></div>`;
+      return;
+    }
+    // The server re-scanned the folder, but this page's strategy list is a cache
+    // from page load. Without this the strategy is installed and invisible until a
+    // manual reload — which reads as "it did not work".
+    if(d.installed){
+      STRATS=[]; $("#bt_strategy").innerHTML=""; $("#op_strategy").innerHTML="";
+      $("#ai_tstrategy").innerHTML="";
+      btInit(); setTimeout(aiInit, 600);
+    }
+    $("#ai_wverdict").innerHTML = `
+      <div class="meta"><b class="g">Passed</b> on attempt ${d.attempts} ·
+        <code>${(d.info||{}).name}</code> · ${d.tokens.input.toLocaleString()} in /
+        ${d.tokens.output.toLocaleString()} out tokens on your key
+        ${d.installed?`· installed to <code>${d.installed}</code>`:""}</div>
+      <div class="warn" style="margin:10px 0">
+        Allowlist: passed. Ran on ${sm.contract||"cached ticks"}:
+        <b>${sm.trades}</b> trades from ${sm.signals} signals.
+        ${lk.ran ? `Lookahead probe: <b class="g">clean</b> over ${lk.cuts} cuts
+          (${lk.compared} trade-comparisons).`
+                 : `<span class="a">Lookahead probe did not run: ${lk.note||"—"}.</span>`}
+        <div style="margin-top:8px"><b>That is causality, not an edge.</b> The P&amp;L of
+        that run is deliberately not shown here. ${d.installed
+          ? `It is on the Backtest and Optimize tabs now — read the code first.`
+          : `Nothing was installed; copy the file into <code>${d.dir}</code> yourself.`}</div></div>`;
+  });
+  es.addEventListener("error", e=>{ let m="the request failed";
+    try{ m=JSON.parse(e.data).message; }catch(_){}
+    $("#ai_wstatus").textContent=""; $("#ai_write").disabled=false; es.close();
+    aiAttempt("#ai_wlog", `<div class="warn bad">${m}</div>`); });
+}
+
+function aiTranslate(){
+  const n = $("#ai_tstrategy").value;
+  const s = STRATS.find(x=>x.name===n) || {params:[]};
+  const q = new URLSearchParams({strategy:n});
+  for(const p of s.params) q.set("p_"+p.key, String(p.default));
+  $("#ai_translate").disabled=true; $("#ai_tout").hidden=true;
+  $("#ai_tlog").innerHTML="";
+  $("#ai_tstatus").textContent="porting, then compiling…";
+  const es = new EventSource("/api/ai/translate?"+q);
+  es.addEventListener("meta", e=>{ const m=JSON.parse(e.data);
+    aiAttempt("#ai_tlog", `<div class="hint">${m.model}, up to ${m.max_attempts}
+      compile attempts, defaults: ${Object.entries(m.params)
+        .map(([k,v])=>`${k}=${v}`).join(", ")}</div>`); });
+  es.addEventListener("attempt", e=>{ const a=JSON.parse(e.data);
+    aiAttempt("#ai_tlog", `<div>attempt ${a.attempt}:
+      <b class="${a.ok?'g':(a.ok===null?'a':'r')}">${a.ok?"compiles"
+        :(a.ok===null?"not checked":"failed")}</b>
+      ${a.errors&&a.errors.length?`<ul>${a.errors.map(x=>`<li>${x}</li>`).join("")}</ul>`:""}
+      </div>`); });
+  es.addEventListener("result", e=>{
+    const d=JSON.parse(e.data); AI.translate=d;
+    $("#ai_translate").disabled=false; $("#ai_tstatus").textContent=""; es.close();
+    $("#ai_tout").hidden=false;
+    $("#ai_tsrc").textContent = d.source||"";
+    const failed = d.compiles===false;
+    $("#ai_tverdict").innerHTML = `
+      <div class="meta"><code>${d.class_name}</code> ·
+        ${d.tokens.input.toLocaleString()} in / ${d.tokens.output.toLocaleString()}
+        out tokens ${d.path?`· written to <code>${d.path}</code>`:""}</div>
+      <div class="warn ${failed?'bad':''}" style="margin:10px 0">
+        ${failed ? `<b>It never compiled, so nothing was written.</b> The compiler's
+          errors are above; they were handed back to the model each time.`
+                 : `<b>It compiles. That is all the compiler can tell you.</b>`}
+        ${d.note?`<div class="hint">${d.note}</div>`:""}
+        <ul>${(d.notes||[]).map(x=>`<li>${x}</li>`).join("")}</ul></div>`;
+  });
+  es.addEventListener("error", e=>{ let m="the port failed";
+    try{ m=JSON.parse(e.data).message; }catch(_){}
+    $("#ai_tstatus").textContent=""; $("#ai_translate").disabled=false; es.close();
+    aiAttempt("#ai_tlog", `<div class="warn bad">${m}</div>`); });
+}
+
 /* ---------- imported runs (the NinjaTrader add-on) ---------- */
 let IMPORTS=[];
 
@@ -1327,14 +1574,18 @@ $("#scrub").oninput=e=>drawPaths(+e.target.value);
 document.querySelectorAll(".tab[data-p]").forEach(t=>t.onclick=()=>{
   document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
   t.classList.add("on");
-  for(const p of ["prop","verdict","mc","data","backtest","optimize","imported","trials"])
+  for(const p of ["prop","verdict","mc","data","backtest","optimize","ai","imported","trials"])
     $("#pane-"+p).hidden = (p!==t.dataset.p);
   if(t.dataset.p==="data") loadData();
   if(t.dataset.p==="backtest") btInit();
   if(t.dataset.p==="optimize") opInit();
+  if(t.dataset.p==="ai") aiInit();
   if(t.dataset.p==="imported") loadImports();
   if(t.dataset.p==="trials") loadTrials();
 });
+$("#ai_write").onclick=aiWrite;
+$("#ai_translate").onclick=aiTranslate;
+$("#ai_tstrategy").onchange=aiHas;
 $("#im_refresh").onclick=loadImports;
 $("#op_contract").onchange=()=>{opContract();opCount();};
 $("#op_strategy").onchange=opParams;
