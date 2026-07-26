@@ -361,8 +361,22 @@ def sim_eval(prof, policy, sims, rng, rules: RuleSet | None = None,
 # ---- Funded simulation ------------------------------------------------------
 
 def sim_funded(prof, policy, sims, rng, rules: RuleSet | None = None,
-               max_days=FUNDED_HORIZON_DAYS, record_paths=0):
-    """Survival, payout stats and expected trader income for a funded account."""
+               max_days=FUNDED_HORIZON_DAYS, record_paths=0,
+               start_day=None, record_idx=None):
+    """Survival, payout stats and expected trader income for a funded account.
+
+    `start_day` chains this phase to an evaluation: it is the number of trading
+    days each path already spent passing, so the funded leg gets what is LEFT of
+    the `max_days` planning horizon rather than a fresh one. A path that took 60
+    days to pass trades 190, not 250, and `first_payout_day` comes back measured
+    from the day the evaluation was bought. Give a path `max_days` to freeze it
+    out entirely, which is how paths that never passed are excluded.
+
+    `record_idx` picks WHICH sims are drawn on the chart. Under chaining the
+    interesting ones are the paths that actually reached this phase; recording
+    "the first N" would fill the funded chart with flat lines belonging to
+    accounts that never existed.
+    """
     rules = rules or DEFAULT_FUNDED
     start = rules.start_balance
     bal = np.full(sims, start)
@@ -373,7 +387,17 @@ def sim_funded(prof, policy, sims, rng, rules: RuleSet | None = None,
     survive_days = np.zeros(sims)
     first_payout_day = np.full(sims, np.nan)
 
+    # How many trading days this path still has. Without chaining every path
+    # gets the whole horizon, which is the old behaviour.
+    budget = (np.full(sims, float(max_days)) if start_day is None
+              else np.maximum(float(max_days) - np.asarray(start_day, float), 0.0))
+    offset = (np.zeros(sims) if start_day is None
+              else np.asarray(start_day, float))
+
     rec = min(record_paths, sims)
+    rows = (np.arange(rec) if record_idx is None
+            else np.asarray(record_idx, int)[:rec])
+    rec = len(rows)
     paths = np.full((rec, max_days + 1), np.nan) if rec else None
     prev_done = np.zeros(rec, bool)
     if rec:
@@ -384,7 +408,7 @@ def sim_funded(prof, policy, sims, rng, rules: RuleSet | None = None,
     split = rules.profit_split if rules.profit_split is not None else 0.9
 
     for day in range(max_days):
-        active = ~busted
+        active = ~busted & (day < budget)
         if not active.any():
             break
         pool = prof.get("pool")
@@ -412,7 +436,8 @@ def sim_funded(prof, policy, sims, rng, rules: RuleSet | None = None,
             if rules.hwm_basis == INTRA:
                 hwm = np.maximum(hwm, bal)
             busted |= active & (bal <= _floor(hwm, rules))
-            active = ~busted
+            active &= ~busted          # `= ~busted` here would resurrect a path
+                                       # whose horizon has already run out
 
         if rules.hwm_basis == EOD:
             hwm = np.where(active, np.maximum(hwm, bal), hwm)
@@ -422,8 +447,11 @@ def sim_funded(prof, policy, sims, rng, rules: RuleSet | None = None,
         if rules.max_withdrawal is not None:
             withdrawable = np.minimum(withdrawable, rules.max_withdrawal)
         income += np.where(pay, withdrawable * split, 0.0)
-        first_payout_day = np.where(pay & np.isnan(first_payout_day), day + 1,
-                                    first_payout_day)
+        # Measured from the day the ATTEMPT started, not from day one of the
+        # funded account: "you get paid on day 40" is a different claim from
+        # "you get paid 40 days after passing an evaluation that took 60".
+        first_payout_day = np.where(pay & np.isnan(first_payout_day),
+                                    offset + day + 1, first_payout_day)
         n_payouts += pay
         bal = np.where(pay, bal - withdrawable, bal)
         # A withdrawal lowers the balance, so the high-water mark must come down
@@ -437,8 +465,9 @@ def sim_funded(prof, policy, sims, rng, rules: RuleSet | None = None,
             # cumulative withdrawn + live balance: what the trader has actually
             # taken out is the number that matters in the funded phase, not the
             # account balance, which resets to the buffer after every payout
-            paths[:, day + 1] = np.where(prev_done, np.nan, bal[:rec] + income[:rec])
-            prev_done = busted[:rec].copy()
+            paths[:, day + 1] = np.where(prev_done, np.nan,
+                                         bal[rows] + income[rows])
+            prev_done = (busted | (day + 1 >= budget))[rows].copy()
 
     out = dict(p_payout=(n_payouts > 0).mean(), income=income.mean(),
                payouts=n_payouts.mean(), days=survive_days.mean(),
@@ -453,34 +482,59 @@ def sim_funded(prof, policy, sims, rng, rules: RuleSet | None = None,
                outcome=np.where(~busted, 0, np.where(n_payouts > 0, 1, 2)))
     if rec:
         out["paths"] = paths
+        # which sims those rows belong to -- the caller needs it to line the
+        # per-path outcome colours up with the drawn curves
+        out["path_idx"] = rows
     return out
 
 
 def sim_attempt(prof, policy, sims, rng, ev_rules, fu_rules, fee=100.0,
-                record_paths=0, on_day=None):
+                record_paths=0, on_day=None, chain=True):
     """One end-to-end attempt: buy an evaluation, and if it passes, trade the
     funded account. Returns the per-path net EV distribution the dashboard's
     KPI tiles are built from.
 
-    ponytail: the funded leg is simulated for every path and then masked to the
-    ones that passed, rather than re-running a smaller sim. Vectorised, so the
-    masked work is free, and it keeps the two legs on one RNG stream.
+    THE TWO LEGS ARE CHAINED (`chain=True`). Each path carries its own pass day
+    into the funded phase, so:
 
-    NOTE the two legs are still drawn INDEPENDENTLY -- a path that barely
-    scraped through its evaluation starts the funded phase from the rule set's
-    nominal starting balance, not from the state it actually finished in. That
-    matters exactly at the pass boundary, which is the case this tool exists to
-    judge, so it is surfaced as a caveat rather than buried.
+      * a path that needed 60 trading days to pass gets the REMAINING planning
+        horizon, not a fresh one -- a slow pass earns less, which is true and
+        used to be invisible;
+      * days-to-first-payout is measured from the day the evaluation was BOUGHT,
+        which is the number a trader is actually deciding on;
+      * paths that never passed consume no funded days at all, rather than being
+        simulated in full and masked afterwards.
+
+    What is deliberately NOT carried across is the balance: every firm in the
+    table starts a funded account at its own nominal balance, so there is nothing
+    to inherit. `chain=False` restores the old independent draw, and the
+    self-check pins the direction of the difference between them.
     """
     ev = sim_eval(prof, policy, sims, rng, ev_rules,
                   record_paths=record_paths, on_day=on_day)
-    fu = sim_funded(prof, policy, sims, rng, fu_rules, record_paths=record_paths)
     passed = ev["outcome"] == 1
+
+    if chain:
+        # A path that never passed gets a zero-day funded horizon: same effect as
+        # masking it out afterwards, without inventing the days it never traded.
+        start_day = np.where(passed, ev["pass_day"], float(FUNDED_HORIZON_DAYS))
+        # Draw the funded chart from paths that reached the funded phase. "The
+        # first N sims" would fill it with accounts that never existed.
+        idx = np.flatnonzero(passed)
+        if idx.size == 0:
+            idx = np.arange(min(record_paths, sims))
+        fu = sim_funded(prof, policy, sims, rng, fu_rules,
+                        record_paths=record_paths, start_day=start_day,
+                        record_idx=idx)
+    else:
+        fu = sim_funded(prof, policy, sims, rng, fu_rules,
+                        record_paths=record_paths)
+
     net = -fee + np.where(passed, fu["income_path"], 0.0)
     paid = passed & (fu["income_path"] > 0)
     fpd = fu["first_payout_day"][paid]
     return dict(
-        ev=ev, fu=fu, net=net, passed=passed,
+        ev=ev, fu=fu, net=net, passed=passed, chained=bool(chain),
         net_mean=float(net.mean()),
         net_p5=float(np.percentile(net, 5)), net_p95=float(np.percentile(net, 95)),
         p_payout=float(paid.mean()),
@@ -549,9 +603,28 @@ def selfcheck(rng):
     f = sim_eval(prof, policy_fixed(3), 5_000, rng, real)
     assert 0.0 <= f["p_pass"] <= 1.0
 
+    # CHAINING regression. Spending days on the evaluation must cost something:
+    # the funded leg starts later, so within one planning horizon a chained
+    # attempt can never out-earn an independently drawn one, and its first payout
+    # can never arrive sooner. Both directions are asserted because getting the
+    # sign wrong here would make every slow-passing strategy look better.
+    edge = dict(p=0.56, rr=1.0, risk=200.0, tpd=4, friction=5.0)
+    ev_r = select("my_funded_futures", "rapid", "evaluation", 50_000)
+    fu_r = select("my_funded_futures", "rapid", "funded_sim", 50_000)
+    ch = sim_attempt(edge, policy_fixed(2), 8_000, np.random.default_rng(11),
+                     ev_r, fu_r, fee=0.0, chain=True)
+    ind = sim_attempt(edge, policy_fixed(2), 8_000, np.random.default_rng(11),
+                      ev_r, fu_r, fee=0.0, chain=False)
+    assert ch["net_mean"] <= ind["net_mean"] + 1e-6, (ch["net_mean"], ind["net_mean"])
+    assert (ch["days_to_first_payout"] >= ind["days_to_first_payout"]
+            or np.isnan(ind["days_to_first_payout"])), (ch, ind)
+
     print(f"selfcheck OK: gambler's ruin {r['p_pass']:.3f} ~ 0.400; "
           f"intraday breach {a['p_pass']:.3f} <= close-only {b['p_pass']:.3f}; "
-          f"unrealized ratchet {c['p_pass']:.3f} <= realized {a['p_pass']:.3f}")
+          f"unrealized ratchet {c['p_pass']:.3f} <= realized {a['p_pass']:.3f}; "
+          f"chained E[net] {ch['net_mean']:,.0f} <= independent "
+          f"{ind['net_mean']:,.0f} and first payout day "
+          f"{ch['days_to_first_payout']:.0f} >= {ind['days_to_first_payout']:.0f}")
 
 
 # ---- Report -----------------------------------------------------------------

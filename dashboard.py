@@ -34,6 +34,9 @@ import prop_rules as pr
 from sim import PROFILES, POLICIES, load_trades, sim_attempt
 import nttrades
 import ntdata
+import ntimport
+import ledger
+import slippage
 import tape as tp
 import engine
 
@@ -124,6 +127,18 @@ def backtest_stream(q, write):
     write("progress", dict(stage="scoring"))
     summary = engine.summarise(trades, meta)
 
+    # RECORDED BEFORE THE RESULT IS RENDERED, on purpose. A ledger written after
+    # the chart appears is a ledger that loses every run the user abandons on
+    # first glance -- which are exactly the runs that make the twentieth t-stat
+    # meaningless.
+    ledger.append("backtest", strategy=strategy, contract=contract,
+                  timeframe=f"{tf}m", start=meta["start"], end=meta["end"],
+                  params=meta["params"], trades=len(trades),
+                  pnl=round(summary["pnl"], 2),
+                  t_daily=(None if summary["t_daily"] != summary["t_daily"]
+                           else round(summary["t_daily"], 3)),
+                  slippage_ticks=slip, commission=comm)
+
     global LAST_BACKTEST
     LAST_BACKTEST = dict(trades=trades, meta=meta, summary=summary)
 
@@ -134,6 +149,7 @@ def backtest_stream(q, write):
     write("result", dict(
         summary={k: (None if isinstance(v, float) and v != v else v)
                  for k, v in summary.items() if k != "params"},
+        ledger=ledger.stats(),
         params=meta["params"], equity=equity,
         trades=[dict(date=t.date, dir=t.direction,
                      entry=round(t.entry_price, 2), exit=round(t.exit_price, 2),
@@ -166,7 +182,29 @@ def run_stream(q, write):
     account = (q.get("account", [""])[0] or "").strip()
     pool = None
     src = None
-    if account == "__backtest":
+    fidelity = None
+    if account.startswith("__import:"):
+        run_id = account.split(":", 1)[1]
+        path = next((p for p in ntimport.RUNS_DIR.glob("*.json")
+                     if p.stem == run_id), None)
+        if path is None:
+            raise SystemExit(f"imported run {run_id!r} is no longer on disk")
+        tl, im = ntimport.load_run(path)
+        pool = nttrades.to_pool(tl)
+        fidelity = im["fidelity"]
+        src = (f"{im['n_trades']} trades from a NinjaTrader run: {im['strategy']} · "
+               f"{im['instrument']} · {im['start']}..{im['end']} · {im['cost_basis']}")
+        # A NinjaTrader run WAS a search: someone chose a strategy, a period and
+        # a parameter set and kept the result. It counts as a trial the first time
+        # it is scored here, and only once -- re-reading the same run is not a new
+        # look at the market.
+        if not any(r.get("run_id") == run_id for r in ledger.read()):
+            ledger.append("import", run_id=run_id, strategy=im["strategy"],
+                          contract=im["instrument"], timeframe=im["timeframe"],
+                          start=im["start"], end=im["end"], params=im["params"],
+                          trades=im["n_trades"], pnl=im["pnl"],
+                          fidelity=fidelity["level"])
+    elif account == "__backtest":
         if not LAST_BACKTEST.get("trades"):
             raise SystemExit("No backtest has been run yet — use the Backtest tab.")
         bt = LAST_BACKTEST
@@ -190,9 +228,16 @@ def run_stream(q, write):
         prof = dict(prof, pool=pool)
     policy = next((p for p in POLICIES if p.__name__ == policy_name), POLICIES[1])
 
+    # Scoring is logged so the record is complete, but it does NOT inflate the
+    # multiplicity correction: re-pricing a trade list you already have tells you
+    # about prop-firm rules, not about whether the edge is real.
+    ledger.append("score", firm=firm, variant=variant, size=size, sims=sims,
+                  source=(src or profile), policy=policy_name)
+
     write("meta", dict(
         firm=firm, variant=variant, size=size, sims=sims, fee=fee,
-        profile=profile, policy=policy_name,
+        profile=profile, policy=policy_name, fidelity=fidelity,
+        ledger=ledger.stats(),
         target=ev_rules.profit_target, max_dd=ev_rules.max_dd,
         start=ev_rules.start_balance, dd_lock=ev_rules.dd_floor_lock,
         hwm_basis=ev_rules.hwm_basis, breach_basis=ev_rules.breach_basis,
@@ -240,40 +285,60 @@ def run_stream(q, write):
                for row in paths],
         outcome=outcome,
         n_days=paths.shape[1],
-        funded=_funded_block(r["fu"], fu_rules),
+        funded=_funded_block(r["fu"], fu_rules, r["passed"] if r["chained"] else None),
     ))
 
 
-def _funded_block(fu, rules):
-    """The Funded view: what the account pays out, not whether it passes."""
+def _funded_block(fu, rules, reached=None):
+    """The Funded view: what the account pays out, not whether it passes.
+
+    `reached` is the mask of paths that actually got here. With the phases
+    chained, the paths that never passed spent zero days in the funded account,
+    so averaging over ALL of them would report a payout rate diluted by accounts
+    that never existed. Every figure here is therefore conditional on being
+    funded -- which is the question this tab asks.
+    """
     import numpy as _np
     fp = fu["paths"]
     if fp is None or not fp.size:
         return None
     last = int(_np.max(_np.where(~_np.isnan(fp).all(axis=0))[0]))
     fp = fp[:, :last + 1]
-    inc = fu["income_path"]
+
+    m = _np.ones(len(fu["income_path"]), bool) if reached is None else _np.asarray(reached)
+    if not m.any():
+        return None
+    inc = fu["income_path"][m]
+    out = fu["outcome"][m]
     paid = inc > 0
-    fpd = fu["first_payout_day"][paid]
+    fpd = fu["first_payout_day"][m][paid]
+    # the drawn curves belong to specific sims, so their colours must be looked
+    # up by index rather than by position
+    idx = fu.get("path_idx")
+    colours = (fu["outcome"][_np.asarray(idx, int)] if idx is not None
+               else fu["outcome"][:fp.shape[0]])
     return dict(
-        p_payout=float(fu["p_payout"]), p_bust=float(fu["p_bust"]),
+        p_payout=float(paid.mean()), p_bust=float((out != 0).mean()),
         # three-way partition (see sim_funded): alive / paid-then-lost / lost-with-nothing
-        p_alive=float((fu["outcome"] == 0).mean()),
-        p_paid_then_lost=float((fu["outcome"] == 1).mean()),
-        p_lost_nothing=float((fu["outcome"] == 2).mean()),
+        p_alive=float((out == 0).mean()),
+        p_paid_then_lost=float((out == 1).mean()),
+        p_lost_nothing=float((out == 2).mean()),
+        conditional=bool(reached is not None),
+        n_funded=int(m.sum()),
         mean_income=float(inc.mean()),
         median_income=float(_np.median(inc)),
         income_p5=float(_np.percentile(inc, 5)),
         income_p95=float(_np.percentile(inc, 95)),
-        mean_payouts=float(fu["payouts"]),
-        survive_days=float(fu["days"]),
+        mean_payouts=float(fu["payouts"] * len(fu["income_path"]) / max(int(m.sum()), 1)
+                           if reached is not None else fu["payouts"]),
+        survive_days=float(fu["survive_days"][m].mean()),
         days_to_first=(None if not fpd.size else float(_np.nanmean(fpd))),
         buffer=rules.buffer_required, split=rules.profit_split,
         min_payout=rules.min_payout,
         hist=_hist(inc),
         paths=[[None if _np.isnan(v) else round(float(v), 1) for v in row]
                for row in fp],
-        outcome=fu["outcome"][:fp.shape[0]].tolist(),
+        outcome=[int(v) for v in colours[:fp.shape[0]]],
         n_days=fp.shape[1],
     )
 
@@ -323,6 +388,29 @@ class Handler(BaseHTTPRequestHandler):
                                         for k, v in S.params.items()]))
             return self._send(200, json.dumps(dict(strategies=lib)).encode(),
                               "application/json")
+        if u.path == "/api/imports":
+            try:
+                runs = ntimport.list_runs()
+            except Exception as exc:
+                return self._send(200, json.dumps(
+                    dict(runs=[], error=f"{type(exc).__name__}: {exc}")).encode(),
+                    "application/json")
+            return self._send(200, json.dumps(dict(
+                runs=runs, dir=str(ntimport.RUNS_DIR))).encode(), "application/json")
+        if u.path == "/api/slippage":
+            q = parse_qs(u.query)
+            c = (q.get("contract", [""])[0] or "").strip()
+            try:
+                r = slippage.measure(c, files=int(q.get("files", ["8"])[0]))
+            except SystemExit as exc:
+                r = dict(error=str(exc))
+            except Exception as exc:
+                r = dict(error=f"{type(exc).__name__}: {exc}")
+            return self._send(200, json.dumps(r).encode(), "application/json")
+        if u.path == "/api/ledger":
+            body = json.dumps(dict(stats=ledger.stats(), verify=ledger.verify(),
+                                   recent=ledger.recent(30))).encode()
+            return self._send(200, body, "application/json")
         if u.path == "/api/tape/prepare":
             return self._sse(parse_qs(u.query), prepare_stream)
         if u.path == "/api/backtest":

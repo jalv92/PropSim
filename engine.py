@@ -61,6 +61,10 @@ class Strategy:
     `entries` returns parallel arrays: the TICK index to enter at, the
     direction, and the stop/target prices. The engine resolves the outcome; a
     strategy never decides its own fill, which keeps the pessimism in one place.
+
+    A setup that enters on a resting limit (a retrace to a level) may return a
+    fifth array of limit prices; the engine then fills there instead of at the
+    tick that reached it.
     """
     name = "base"
     label = "Base"
@@ -211,7 +215,155 @@ class SweepFollow(Strategy):
         return full_idx, direc, stop, target
 
 
-LIBRARY = {s.name: s for s in (MACross, ORB, SweepFollow)}
+class FVG(Strategy):
+    """Fair-value gap: trade the retrace back into a three-bar imbalance.
+
+    A bullish gap exists when bar i's low sits ABOVE bar i-2's high -- price
+    left a band nobody traded through. The trade is the pullback into that band.
+
+    THE LOOKAHEAD TRAP IS THE SAME ONE ORB FELL INTO, and it bites harder here:
+    the gap is only known once bar i has closed, and the entry is a LIMIT level
+    that price touches mid-bar. Entering at a bar's open because that bar's low
+    reached the level would fill at a price the market never offered on the way
+    in. So the entry tick is found by scanning the tape for the first print that
+    actually trades at or through the level.
+    """
+    name, label = "fvg", "Fair-value gap retrace"
+    uses_ticks = True
+    params = {
+        "min_ticks": Param(8, 1, 200, "smallest gap worth trading, ticks"),
+        "expiry_bars": Param(12, 1, 200, "bars the gap stays valid"),
+        "stop_ticks": Param(40, 4, 200, "stop distance, ticks"),
+        "rr": Param(2.0, 0.5, 6.0, "target as a multiple of the stop"),
+        "one_per_day": Param(0, 0, 1, "at most one trade per day"),
+    }
+
+    def entries(self, bars, tape, p):
+        h, l = bars["h"], bars["l"]
+        n = len(h)
+        if n < 4:
+            return _empty()
+        gap = p["min_ticks"] * TICK_SIZE
+        px, ts = tape["px"], tape["ts"]
+        exp = int(p["expiry_bars"])
+        day = tp.day_index(bars["t"])
+        et, dr, st, tg, lim = [], [], [], [], []
+        used_days = set()
+
+        # i indexes the third bar of the pattern, so everything below is known at
+        # its close. A gap needs the two bars NOT to overlap at all:
+        #   bullish   low[i]  >  high[i-2]
+        #   bearish   high[i] <  low[i-2]
+        # The first version tested |low[i] - high[i-2]| and called the negative
+        # side a bearish gap, which is simply "bar i's low is below bar i-2's
+        # high" -- true of almost every ordinary overlapping bar. It generated 43
+        # trades a day and +$85K over 23 days, which is what a definition error
+        # looks like from the outside: not a crash, a fantastic result.
+        bull_gap = l[2:] - h[:-2]
+        bear_gap = l[:-2] - h[2:]
+        cand = np.flatnonzero((bull_gap >= gap) | (bear_gap >= gap))
+        for k in cand:
+            i = k + 2
+            if i + 1 >= n:
+                continue
+            d = day[i]
+            if p["one_per_day"] and d in used_days:
+                continue
+            bull = bull_gap[k] >= gap
+            level = l[i] if bull else h[i]         # near edge of the gap
+            a = int(bars["start"][i + 1])
+            b = int(bars["end"][min(i + exp, n - 1)])
+            seg = px[a:b]
+            if not len(seg):
+                continue
+            hit = np.flatnonzero(seg <= level) if bull else np.flatnonzero(seg >= level)
+            if not len(hit):
+                continue
+            j = a + int(hit[0])
+            direc = 1 if bull else -1
+            et.append(j); dr.append(direc)
+            st.append(level - direc * p["stop_ticks"] * TICK_SIZE)
+            tg.append(level + direc * p["stop_ticks"] * p["rr"] * TICK_SIZE)
+            lim.append(level)
+            used_days.add(d)
+        if not et:
+            return _empty()
+        order = np.argsort(np.asarray(et))
+        return (np.asarray(et, np.int64)[order], np.asarray(dr, np.int8)[order],
+                np.asarray(st)[order], np.asarray(tg)[order],
+                # the entry IS the level: a limit resting in the gap
+                np.asarray(lim)[order])
+
+
+class VWAPRevert(Strategy):
+    """Fade a stretch away from the session VWAP.
+
+    VWAP is computed from the ticks of the CURRENT session only -- carrying it
+    across the overnight break would anchor the morning to yesterday's business
+    and quietly turn a mean-reversion signal into a gap-continuation one.
+
+    The stretch is measured in ticks rather than in standard deviations: a
+    rolling sigma of the distance is itself a function of the distance, which
+    makes the threshold move with the thing it is supposed to be measuring.
+    """
+    name, label = "vwap_revert", "VWAP reversion"
+    uses_ticks = True
+    params = {
+        "stretch_ticks": Param(60, 4, 600, "distance from VWAP to fade, ticks"),
+        "min_bar": Param(6, 0, 78, "skip this many bars after the open"),
+        "cooldown_min": Param(15, 0, 240, "rest after a trade closes, minutes"),
+        "stop_ticks": Param(40, 4, 200, "stop distance, ticks"),
+        "rr": Param(1.0, 0.3, 6.0, "target as a multiple of the stop"),
+    }
+
+    def entries(self, bars, tape, p):
+        t = bars["t"]
+        if len(t) < 3:
+            return _empty()
+        px, vol = tape["px"].astype(np.float64), tape["vol"].astype(np.float64)
+        starts, ends = bars["start"], bars["end"]
+        pv = np.add.reduceat(px * vol, starts)
+        vv = np.add.reduceat(vol, starts)
+        day = tp.day_index(t)
+        new_day = np.empty(len(t), bool)
+        new_day[0] = True
+        new_day[1:] = day[1:] != day[:-1]
+        # per-session cumulative sums, restarted at each new day
+        cpv = np.zeros(len(t))
+        cvv = np.zeros(len(t))
+        acc_pv = acc_vv = 0.0
+        bar_of_day = np.zeros(len(t), np.int32)
+        cnt = 0
+        for i in range(len(t)):
+            if new_day[i]:
+                acc_pv = acc_vv = 0.0
+                cnt = 0
+            acc_pv += pv[i]
+            acc_vv += vv[i]
+            cpv[i], cvv[i] = acc_pv, acc_vv
+            bar_of_day[i] = cnt
+            cnt += 1
+        vwap = cpv / np.maximum(cvv, 1.0)
+
+        stretch = p["stretch_ticks"] * TICK_SIZE
+        far = bars["c"] - vwap
+        sig = np.flatnonzero((np.abs(far) >= stretch)
+                             & (bar_of_day >= int(p["min_bar"])))
+        # act on the NEXT bar's first tick: the signal uses this bar's close
+        nxt = sig + 1
+        ok = nxt < len(starts)
+        sig, nxt = sig[ok], nxt[ok]
+        if not len(sig):
+            return _empty()
+        direc = np.where(far[sig] > 0, -1, 1).astype(np.int8)   # fade the stretch
+        entry_tick = starts[nxt]
+        fill = px[entry_tick]
+        stop = fill - direc * p["stop_ticks"] * TICK_SIZE
+        target = fill + direc * p["stop_ticks"] * p["rr"] * TICK_SIZE
+        return entry_tick.astype(np.int64), direc, stop, target
+
+
+LIBRARY = {s.name: s for s in (MACross, ORB, SweepFollow, FVG, VWAPRevert)}
 
 
 def _empty():
@@ -256,12 +408,19 @@ class Trade:
 
 
 def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
-            cooldown_min=0.0, timeout_min=240.0) -> list[Trade]:
+            cooldown_min=0.0, timeout_min=240.0, limit_px=None) -> list[Trade]:
     """Walk ticks from each entry to its exit. One position at a time.
 
     Bounded forward scans, deliberately: an unbounded per-trade scan to the end
     of the array measured 329s against 2.7s for a plain loop -- 120x SLOWER
     while looking vectorised.
+
+    `limit_px` models a RESTING LIMIT order instead of a market order: the fill
+    is the limit price, not the price of the tick that reached it. A retrace
+    entry is a limit by nature, and the difference is not cosmetic -- filling at
+    the touched tick in a fast move puts the entry far past the level the stop
+    was measured from, which is how a stop-out came to book a +$17,635 profit
+    before this existed.
     """
     ts, px = tape["ts"], tape["px"]
     n = len(ts)
@@ -276,8 +435,19 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
         if i0 >= n or ts[i0] < free_at:
             continue
         d = int(direc[k])
-        fill = float(px[i0]) + d * slip          # pay the spread on entry
+        if limit_px is None:
+            fill = float(px[i0]) + d * slip      # market order pays the spread
+        else:
+            fill = float(limit_px[k])            # resting limit fills at its price
         st, tg = float(stop[k]), float(target[k])
+        # INVARIANT: a trade cannot open already past its own stop or target.
+        # Nobody fills you and then pays you for being stopped out, and nobody
+        # hands you a target you were already through. Both were reachable when
+        # the levels came from a signal price and the fill came from a later tick.
+        if (fill <= st if d > 0 else fill >= st):
+            continue
+        if (fill >= tg if d > 0 else fill <= tg):
+            continue
         stop_end = np.searchsorted(ts, ts[i0] + horizon, "right")
         lo = hi = fill
         exit_i, exit_px, why = None, None, "timeout"
@@ -288,7 +458,15 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
             hit_stop = (p <= st) if d > 0 else (p >= st)
             hit_targ = (p >= tg) if d > 0 else (p <= tg)
             if hit_stop:                          # stop wins a tie, on purpose
-                exit_i, exit_px, why = i, st, "stop"; break
+                # Fill at the WORSE of the stop level and the price that breached
+                # it. A stop is a market order: when price jumps straight through
+                # it, the fill is on the far side of the jump, not at the level.
+                # Filling at the level was worth real money -- trades showed a
+                # worst excursion of -$510 while booking the nominal -$212 loss,
+                # and the tick-gap distribution says the fastest 10% of moves jump
+                # 5 ticks between prints.
+                exit_px = min(st, p) if d > 0 else max(st, p)
+                exit_i, why = i, "stop"; break
             if hit_targ:
                 exit_i, exit_px, why = i, tg, "target"; break
         if exit_i is None:
@@ -323,9 +501,15 @@ def backtest(contract, strategy_name, timeframe=5, start=None, end=None,
         raise SystemExit("no ticks in that range")
     bars = tp.build_bars(t, timeframe)
 
-    ei, dr, st, tg = strat.entries(bars, t, p)
+    res = strat.entries(bars, t, p)
+    ei, dr, st, tg = res[:4]
+    # A retrace strategy rests a limit at its level; a breakout crosses the
+    # spread. A strategy that trades on a limit says so by returning a fifth
+    # array, so the fill model is a property of the setup rather than an accident
+    # of who wrote the entry function.
+    lim = res[4] if len(res) > 4 else None
     cd = p.get("cooldown_min", 0.0)
-    trades = resolve(t, ei, dr, st, tg, costs, cooldown_min=cd)
+    trades = resolve(t, ei, dr, st, tg, costs, cooldown_min=cd, limit_px=lim)
 
     days = np.unique(tp.day_index(t["ts"]))
     meta = dict(contract=contract, strategy=strategy_name, label=strat.label,
@@ -390,6 +574,29 @@ def selfcheck():
     tr, _ = backtest(c, "orb", 5)
     assert all(t.reason in ("stop", "target", "timeout") for t in tr)
     assert all(t.mae <= 0 <= t.mfe for t in tr), "MAE/MFE signs"
+
+    # 6. THE INVARIANT THAT CAUGHT A REAL BUG. A stop-out cannot make money and a
+    #    target cannot lose it. Both were violated when a strategy measured its
+    #    stop from a signal LEVEL while the engine filled at a later tick: one
+    #    stop-out booked +$17,635 and the strategy showed +$34K over 23 days.
+    #    Checked across every strategy, because the mistake is not local to one.
+    costs = Costs()
+    slip_cost = costs.slippage_ticks * costs.tick_size * costs.point_value
+    for name in LIBRARY:
+        trades, meta = backtest(c, name, 5, costs=costs)
+        for t in trades:
+            if t.reason == "stop":
+                assert t.pnl < 0, f"{name}: profitable stop-out {t.pnl:+.0f}"
+                # A stop fills at the price that breached it, and that price is
+                # by definition the worst seen -- anything worse earlier would
+                # have triggered first. So the loss is exactly the excursion plus
+                # exit slippage and commission. Any drift here means the stop has
+                # gone back to filling at its level through a gap.
+                want = t.mae - slip_cost - costs.commission
+                assert abs(t.pnl - want) < 0.01, (
+                    f"{name}: stop paid {t.pnl:.2f}, excursion implies {want:.2f}")
+            elif t.reason == "target":
+                assert t.pnl > 0, f"{name}: losing target exit {t.pnl:+.0f}"
 
     print(f"selfcheck OK: ORB timeframe-invariant (${pnls[1]:,.0f} at 1/5/15m); "
           f"MA cross varies ({ma[1]['trades']} vs {ma[15]['trades']} trades); "

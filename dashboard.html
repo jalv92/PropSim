@@ -119,6 +119,8 @@
     <div class="tab alt off" title="disabled on purpose — see the Verdict tab">Regimes</div>
     <div class="tab alt" data-p="mc">Risk &amp; Monte Carlo</div>
     <div class="tab alt" data-p="backtest">Backtest</div>
+    <div class="tab alt" data-p="imported">Imported</div>
+    <div class="tab alt" data-p="trials">Trials</div>
     <div class="tab alt" data-p="data">Data</div>
   </div>
 
@@ -218,7 +220,9 @@
                min="0" max="20" style="width:70px"><span class="hint">ticks each way</span></label>
         <label>Commission <input type="number" id="bt_comm" value="5" step="0.5"
                min="0" style="width:70px"><span class="hint">$ per round trip</span></label>
+        <button id="bt_measure" class="mini">measure from my tape</button>
       </div>
+      <div id="bt_slipnote" class="hint"></div>
       <p class="hint" style="margin:-4px 0 12px">Fills are pessimistic on purpose:
       you pay slippage both ways, and when a stop and a target fall in the same
       moment the stop wins. Measured on real trades, this setting alone can move
@@ -244,6 +248,23 @@
         </div>
       </div>
     </div>
+  </div>
+
+  <div id="pane-imported" hidden>
+    <div class="panebody">
+      <p>Backtests of <b>your own NinjaTrader strategies</b>, captured by the
+      companion add-on. NinjaTrader does not save Strategy Analyzer results to its
+      database, so the add-on writes each run to a folder PropSim reads.</p>
+      <div style="display:flex;gap:8px;margin:12px 0;align-items:center">
+        <button id="im_refresh" class="primary">Refresh</button>
+        <span class="hint" id="im_dir"></span>
+      </div>
+      <div id="im_body"></div>
+    </div>
+  </div>
+
+  <div id="pane-trials" hidden>
+    <div class="panebody" id="trialsBody"></div>
   </div>
 
   <div id="pane-data" hidden>
@@ -484,6 +505,15 @@ function run(){
          still computed correctly, but treat the spread of paths as a rough
          range, not as 1,000 independent futures.</div>`);
     }
+    // A run whose fills NinjaTrader guessed must say so on the page that turns it
+    // into a pass rate, not only on the tab it was imported from.
+    if(META.fidelity && META.fidelity.level !== "exact"){
+      const bad = META.fidelity.level === "unknown";
+      $("#warns").insertAdjacentHTML("beforeend",
+        `<div class="warn run-warn${bad?" bad":""}"><b>${bad?"⚠ ":""}These trades came
+         from a NinjaTrader run whose fills PropSim cannot certify —
+         ${META.fidelity.label}.</b> ${META.fidelity.detail}</div>`);
+    }
     if(META.pool && META.pool.n_days < 20){
       $("#warns").insertAdjacentHTML("beforeend",
         `<div class="warn run-warn">Only <b>${META.pool.n_days} trading day(s)</b> of real
@@ -638,7 +668,8 @@ function btParams(){
   $("#bt_params").innerHTML = s.params.map(p=>
     `<label>${p.key.replace(/_/g," ")}
        <input type="number" id="bt_p_${p.key}" value="${p.default}"
-              min="${p.lo}" max="${p.hi}" step="${p.default % 1 ? 0.1 : 1}">
+              min="${p.lo}" max="${p.hi}"
+              step="${(p.default % 1 || p.lo % 1) ? 0.1 : 1}">
        <span class="d">${p.desc}</span></label>`).join("");
 }
 
@@ -690,6 +721,12 @@ function btRender(){
     ["Average trade", fmt$(s.mean||0), (s.mean||0)>=0?"g":"r"],
     ["t-stat (daily)", s.t_daily==null?"—":s.t_daily.toFixed(2),
      s.t_daily!=null && s.t_daily>=2 ? "g" : ""],
+    // The count belongs NEXT TO the statistic. A t of 2.1 on trial 40 is a
+    // different claim from a t of 2.1 on trial 1, and separating the two numbers
+    // by a tab click is how the denominator gets forgotten.
+    ["trial #", BT.ledger ? BT.ledger.trials : "—", ""],
+    ["noise reaches", BT.ledger ? BT.ledger.expected_max_t.toFixed(2) : "—",
+     (BT.ledger && s.t_daily!=null && s.t_daily > BT.ledger.expected_max_t) ? "" : "r"],
   ];
   $("#bt_kpis").innerHTML = tiles.map(([l,v,c])=>
     `<div class="kpi"><div class="lab">${l}</div><div class="val ${c}">${v}</div></div>`).join("");
@@ -732,6 +769,124 @@ function drawCurve(){
   x.fillText("trade "+e.length, w-R-24, h-6);
 }
 
+/* ---------- imported runs (the NinjaTrader add-on) ---------- */
+let IMPORTS=[];
+
+function fidClass(level){
+  return level==="exact" ? "g" : (level==="fills-guessed" ? "a" : "r");
+}
+
+function loadImports(){
+  $("#im_body").innerHTML = "<p>Reading…</p>";
+  return fetch("/api/imports").then(r=>r.json()).then(d=>{
+    IMPORTS = d.runs||[];
+    $("#im_dir").textContent = d.dir ? "from "+d.dir : "";
+    if(d.error){ $("#im_body").innerHTML = `<div class="warn">${d.error}</div>`; return; }
+    if(!IMPORTS.length){
+      $("#im_body").innerHTML = `
+        <div class="warn">No captured runs yet.</div>
+        <p style="margin-top:12px">Install the add-on, then in the Strategy Analyzer
+        set <b>Fitness</b> to <b>PropSim export (net profit)</b> and run an
+        optimisation — a one-value range per parameter is a single backtest. For
+        plain backtests, tick <b>PropSim trade export</b> in
+        Tools → Options → General → Performance metrics.</p>
+        <p class="hint">A fitness sees the strategy object, so it records the bar
+        type, Tick Replay setting and order-fill resolution of the run. A
+        performance metric cannot, so those runs arrive labelled
+        “configuration unknown” rather than assumed good.</p>`;
+      return;
+    }
+    let html = `<table class="tr"><tr><th>run</th><th>strategy</th><th>instrument</th>
+      <th>trades</th><th>days</th><th>net P&L</th><th>fills</th><th></th></tr>`;
+    IMPORTS.forEach((m,i)=>{
+      if(m.broken){
+        html += `<tr><td>${m.run_id}</td><td colspan="6" class="r">${m.fidelity.label}</td><td></td></tr>`;
+        return;
+      }
+      html += `<tr><td>${m.run_id}</td><td>${m.strategy}</td><td>${m.instrument}</td>
+        <td>${m.n_trades}</td><td>${m.days}</td>
+        <td class="${m.pnl>=0?'g':'r'}">${fmt$(m.pnl)}</td>
+        <td class="${fidClass(m.fidelity.level)}">${m.fidelity.label}</td>
+        <td><button class="mini" data-im="${i}">score →</button></td></tr>`;
+    });
+    html += "</table>";
+    const m0 = IMPORTS.find(m=>!m.broken);
+    if(m0) html += `<div class="warn" style="margin-top:14px">
+      <b>${m0.fidelity.label}.</b> ${m0.fidelity.detail}</div>
+      <p class="hint">Accounting: ${m0.cost_basis}.</p>`;
+    $("#im_body").innerHTML = html;
+    document.querySelectorAll("#im_body button[data-im]").forEach(b=>b.onclick=()=>{
+      scoreImport(IMPORTS[+b.dataset.im]); });
+  }).catch(()=>{ $("#im_body").innerHTML="<p class='r'>Could not read the folder.</p>"; });
+}
+
+function scoreImport(m){
+  const val = "__import:"+m.run_id;
+  let o=[...$("#account").options].find(x=>x.value===val);
+  if(!o){ o=document.createElement("option"); o.value=val;
+          $("#account").insertBefore(o, $("#account").firstChild); }
+  o.textContent = `NinjaTrader — ${m.strategy}, ${m.n_trades} trades`;
+  $("#account").value=val;
+  document.querySelector('.tab[data-p="prop"]').click();
+  $("#run").click();
+}
+
+/* ---------- trial ledger ---------- */
+function loadTrials(){
+  $("#trialsBody").innerHTML = "<p>Reading…</p>";
+  fetch("/api/ledger").then(r=>r.json()).then(d=>{
+    const s=d.stats, v=d.verify;
+    const rows = (d.recent||[]).map(r=>{
+      const what = [r.strategy, r.contract, r.timeframe].filter(x=>x!=null).join(" ")
+                 || (r.firm||"").replace(/_/g," ");
+      const t = (typeof r.t_daily === "number") ? r.t_daily.toFixed(2) : "—";
+      const pnl = (typeof r.pnl === "number") ? fmt$(r.pnl) : "—";
+      return `<tr><td>${r.seq}</td><td>${(r.ts||"").replace("T"," ")}</td>
+        <td>${r.kind}</td><td>${what}</td><td>${t}</td><td>${pnl}</td></tr>`;
+    }).join("");
+    const beat = s.best_t!=null && s.best_t > s.expected_max_t;
+    $("#trialsBody").innerHTML = `
+      <p><b>Every run is recorded before its result is drawn.</b> A backtest is a
+      hypothesis test, and the best result out of many is not the same claim as the
+      best result out of one. This page keeps the denominator visible.</p>
+      <div class="kpis" style="margin:14px 0">
+        <div class="kpi"><div class="lab">SEARCH TRIALS</div>
+          <div class="val">${s.trials}</div></div>
+        <div class="kpi"><div class="lab">BEST t (DAILY)</div>
+          <div class="val ${s.best_t==null?'':(beat?'g':'r')}">${s.best_t==null?"—":s.best_t.toFixed(2)}</div></div>
+        <div class="kpi"><div class="lab">NOISE REACHES</div>
+          <div class="val">${s.expected_max_t.toFixed(2)}</div></div>
+        <div class="kpi"><div class="lab">5% BAR AFTER ${s.trials}</div>
+          <div class="val">${s.threshold_t.toFixed(2)}</div></div>
+        <div class="kpi"><div class="lab">SCORING RUNS</div>
+          <div class="val">${s.scores}</div></div>
+      </div>
+      ${s.best_t==null ? "" : `<div class="${beat?'':'warn'}">
+        ${beat ? `Your best daily t-statistic of <b>${s.best_t.toFixed(2)}</b> is above the
+          <b>${s.expected_max_t.toFixed(2)}</b> that pure noise would reach over
+          ${s.trials} trials. That is necessary, not sufficient: a 5% claim after
+          ${s.trials} looks needs <b>${s.threshold_t.toFixed(2)}</b>.`
+        : `Your best daily t-statistic is <b>${s.best_t.toFixed(2)}</b>. Noise alone
+          reaches <b>${s.expected_max_t.toFixed(2)}</b> over ${s.trials} trials, so
+          nothing here has separated itself from chance yet.`}</div>`}
+      <p style="margin-top:14px"><b>What counts.</b> Searching counts: a backtest,
+      an imported NinjaTrader run, a sweep — anything that could have come out
+      differently and be kept or discarded. Scoring does not: re-pricing a trade
+      list you already have against a firm's rules tells you about the rules, not
+      about whether the edge is real. Both are logged; only searches move the bar.</p>
+      <p class="hint">${s.total} records at ${s.path} — hash-chained, so a deleted
+      or edited entry is detectable. Chain: <b class="${v.ok?'g':'r'}">${
+        v.ok ? "intact" : "BROKEN at #"+v.broken_at+" ("+v.reason+")"}</b>.</p>
+      ${rows ? `<table class="tr" style="margin-top:12px"><tr><th>#</th><th>when</th>
+        <th>kind</th><th>what</th><th>t</th><th>P&L</th></tr>${rows}</table>` : ""}
+      <p class="hint" style="margin-top:12px"><b>P(pass) is never an objective
+      function.</b> It is a steep non-linear transform of the edge, and near zero
+      edge it is dominated by variance — the simulator's own gambler's-ruin check
+      shows a zero-edge random walk passing 40% of the time against a static
+      floor. Optimise expectancy; read P(pass) afterwards.</p>`;
+  }).catch(()=>{ $("#trialsBody").innerHTML="<p class='r'>Could not read the ledger.</p>"; });
+}
+
 /* ---------- verdict tab ---------- */
 function renderVerdict(){
   const a=currentAccount()||{};
@@ -750,11 +905,13 @@ function renderVerdict(){
     ${(a.unmodeled&&a.unmodeled.length)?`<p style="margin-top:14px">
       <b>${a.unmodeled.length} rule(s) this simulator does not model:</b></p>
       <ul>${a.unmodeled.map(u=>`<li>${u}</li>`).join("")}</ul>`:""}
-    <p style="margin-top:16px"><b>Not yet wired:</b> the trial ledger. Until it
-    exists, nothing here counts a trial, and a P(pass) figure read off this page
-    is a pricing estimate for an <i>already-validated</i> edge — never a reason
-    to believe an edge exists. Optimising a strategy against these numbers is
-    the documented failure mode, not a feature.</p>`;
+    <p style="margin-top:16px"><b>How many times have you looked?</b> Every run is
+    recorded in an append-only ledger before its result is drawn, and the
+    <b>Trials</b> tab shows the count next to the best t-statistic and next to the
+    value noise alone would reach at that count. A P(pass) figure is a pricing
+    estimate for an <i>already-validated</i> edge — never a reason to believe an
+    edge exists. Optimising a strategy against it is the documented failure mode,
+    not a feature.</p>`;
 }
 
 $("#mcBody").innerHTML = `
@@ -790,9 +947,13 @@ function loadAccounts(){
         const tag = m ? (m.firm.replace(/_/g," ")+(m.phase?" / "+m.phase:"")) : "unmatched";
         return `<option value="${d.account}">${d.account} — ${d.n} trades, ${tag}</option>`;
       }));
-    const keep = [...$("#account").options].find(o=>o.value==="__backtest");
+    // Keep every synthetic source already offered (a backtest, an imported
+    // NinjaTrader run) instead of only __backtest: a Rescan used to silently
+    // drop the imported run the user was about to score.
+    const keep = [...$("#account").options].filter(o=>
+      o.value.startsWith("__") && o.value!=="__none");
     $("#account").innerHTML = opts.join("");
-    if(keep) $("#account").insertBefore(keep, $("#account").firstChild);
+    keep.forEach(o=>$("#account").insertBefore(o, $("#account").firstChild));
     if(ACCOUNTS.length) { $("#account").value = ACCOUNTS[0].account; applyAccount(); }
   }).catch(()=>{});
 }
@@ -860,11 +1021,32 @@ $("#scrub").oninput=e=>drawPaths(+e.target.value);
 document.querySelectorAll(".tab[data-p]").forEach(t=>t.onclick=()=>{
   document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
   t.classList.add("on");
-  for(const p of ["prop","verdict","mc","data","backtest"])
+  for(const p of ["prop","verdict","mc","data","backtest","imported","trials"])
     $("#pane-"+p).hidden = (p!==t.dataset.p);
   if(t.dataset.p==="data") loadData();
   if(t.dataset.p==="backtest") btInit();
+  if(t.dataset.p==="imported") loadImports();
+  if(t.dataset.p==="trials") loadTrials();
 });
+$("#im_refresh").onclick=loadImports;
+$("#bt_measure").onclick=()=>{
+  const c=$("#bt_contract").value;
+  $("#bt_measure").disabled=true;
+  $("#bt_slipnote").textContent="Measuring the spread you actually faced…";
+  fetch("/api/slippage?contract="+encodeURIComponent(c)).then(r=>r.json()).then(d=>{
+    $("#bt_measure").disabled=false;
+    if(d.error){ $("#bt_slipnote").textContent=d.error; return; }
+    // The floor is filled in, never the stress value: a tool that quietly picks
+    // the friendlier number for you is not measuring anything.
+    $("#bt_slip").value=d.floor_ticks;
+    $("#bt_slipnote").innerHTML = `Spread median <b>${d.spread_p50}</b> / p90
+      <b>${d.spread_p90}</b> ticks, tick-gap p90 <b>${d.gap_p90}</b>, over
+      ${d.ticks.toLocaleString()} of your own ticks (${d.session}). Floor
+      <b>${d.floor_ticks}</b> ticks/side has been filled in above; the stress
+      assumption is <b>${d.stress_ticks}</b> — run both.`;
+  }).catch(()=>{ $("#bt_measure").disabled=false;
+    $("#bt_slipnote").textContent="Could not measure this contract."; });
+};
 
 function loadData(root, force){
   const parts = [];

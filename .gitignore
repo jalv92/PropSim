@@ -9,6 +9,10 @@ data/
 build/*.spec.bak
 dist/
 dist_installer/
+# ...except the NinjaScript archive the README links to: it is the one-click
+# install, so it has to be downloadable from the repo.
+!nt8/dist/
+!nt8/dist/PropSimExport.zip
 __pycache__/
 *.pyc
 # the user's own settings and downloaded rules live outside the repo anyway
