@@ -542,6 +542,13 @@ def _free_port(preferred):
     import socket
     for p in range(preferred, preferred + 40):
         with socket.socket() as s:
+            # Match what the real server can do. ThreadingHTTPServer sets
+            # allow_reuse_address, so it binds a port whose old connections are
+            # still in TIME_WAIT -- a probe without SO_REUSEADDR does not, and the
+            # app then hopped to the next port on every restart that had a browser
+            # attached. The URL moving under the user is worse than the collision
+            # this was guarding against.
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind(("127.0.0.1", p))
                 return p

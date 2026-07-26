@@ -184,6 +184,16 @@
       <p>Run a strategy over your own tick data, then score the result against a
       prop firm. Three choices define the run and all three change the answer.</p>
 
+      <div class="warn"><b>These are PropSim's own strategies, not the ones in
+      your NinjaTrader.</b> They are written in Python and run here, on your tick
+      tape — useful for testing an idea, and for the order-flow class NinjaTrader
+      cannot backtest at all. <b>Your NinjaScript (<code>.cs</code>) strategies
+      cannot run here</b>: they are C# and they execute inside NinjaTrader. They
+      reach PropSim by two other doors — a Strategy Analyzer run captured by the
+      add-on appears under <b>Imported</b>, and a Market Replay / Playback session
+      appears directly in the trade-source picker on the <b>Prop Firm</b> tab.
+      See <code>docs/connect-your-strategies.md</code>.</div>
+
       <div class="row">
         <label>1. Market data
           <select id="bt_contract"></select>
@@ -202,7 +212,7 @@
       </div>
 
       <div class="row">
-        <label>3. Strategy
+        <label>3. Strategy <span class="hint">(PropSim's own, in Python)</span>
           <select id="bt_strategy"></select>
         </label>
         <label>Timeframe
@@ -656,8 +666,14 @@ function btInit(){
   $("#bt_status").textContent = "Loading…";
   fetch("/api/strategies").then(r=>r.json()).then(d=>{
     STRATS=d.strategies;
-    $("#bt_strategy").innerHTML = STRATS.map(s=>
-      `<option value="${s.name}">${s.label}${s.uses_ticks?" · reads the tape":""}</option>`).join("");
+    // Grouped and labelled, because a bare list under a heading that says
+    // "Strategy" reads as "my strategies" — and the one thing this tab cannot do
+    // is run the user's NinjaScript.
+    $("#bt_strategy").innerHTML =
+      `<optgroup label="PropSim engine — Python, runs here on your ticks">`
+      + STRATS.map(s=>
+        `<option value="${s.name}">${s.label}${s.uses_ticks?" · reads the tape":""}</option>`).join("")
+      + `</optgroup>`;
     btParams();
     btTape();                       // btContract() decides if Run may enable
   }).catch(()=>{ $("#bt_status").textContent =
