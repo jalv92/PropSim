@@ -17,3 +17,12 @@ __pycache__/
 *.pyc
 # the user's own settings and downloaded rules live outside the repo anyway
 .prop-sim/
+
+# API keys never live in the repo. This is a PUBLIC repository and one `git add -A`
+# is all it takes -- GitHub's push protection caught exactly that on 2026-07-26.
+# The key belongs in ~/.prop-sim/, which is outside the working tree.
+*api*key*
+*API*Key*
+*.key
+.env
+secrets.json

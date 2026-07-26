@@ -108,7 +108,35 @@ you the *stress* value; run both.
 
 Then **Score this against a prop firm →** hands the trades to the Prop Firm tab.
 
-### 4. Optimize — sweep parameters, take the values to NinjaTrader
+### 4. Your own strategies
+
+Drop a Python file in `~/.prop-sim/strategies/` and it appears in the Backtest and
+Optimize tabs, under **Yours**. Start from the documented template:
+
+```bash
+python3 plugins.py --install-template   # writes a starter file
+python3 plugins.py                      # what is installed, and what is broken
+python3 plugins.py --check my_idea.py   # validate one file without installing it
+```
+
+A strategy file **imports nothing** — the engine hands it numpy, the tape helpers
+and the `Strategy`/`Param` base classes. It defines one class with an `entries()`
+method that returns parallel arrays: the tick index to enter at, the direction, the
+stop price and the target price.
+
+Every file is checked before it is trusted: parsed against an allowlist (no
+imports, no file access, no `eval`, no dunder attributes, no `np.load`), executed
+first in a separate process so a hang cannot take the app with it, then
+smoke-tested on real ticks with its output checked against the engine's contract —
+matching array lengths, indices in range, and a stop on the correct side of the
+entry. A rejected file is reported with the reason, never silently skipped.
+
+**That is validation, not a sandbox.** A plugin runs with this program's
+privileges. It catches the things that actually go wrong — a model that helpfully
+adds `urllib`, four arrays of three different lengths, a long whose stop sits above
+its entry. It will not stop someone who is trying. Put your own files there.
+
+### 5. Optimize — sweep parameters, take the values to NinjaTrader
 
 Give any parameter a range (`from:to:step`) and PropSim runs every combination
 over your tick data — about 0.18 s each, so a 200-combination sweep takes half a
@@ -133,7 +161,7 @@ A configuration clears the bar at **t ≥ 1.5, ≥ 80 trades, and positive in at
 2 of 3 sub-periods** — and then it has earned *one forward test*, not a funded
 account. Nothing on data you already own is validation.
 
-### 5. Imported — backtests of your own NinjaTrader strategies
+### 6. Imported — backtests of your own NinjaTrader strategies
 
 Runs captured by the add-on, each labelled with whether its fills can be believed:
 
@@ -145,7 +173,7 @@ Runs captured by the add-on, each labelled with whether its fills can be believe
 
 `score →` scores the run, carrying that label onto the results page.
 
-### 6. Trials — how many times you have looked
+### 7. Trials — how many times you have looked
 
 Every run is recorded in an append-only, hash-chained ledger **before** its
 result is drawn, and this tab shows the count next to your best t-statistic
@@ -156,7 +184,7 @@ best of one — after 40 searches, noise alone reaches t ≈ 2.2, and a 5% claim
 needs 3.2. Searching counts (backtests, imported runs, sweeps); scoring the same
 trade list again does not.
 
-### 7. Verdict — should you believe the numbers
+### 8. Verdict — should you believe the numbers
 
 Where each rule came from, when it was read, what is **unverified**, and which
 rules the simulator does not model at all.
@@ -242,6 +270,7 @@ python3 tape.py --selfcheck       # tick ordering, RTH filter, bar integrity
 python3 ledger.py --selfcheck     # hash chain, trial counting, noise baseline
 python3 ntimport.py --selfcheck   # add-on format round-trip, fidelity, dedup
 python3 slippage.py --selfcheck   # spread measurement and the session filter
+python3 plugins.py --selfcheck    # the allowlist, the refusals, the output contract
 python3 optimize.py --selfcheck   # grid, sub-periods, the gate, the noise ceiling
 python3 optimize.py --contract "NQ 09-26" --strategy orb --range stop_ticks=20:60:10
 python3 nttrades.py --list        # your accounts and their detected firm
@@ -265,6 +294,7 @@ signal level while the engine filled at a later tick.
 | `slippage.py` | spread and tick-gap measurement |
 | `ntimport.py` | importing runs captured by the NinjaScript add-on |
 | `optimize.py` | parameter sweeps and the pre-registered gate |
+| `plugins.py` | loading, validating and smoke-testing your own strategy files |
 | `ledger.py` | the append-only trial ledger |
 | `dashboard.py/.html` | the local server and the whole UI |
 | `nt8/` | the NinjaScript add-on and its importable archive |

@@ -37,6 +37,7 @@ import ntdata
 import ntimport
 import ledger
 import optimize
+import plugins
 import slippage
 import tape as tp
 import engine
@@ -56,6 +57,7 @@ PATHS_DRAWN = 1000          # spaghetti lines; the screenshot's reference count
 MIN_DAYS = 10
 MEANINGFUL_DAYS = 60
 UPDATE_RESULT = {}          # filled once at startup, shown in the UI
+PLUGIN_REPORT: list = []    # user strategy files: loaded, or why not
 
 
 class ClientGone(Exception):
@@ -176,6 +178,13 @@ def backtest_stream(q, write):
                      pnl=round(t.pnl, 2), mae=round(t.mae, 2), reason=t.reason)
                 for t in trades[:200]],
         n_shown=min(len(trades), 200)))
+
+
+def _reload_plugins():
+    """Re-scan the strategy folder so a file written just now shows up."""
+    global PLUGIN_REPORT
+    PLUGIN_REPORT = plugins.register_all()
+    return PLUGIN_REPORT
 
 
 def optimize_stream(q, write):
@@ -471,13 +480,21 @@ class Handler(BaseHTTPRequestHandler):
                               "application/json")
         if u.path == "/api/strategies":
             lib = []
+            mine = set(plugins.installed())
             for name, S in engine.LIBRARY.items():
                 lib.append(dict(name=name, label=S.label, uses_ticks=S.uses_ticks,
+                                mine=name in mine,
                                 params=[dict(key=k, default=v.default, lo=v.lo,
                                              hi=v.hi, desc=v.desc)
                                         for k, v in S.params.items()]))
-            return self._send(200, json.dumps(dict(strategies=lib)).encode(),
-                              "application/json")
+            return self._send(200, json.dumps(
+                dict(strategies=lib, plugins=PLUGIN_REPORT,
+                     dir=str(plugins.USER_DIR))).encode(), "application/json")
+        if u.path == "/api/plugins/reload":
+            _reload_plugins()
+            return self._send(200, json.dumps(
+                dict(plugins=PLUGIN_REPORT, dir=str(plugins.USER_DIR),
+                     installed=plugins.installed())).encode(), "application/json")
         if u.path == "/api/ntstrategies":
             try:
                 rows = nttrades.detected_strategies()
@@ -626,6 +643,16 @@ def main():
     if not PAGE.exists():
         raise SystemExit(f"missing {PAGE}")
     pr.load()                                  # fail fast if the table is absent
+    # Your own strategies, and any an AI wrote for you, from
+    # ~/.prop-sim/strategies/. Each is validated before it is trusted; a rejected
+    # file is reported in the UI rather than silently ignored, because a strategy
+    # that quietly does not exist is indistinguishable from one that finds nothing.
+    global PLUGIN_REPORT
+    PLUGIN_REPORT = plugins.register_all()
+    ok = [r for r in PLUGIN_REPORT if r.get("ok")]
+    if PLUGIN_REPORT:
+        print(f"strategies loaded from {plugins.USER_DIR}: {len(ok)} ok, "
+              f"{len(PLUGIN_REPORT) - len(ok)} rejected")
     # Refresh the rule file in the background. Startup must never wait on the
     # network, and an offline user must still get the bundled rules.
     def _refresh():

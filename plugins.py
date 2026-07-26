@@ -1,0 +1,576 @@
+#!/usr/bin/env python3
+"""Load strategies you (or an AI) wrote, from `~/.prop-sim/strategies/*.py`.
+
+    python3 plugins.py                 # what is installed, and what is broken
+    python3 plugins.py --template      # print a documented starter file
+    python3 plugins.py --check <file>  # validate one file without installing it
+    python3 plugins.py --selfcheck
+
+A strategy file defines one class. It does not import anything: the engine hands
+it everything it needs, which is also what makes the file safe to check
+mechanically.
+
+    class MyBreakout(Strategy):
+        name, label = "my_breakout", "My breakout"
+        params = {"stop_ticks": Param(40, 4, 200, "stop distance, ticks")}
+
+        def entries(self, bars, tape, p):
+            ...
+            return entry_tick_indices, direction, stop_price, target_price
+
+WHAT THE VALIDATION IS, AND WHAT IT IS NOT. Every file is parsed and checked
+against an allowlist before it is executed: no imports, no file access, no
+network, no `eval`/`exec`, no dunder attributes. Then it is smoke-tested on real
+ticks and its output is checked against the engine's contract -- array lengths
+that match, indices in range, a stop on the correct side of the entry.
+
+That combination catches the things that actually go wrong: a model that helpfully
+adds `urllib` and silently phones home, a strategy that returns four arrays of
+three different lengths, a stop above the entry on a long. **It is not a sandbox
+against a determined attacker.** A plugin runs with this program's privileges.
+Put your own files in that folder and nobody else's.
+"""
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import numpy as np
+
+import engine
+import tape as tp
+
+USER_DIR = Path.home() / ".prop-sim" / "strategies"
+
+# Nothing needs importing -- the engine injects numpy, the tape helpers and the
+# Strategy/Param base classes. An import is therefore always either a mistake or
+# something the file has no business doing.
+ALLOWED_IMPORTS = {"math"}
+BANNED_CALLS = {
+    "eval", "exec", "compile", "open", "input", "__import__", "globals",
+    "locals", "vars", "getattr", "setattr", "delattr", "breakpoint", "exit",
+    "quit", "memoryview",
+}
+# numpy reaches the filesystem, and `np.load(..., allow_pickle=True)` is arbitrary
+# code execution with a friendly name. A strategy is handed its data; it has no
+# business opening anything.
+NUMPY_DENY = {
+    "load", "loads", "save", "savez", "savez_compressed", "savetxt", "loadtxt",
+    "genfromtxt", "fromfile", "tofile", "memmap", "DataSource", "ctypeslib",
+    "f2py", "distutils", "testing", "vectorize", "frompyfunc",
+}
+SAFE_BUILTINS = {
+    k: __builtins__[k] if isinstance(__builtins__, dict) else getattr(__builtins__, k)
+    # __build_class__ is what a `class` statement compiles down to, so a namespace
+    # without it cannot define a strategy at all. It is unreachable from the
+    # source itself: the AST check rejects dunder attribute access.
+    for k in ("__build_class__",
+              "abs", "all", "any", "bool", "dict", "divmod", "enumerate", "filter",
+              "float", "int", "len", "list", "map", "max", "min", "print", "range",
+              "reversed", "round", "set", "slice", "sorted", "str", "sum", "tuple",
+              "zip", "isinstance", "issubclass", "type", "ValueError",
+              "TypeError", "IndexError", "KeyError", "ZeroDivisionError",
+              "Exception", "True", "False", "None")
+    if (k in __builtins__ if isinstance(__builtins__, dict) else hasattr(__builtins__, k))
+}
+
+
+class Rejected(Exception):
+    """The file is not a valid strategy plugin. The message says why."""
+
+
+def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    """A doorman, not an open door.
+
+    `__import__` has to exist in the namespace: numpy's C-level reduction path
+    resolves it from the CALLING frame's builtins, so `a[0:5].max()` and
+    `np.isfinite(a).all()` both fail with KeyError('__import__') without it --
+    which would rule out most of what a strategy does.
+
+    So it exists and refuses everything outside the allowlist. `os`, `socket` and
+    `subprocess` are unreachable through it, and the AST check already rejects the
+    name `__import__` appearing in a plugin's source at all, so this only ever
+    serves numpy's own internals.
+    """
+    root = (name or "").split(".")[0]
+    if root in ALLOWED_IMPORTS | {"numpy"}:
+        return __import__(name, globals, locals, fromlist, level)
+    raise ImportError(f"a strategy may not import {name!r}")
+
+
+def ast_check(src: str, name="<plugin>") -> list[str]:
+    """Structural check. Returns the list of reasons to reject, empty if clean."""
+    try:
+        tree = ast.parse(src, filename=name)
+    except SyntaxError as exc:
+        return [f"line {exc.lineno}: {exc.msg}"]
+
+    bad = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name.split(".")[0] not in ALLOWED_IMPORTS:
+                    bad.append(f"line {node.lineno}: import {a.name} — not allowed; "
+                               f"numpy is already available as np, tape helpers as tp")
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            if root not in ALLOWED_IMPORTS:
+                bad.append(f"line {node.lineno}: from {node.module} import … — "
+                           f"not allowed")
+        elif isinstance(node, ast.Attribute):
+            if node.attr.startswith("__") and node.attr.endswith("__"):
+                bad.append(f"line {node.lineno}: attribute {node.attr} — dunder "
+                           f"access is how a restricted namespace gets escaped")
+            elif (isinstance(node.value, ast.Name) and node.value.id == "np"
+                    and node.attr in NUMPY_DENY):
+                bad.append(f"line {node.lineno}: np.{node.attr} — reaches the "
+                           f"filesystem; a strategy is handed its data")
+        elif isinstance(node, ast.Name) and node.id in BANNED_CALLS:
+            bad.append(f"line {node.lineno}: {node.id} — not allowed in a strategy")
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bad.append(f"line {node.lineno}: global/nonlocal — a strategy keeps no "
+                       f"state between runs")
+    return bad
+
+
+class _TapeHelpers:
+    """The pure time helpers, and nothing else.
+
+    Injecting the `tape` MODULE would hand a plugin `build_cache` and `load_cache`
+    -- functions that read and write files. These four are arithmetic on
+    timestamps, which is all a strategy legitimately needs.
+    """
+    TPS = tp.TPS
+    day_index = staticmethod(tp.day_index)
+    sec_of_day = staticmethod(tp.sec_of_day)
+    date_str = staticmethod(tp.date_str)
+    to_datetime = staticmethod(tp.to_datetime)
+
+
+def _namespace() -> dict:
+    """Everything a strategy file may use, handed to it rather than imported."""
+    return {
+        "__builtins__": dict(SAFE_BUILTINS, __import__=_guarded_import),
+        "__name__": "propsim_plugin",   # a class statement needs a module name
+
+        "Strategy": engine.Strategy,
+        "Param": engine.Param,
+        "np": np,
+        "tp": _TapeHelpers,            # day_index, sec_of_day, date_str, TPS
+        "TICK_SIZE": engine.TICK_SIZE,
+        "POINT_VALUE": engine.POINT_VALUE,
+    }
+
+
+def load_source(src: str, filename="<plugin>") -> type:
+    """Validate and execute one strategy source, returning its class."""
+    bad = ast_check(src, filename)
+    if bad:
+        raise Rejected("; ".join(bad))
+    ns = _namespace()
+    try:
+        exec(compile(src, filename, "exec"), ns)          # noqa: S102 — see module docstring
+    except Exception as exc:
+        raise Rejected(f"{type(exc).__name__} while loading: {exc}")
+
+    classes = [v for k, v in ns.items()
+               if isinstance(v, type) and issubclass(v, engine.Strategy)
+               and v is not engine.Strategy]
+    if not classes:
+        raise Rejected("no class inheriting Strategy was defined")
+    if len(classes) > 1:
+        raise Rejected(f"{len(classes)} Strategy classes in one file — keep one per file")
+    S = classes[0]
+    for attr in ("name", "label"):
+        if not isinstance(getattr(S, attr, None), str) or not getattr(S, attr):
+            raise Rejected(f"the class needs a {attr} string")
+    if not isinstance(getattr(S, "params", None), dict):
+        raise Rejected("params must be a dict of name -> Param")
+    for k, v in S.params.items():
+        if not isinstance(v, engine.Param):
+            raise Rejected(f"params[{k!r}] is not a Param(default, lo, hi, description)")
+        if not (v.lo <= v.default <= v.hi):
+            raise Rejected(f"params[{k!r}]: default {v.default} outside [{v.lo}, {v.hi}]")
+    if "entries" not in vars(S):
+        raise Rejected("the class must define entries(self, bars, tape, p)")
+    return S
+
+
+def check_output(res, tape, bars) -> list[str]:
+    """The engine's contract, checked on a real run.
+
+    These are the mistakes a generated strategy actually makes, in the order they
+    are made: arrays of different lengths, an index past the end of the tape, and
+    a stop on the wrong side of the entry (which the engine would silently skip,
+    so the strategy would appear to take no trades for no visible reason).
+    """
+    if not isinstance(res, tuple) or len(res) not in (4, 5):
+        return [f"entries() must return 4 or 5 arrays, got {type(res).__name__}"]
+    arrs = [np.asarray(a) for a in res]
+    n = len(arrs[0])
+    problems = []
+    if any(len(a) != n for a in arrs):
+        problems.append(f"the returned arrays have different lengths: "
+                        f"{[len(a) for a in arrs]}")
+        return problems
+    if n == 0:
+        return ["no entries at all on this data — check the signal, not the engine"]
+    ei, dr, st, tg = arrs[0], arrs[1], arrs[2], arrs[3]
+    if not np.issubdtype(ei.dtype, np.integer):
+        problems.append("the first array must be TICK INDICES (integers), not prices")
+    elif ei.min() < 0 or ei.max() >= len(tape["ts"]):
+        problems.append(f"entry index out of range: {ei.min()}..{ei.max()} "
+                        f"for {len(tape['ts'])} ticks")
+    if not set(np.unique(dr)).issubset({-1, 1}):
+        problems.append(f"direction must be +1 or -1, got {sorted(set(np.unique(dr)))}")
+    for nm, a in (("stop", st), ("target", tg)):
+        if not np.isfinite(a).all():
+            problems.append(f"{nm} contains NaN or infinity")
+    if np.isfinite(st).all() and np.isfinite(tg).all() and len(ei) and not problems:
+        px = tape["px"][np.clip(ei, 0, len(tape["px"]) - 1)]
+        wrong_stop = np.where(dr > 0, st > px, st < px)
+        wrong_targ = np.where(dr > 0, tg < px, tg > px)
+        if wrong_stop.any():
+            problems.append(f"{int(wrong_stop.sum())} of {n} stops are on the wrong "
+                            f"side of the entry (a long's stop must be BELOW it)")
+        if wrong_targ.any():
+            problems.append(f"{int(wrong_targ.sum())} of {n} targets are on the wrong "
+                            f"side of the entry")
+    return problems
+
+
+def smoke_test(S: type, contract: str | None = None, timeframe=5) -> dict:
+    """Run the strategy once on real ticks and check what it returned."""
+    contracts = tp.cached_contracts()
+    contract = contract or (contracts[0] if contracts else None)
+    if contract is None:
+        return dict(ran=False, note="no tape cached — cannot smoke-test yet")
+    ctx = engine.prepare(contract, timeframe)
+    strat = S()
+    p = {k: v.default for k, v in strat.params.items()}
+    res = strat.entries(ctx["bars"], ctx["tape"], p)
+    problems = check_output(res, ctx["tape"], ctx["bars"])
+    if problems:
+        raise Rejected("; ".join(problems))
+    # backtest() resolves the strategy by name out of the library, so the class
+    # has to be visible there for the smoke run -- and removed again if it turns
+    # out not to be installable.
+    had = engine.LIBRARY.get(S.name)
+    engine.LIBRARY[S.name] = S
+    try:
+        trades, meta = engine.backtest(contract, S.name, timeframe, ctx=ctx)
+        s = engine.summarise(trades, meta)
+    finally:
+        if had is None:
+            engine.LIBRARY.pop(S.name, None)
+        else:
+            engine.LIBRARY[S.name] = had
+    return dict(ran=True, contract=contract, timeframe=timeframe,
+                signals=len(np.asarray(res[0])), trades=s["trades"],
+                pnl=round(s["pnl"], 2),
+                t_daily=(None if s["t_daily"] != s["t_daily"] else round(s["t_daily"], 2)))
+
+
+def _isolated_check(path: Path, timeout=30) -> tuple[bool, str]:
+    """Validate a file in a separate process first, so a hang or a crash cannot
+    take the app with it. Cheap: it happens once, at load."""
+    code = textwrap.dedent(f"""
+        import sys, json
+        sys.path.insert(0, {str(Path(__file__).parent)!r})
+        import plugins
+        try:
+            S = plugins.load_source(open({str(path)!r}).read(), {path.name!r})
+            print(json.dumps(dict(ok=True, name=S.name, label=S.label)))
+        except Exception as exc:
+            print(json.dumps(dict(ok=False, why=str(exc))))
+        """)
+    try:
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                           text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"still running after {timeout}s at import time — an infinite loop?"
+    out = (r.stdout or "").strip().splitlines()
+    if not out:
+        return False, f"produced no output; stderr: {(r.stderr or '').strip()[:300]}"
+    try:
+        d = json.loads(out[-1])
+    except ValueError:
+        return False, f"unexpected output: {out[-1][:200]}"
+    return bool(d.get("ok")), d.get("why", "")
+
+
+def scan(directory: Path | None = None) -> list[dict]:
+    """Every file in the folder, with its verdict. Never raises."""
+    d = Path(directory or USER_DIR)
+    if not d.is_dir():
+        return []
+    rows = []
+    for f in sorted(d.glob("*.py")):
+        if f.name.startswith("_"):
+            continue
+        row = dict(file=f.name, path=str(f))
+        ok, why = _isolated_check(f)
+        if not ok:
+            rows.append(dict(row, ok=False, error=why))
+            continue
+        try:
+            S = load_source(f.read_text(), f.name)
+            if S.name in engine.LIBRARY and S.name not in _INSTALLED:
+                raise Rejected(
+                    f"name {S.name!r} is already taken by a built-in strategy. "
+                    f"Rename it: sharing a name would make the trial ledger's "
+                    f"history ambiguous.")
+            row.update(ok=True, name=S.name, label=S.label,
+                       params=list(S.params), cls=S)
+            row["smoke"] = smoke_test(S)
+            rows.append(row)
+        except Rejected as exc:
+            rows.append(dict(row, ok=False, error=str(exc)))
+        except Exception as exc:
+            rows.append(dict(row, ok=False, error=f"{type(exc).__name__}: {exc}"))
+    return rows
+
+
+_INSTALLED: dict[str, type] = {}
+
+
+def register_all(directory: Path | None = None) -> list[dict]:
+    """Load every valid plugin into `engine.LIBRARY`. Returns the scan report."""
+    rows = scan(directory)
+    for r in rows:
+        if r.get("ok") and r.get("cls") is not None:
+            engine.LIBRARY[r["name"]] = r["cls"]
+            _INSTALLED[r["name"]] = r["cls"]
+    return [{k: v for k, v in r.items() if k != "cls"} for r in rows]
+
+
+def installed() -> list[str]:
+    return sorted(_INSTALLED)
+
+
+TEMPLATE = '''\
+# A PropSim strategy. Drop this file in ~/.prop-sim/strategies/ and it appears in
+# the Backtest and Optimize tabs.
+#
+# NOTHING IS IMPORTED. The engine hands you:
+#   np          numpy
+#   tp          tape helpers: tp.day_index(ts), tp.sec_of_day(ts), tp.TPS
+#   TICK_SIZE   price increment of the instrument
+#   POINT_VALUE currency per point
+#   Strategy, Param
+#
+# `bars` is a dict of arrays, one entry per bar:
+#   t      timestamp of the bar's first tick   o h l c   open/high/low/close
+#   v      volume                              delta     signed order flow
+#   start  index of its first tick in `tape`   end       one past its last
+#
+# `tape` is a dict of arrays, one entry per TICK:
+#   ts     timestamp        px    price
+#   vol    size             side  +1 traded at the ask, -1 at the bid, 0 unknown
+#
+# You return parallel arrays: the TICK INDEX to enter at, the direction (+1/-1),
+# the stop price and the target price. Optionally a fifth array of limit prices,
+# if the entry is a resting limit rather than a market order.
+#
+# TWO RULES THE ENGINE CANNOT ENFORCE FOR YOU:
+#
+# 1. NO LOOKAHEAD. A bar's high, low and close are only known once it has closed.
+#    If your signal comes from bar i, enter on bar i+1 -- or, if the entry is a
+#    price level crossed mid-bar, find the actual tick that crossed it by scanning
+#    tape["px"] between bars["start"][i] and bars["end"][i]. Entering at a bar's
+#    first tick using that bar's own high is free money that does not exist; it is
+#    the single most common way a backtest lies.
+#
+# 2. A LONG'S STOP GOES BELOW ITS ENTRY. The engine refuses a trade that opens
+#    already past its own stop or target, so a sign error shows up as a strategy
+#    that mysteriously takes no trades.
+
+
+class MomentumBreak(Strategy):
+    name, label = "momentum_break", "Momentum break (template)"
+    uses_ticks = True
+
+    params = {
+        "lookback": Param(20, 3, 200, "bars in the range"),
+        "stop_ticks": Param(40, 4, 200, "stop distance, ticks"),
+        "rr": Param(2.0, 0.5, 6.0, "target as a multiple of the stop"),
+        "min_delta": Param(0, -5000, 5000, "order-flow delta the bar must show"),
+    }
+
+    def entries(self, bars, tape, p):
+        c, h, l = bars["c"], bars["h"], bars["l"]
+        n = len(c)
+        look = int(p["lookback"])
+        if n < look + 2:
+            return (np.array([], np.int64), np.array([], np.int8),
+                    np.array([]), np.array([]))
+
+        # Rolling extremes of the PREVIOUS `look` bars, so bar i is never part of
+        # the range it is compared against.
+        hi = np.full(n, np.nan)
+        lo = np.full(n, np.nan)
+        for i in range(look, n):
+            hi[i] = h[i - look:i].max()
+            lo[i] = l[i - look:i].min()
+
+        et, dr, st, tg = [], [], [], []
+        stop = p["stop_ticks"] * TICK_SIZE
+        for i in range(look, n - 1):
+            if not np.isfinite(hi[i]):
+                continue
+            if abs(bars["delta"][i]) < p["min_delta"]:
+                continue
+            up = c[i] > hi[i]
+            dn = c[i] < lo[i]
+            if not (up or dn):
+                continue
+            d = 1 if up else -1
+            # Enter on the NEXT bar's first tick: this bar's close is the signal.
+            j = int(bars["start"][i + 1])
+            fill = float(tape["px"][j])
+            et.append(j)
+            dr.append(d)
+            st.append(fill - d * stop)
+            tg.append(fill + d * stop * p["rr"])
+
+        if not et:
+            return (np.array([], np.int64), np.array([], np.int8),
+                    np.array([]), np.array([]))
+        return (np.array(et, np.int64), np.array(dr, np.int8),
+                np.array(st), np.array(tg))
+'''
+
+
+def selfcheck():
+    import tempfile
+    d = Path(tempfile.mkdtemp(prefix="propsim-plugins-"))
+
+    # 1. The template must load, pass the contract check and actually trade.
+    (d / "template.py").write_text(TEMPLATE)
+    rows = scan(d)
+    assert len(rows) == 1, rows
+    r = rows[0]
+    assert r["ok"], r.get("error")
+    assert r["name"] == "momentum_break", r
+    if r["smoke"]["ran"]:
+        assert r["smoke"]["trades"] > 0, r["smoke"]
+
+    # 2. Things that must be refused, each for its own reason.
+    cases = {
+        "import os\nclass A(Strategy):\n name=label='a'\n params={}\n def entries(s,b,t,p): pass":
+            "import",
+        "class A(Strategy):\n name=label='a'\n params={}\n def entries(s,b,t,p):\n  return eval('1')":
+            "eval",
+        "class A(Strategy):\n name=label='a'\n params={}\n def entries(s,b,t,p):\n  return (1).__class__":
+            "dunder",
+        "x = 1": "Strategy",
+        "class A(Strategy):\n name=label='a'\n params={'k': 5}\n def entries(s,b,t,p): pass":
+            "Param",
+        "class A(Strategy):\n name=label='a'\n params={'k': Param(9, 0, 5, 'x')}\n def entries(s,b,t,p): pass":
+            "outside",
+        # np.load with a pickle is arbitrary code execution wearing a friendly name
+        "class A(Strategy):\n name=label='a'\n params={}\n def entries(s,b,t,p):\n  return np.load('/tmp/x.npy', allow_pickle=True)":
+            "filesystem",
+    }
+    for src, expect in cases.items():
+        try:
+            load_source(src)
+            raise AssertionError(f"should have been rejected ({expect}): {src[:40]}")
+        except Rejected as exc:
+            assert expect.lower() in str(exc).lower(), (expect, str(exc))
+
+    # 3. Shadowing a built-in name is refused: the ledger's history would become
+    #    ambiguous about which "orb" a past trial referred to.
+    (d / "shadow.py").write_text(TEMPLATE.replace('"momentum_break"', '"orb"')
+                                         .replace("name, label =", "name, label ="))
+    bad = [x for x in scan(d) if x["file"] == "shadow.py"][0]
+    assert not bad["ok"] and "already taken" in bad["error"], bad
+
+    # 4. The output contract catches the mistakes a generated strategy makes.
+    contracts = tp.cached_contracts()
+    if contracts:
+        ctx = engine.prepare(contracts[0], 5)
+        tape, bars = ctx["tape"], ctx["bars"]
+        ei = np.array([10, 20], np.int64)
+        px = tape["px"][ei]
+        assert not check_output((ei, np.array([1, 1], np.int8), px - 1, px + 1),
+                               tape, bars)
+        # stop above a long's entry
+        probs = check_output((ei, np.array([1, 1], np.int8), px + 1, px + 2), tape, bars)
+        assert any("wrong side" in x for x in probs), probs
+        # mismatched lengths
+        probs = check_output((ei, np.array([1], np.int8), px, px), tape, bars)
+        assert any("different lengths" in x for x in probs), probs
+        # prices where indices belong
+        probs = check_output((px, np.array([1, 1], np.int8), px - 1, px + 1), tape, bars)
+        assert any("TICK INDICES" in x for x in probs), probs
+
+    print(f"selfcheck OK: template loads and trades "
+          f"({rows[0]['smoke'].get('trades', '—')} trades); "
+          f"{len(cases)} malformed files refused with the right reason; "
+          f"a built-in name cannot be shadowed; the output contract catches "
+          f"wrong-side stops, length mismatches and prices-as-indices")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dir")
+    ap.add_argument("--template", action="store_true", help="print a starter file")
+    ap.add_argument("--check", metavar="FILE")
+    ap.add_argument("--install-template", action="store_true")
+    ap.add_argument("--selfcheck", action="store_true")
+    args = ap.parse_args()
+
+    if args.selfcheck:
+        return selfcheck()
+    if args.template:
+        print(TEMPLATE, end="")
+        return
+    if args.install_template:
+        USER_DIR.mkdir(parents=True, exist_ok=True)
+        p = USER_DIR / "momentum_break.py"
+        if p.exists():
+            raise SystemExit(f"{p} already exists — not overwriting it")
+        p.write_text(TEMPLATE)
+        print(f"wrote {p}")
+        return
+    if args.check:
+        f = Path(args.check)
+        ok, why = _isolated_check(f)
+        if not ok:
+            raise SystemExit(f"REJECTED: {why}")
+        S = load_source(f.read_text(), f.name)
+        print(f"OK: {S.name} — {S.label}, params: {', '.join(S.params) or 'none'}")
+        try:
+            print("smoke test:", smoke_test(S))
+        except Rejected as exc:
+            raise SystemExit(f"REJECTED by the output contract: {exc}")
+        return
+
+    d = Path(args.dir) if args.dir else USER_DIR
+    rows = scan(d)
+    if not rows:
+        print(f"No strategy files in {d}.\n"
+              f"Write one there, or start from the template:\n"
+              f"  python3 plugins.py --install-template")
+        return
+    print(f"{'file':<28}{'name':<20}{'trades':>8}{'P&L':>11}{'t':>7}   status")
+    for r in rows:
+        if not r["ok"]:
+            print(f"{r['file']:<28}{'—':<20}{'':>8}{'':>11}{'':>7}   "
+                  f"REJECTED: {r['error'][:70]}")
+            continue
+        sm = r.get("smoke") or {}
+        t = sm.get("t_daily")
+        print(f"{r['file']:<28}{r['name']:<20}"
+              f"{sm.get('trades', '—'):>8}{sm.get('pnl', 0):>11,.0f}"
+              f"{(f'{t:.2f}' if t is not None else '—'):>7}   ok")
+
+
+if __name__ == "__main__":
+    main()

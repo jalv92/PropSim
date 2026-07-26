@@ -706,6 +706,13 @@ def main():
     ap.add_argument("--selfcheck", action="store_true")
     args = ap.parse_args()
 
+    # Your own strategies count as strategies everywhere, not only in the UI.
+    try:
+        import plugins
+        plugins.register_all()
+    except Exception:
+        pass
+
     if args.selfcheck:
         return selfcheck()
 

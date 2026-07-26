@@ -212,6 +212,7 @@
         </label>
       </div>
 
+      <div id="bt_plugins"></div>
       <div class="row">
         <label>3. Strategy <span class="hint">(PropSim's own, in Python)</span>
           <select id="bt_strategy"></select>
@@ -241,6 +242,7 @@
       constant.</p>
 
       <button id="bt_run" class="primary big">Run backtest</button>
+      <button id="bt_reload" class="mini">reload my strategies</button>
       <span id="bt_status" class="hint"></span>
 
       <div id="bt_out" hidden>
@@ -725,7 +727,7 @@ function render(){
 }
 
 /* ---------- backtest tab ---------- */
-let TAPE=[], STRATS=[], BT=null;
+let TAPE=[], STRATS=[], PLUGINS=[], BT=null;
 
 function btInit(){
   if(STRATS.length) return;
@@ -739,15 +741,33 @@ function btInit(){
     // Grouped and labelled, because a bare list under a heading that says
     // "Strategy" reads as "my strategies" — and the one thing this tab cannot do
     // is run the user's NinjaScript.
+    const opt = s =>
+      `<option value="${s.name}">${s.label}${s.uses_ticks?" · reads the tape":""}</option>`;
+    const built = STRATS.filter(s=>!s.mine), mine = STRATS.filter(s=>s.mine);
     $("#bt_strategy").innerHTML =
-      `<optgroup label="PropSim engine — Python, runs here on your ticks">`
-      + STRATS.map(s=>
-        `<option value="${s.name}">${s.label}${s.uses_ticks?" · reads the tape":""}</option>`).join("")
-      + `</optgroup>`;
+      (mine.length ? `<optgroup label="Yours — from ~/.prop-sim/strategies/">`
+        + mine.map(opt).join("") + `</optgroup>` : "")
+      + `<optgroup label="PropSim engine — built in">`
+      + built.map(opt).join("") + `</optgroup>`;
+    if(d.plugins) PLUGINS = d.plugins;
+    btPluginNote(d.dir);
     btParams();
     btTape();                       // btContract() decides if Run may enable
   }).catch(()=>{ $("#bt_status").textContent =
       "Could not load the strategy list — is the program still running?"; });
+}
+
+function btPluginNote(dir){
+  const bad = (PLUGINS||[]).filter(p=>!p.ok);
+  const ok = (PLUGINS||[]).filter(p=>p.ok);
+  let html = "";
+  if(ok.length) html += `<div class="hint"><b>${ok.length}</b> strategy file(s)
+    loaded from <code>${dir||""}</code>.</div>`;
+  // A rejected file is reported, never silently skipped: a strategy that quietly
+  // does not exist looks exactly like one that finds no trades.
+  for(const p of bad) html += `<div class="warn bad" style="margin-top:8px">
+    <b>${p.file} was rejected.</b> ${p.error}</div>`;
+  $("#bt_plugins").innerHTML = html;
 }
 
 function btTape(){
@@ -1279,6 +1299,14 @@ $("#bt_contract").onchange=btContract;
 $("#bt_strategy").onchange=btParams;
 $("#bt_prepare").onclick=btPrepare;
 $("#bt_run").onclick=btRun;
+$("#bt_reload").onclick=()=>{
+  $("#bt_status").textContent="Re-scanning…";
+  fetch("/api/plugins/reload").then(r=>r.json()).then(d=>{
+    PLUGINS = d.plugins||[]; STRATS=[];        // force btInit to refetch the list
+    $("#bt_strategy").innerHTML=""; $("#op_strategy").innerHTML="";
+    btInit(); $("#bt_status").textContent="";
+  }).catch(()=>{ $("#bt_status").textContent="Could not re-scan the folder."; });
+};
 $("#bt_all").onclick=()=>{ const c=TAPE.find(x=>x.contract===$("#bt_contract").value);
   if(c){ $("#bt_start").value=c.first; $("#bt_end").value=c.last; } };
 $("#bt_score").onclick=()=>{
