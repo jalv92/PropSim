@@ -733,7 +733,16 @@ function btRender(){
   $("#bt_meta").innerHTML =
     `<b>${s.label}</b> · ${s.contract} · <b>${s.timeframe}-minute bars</b> · `
     + `${s.start} to ${s.end} (${s.days} days) · ${s.signals} signals, ${s.trades} taken · `
-    + `slippage ${s.slippage_ticks} ticks/side`;
+    + `slippage ${s.slippage_ticks} ticks/side`
+    // Missing data is not a footnote: bars spanning a hole are fiction, and a
+    // P&L built on them is too. One hole on this contract is 59 minutes long.
+    + (s.data_holes ? `<div class="warn" style="margin-top:8px">
+        <b>${s.data_holes} hole(s) in the tape inside a session</b>
+        (${(s.hole_days||[]).join(", ")}). Hourly tick files are missing there, so
+        any bar spanning one is fiction and a stop resolved across one would book a
+        fill the market never printed. Positions are closed at the last real tick
+        instead — ${s.gap_exits} trade(s) exited that way. Consider excluding those
+        dates, or re-downloading the data in NinjaTrader.</div>` : "");
   drawCurve();
   const rows = BT.trades.map(t=>
     `<tr><td>${t.date}</td><td>${t.dir>0?"long":"short"}</td><td>${t.entry}</td>
@@ -915,23 +924,27 @@ function renderVerdict(){
 }
 
 $("#mcBody").innerHTML = `
-  <p>The Monte Carlo resamples a <b>parametric</b> trade profile (win rate,
-  reward:risk, risk per contract, trades per day, friction), not your real trade
-  list. 10,000 draws of the same estimated parameters are not 10,000 pieces of
-  evidence — the uncertainty in P(pass) is inherited entirely from the
+  <p>With no trade source selected, the Monte Carlo resamples a <b>parametric</b>
+  trade profile (win rate, reward:risk, risk per contract, trades per day,
+  friction). 10,000 draws of the same estimated parameters are not 10,000 pieces
+  of evidence — the uncertainty in P(pass) is inherited entirely from the
   uncertainty in those parameters and then passed through a steep non-linear
   map.</p>
   <p><b>Known modelling gaps, stated rather than hidden:</b></p>
   <ul>
-    <li>Evaluation and funded phases are drawn <b>independently</b> — a path that
-    barely scraped through its eval starts the funded phase from the nominal
-    balance, not the state it finished in.</li>
+    <li>The two phases are <b>chained</b>: each path carries its own pass day into
+    the funded phase, so it gets the remaining planning horizon rather than a
+    fresh one, and days-to-first-payout is measured from the day the evaluation
+    was bought. What is <i>not</i> carried over is the balance — every firm here
+    starts a funded account at its own nominal figure.</li>
     <li>Intra-trade excursion is <b>modelled, not simulated</b>: a Bernoulli trade
     has no price path, so a winner's worst excursion is assumed to be half its
     stop distance (<code>MAE_FRAC_WIN = 0.5</code>). This is the largest single
     assumption in the engine and it only bites when the breach basis is intraday.</li>
-    <li>Bootstrap-from-a-real-trade-list is not implemented yet; that is what
-    removes the assumption above.</li>
+    <li>All of the above applies <b>only to the parametric profiles</b>. Pick a
+    real trade source — an account, a backtest, an imported NinjaTrader run — and
+    the bootstrap resamples whole trading days with their real per-trade
+    excursions, which removes the assumption above entirely.</li>
   </ul>
   <p><b>Regimes is disabled on purpose.</b> Slicing results by market regime after
   the fact is p-hacking with a chart attached. If it is ever added it must

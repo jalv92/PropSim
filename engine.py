@@ -100,9 +100,12 @@ class MACross(Strategy):
             return _empty()
         direc = np.where(up[idx], 1, -1).astype(np.int8)
         # enter on the first tick of the NEXT bar: acting on the signal bar's
-        # own close would be lookahead
+        # own close would be lookahead. And that next bar has to be in the SAME
+        # session -- a cross detected at 16:00 must not open a position at 09:30
+        # the following morning on a stale signal, across an unseen overnight gap.
+        day = tp.day_index(bars["t"])
         nxt = idx + 1
-        ok = nxt < len(bars["start"])
+        ok = (nxt < len(bars["start"])) & (day[np.minimum(nxt, len(day) - 1)] == day[idx])
         idx, direc, nxt = idx[ok], direc[ok], nxt[ok]
         entry_tick = bars["start"][nxt]
         px = bars["o"][nxt].astype(np.float64)
@@ -247,6 +250,9 @@ class FVG(Strategy):
         px, ts = tape["px"], tape["ts"]
         exp = int(p["expiry_bars"])
         day = tp.day_index(bars["t"])
+        # last bar of each bar's own session, so a retrace window cannot wait for
+        # the level overnight and get filled by tomorrow's opening gap
+        last_bar = np.searchsorted(day, day, "right") - 1
         et, dr, st, tg, lim = [], [], [], [], []
         used_days = set()
 
@@ -272,7 +278,7 @@ class FVG(Strategy):
             bull = bull_gap[k] >= gap
             level = l[i] if bull else h[i]         # near edge of the gap
             a = int(bars["start"][i + 1])
-            b = int(bars["end"][min(i + exp, n - 1)])
+            b = int(bars["end"][min(i + exp, int(last_bar[i]), n - 1)])
             seg = px[a:b]
             if not len(seg):
                 continue
@@ -349,9 +355,11 @@ class VWAPRevert(Strategy):
         far = bars["c"] - vwap
         sig = np.flatnonzero((np.abs(far) >= stretch)
                              & (bar_of_day >= int(p["min_bar"])))
-        # act on the NEXT bar's first tick: the signal uses this bar's close
+        # act on the NEXT bar's first tick: the signal uses this bar's close. Same
+        # session only -- a stretch measured at the close is not a reason to buy
+        # tomorrow's open.
         nxt = sig + 1
-        ok = nxt < len(starts)
+        ok = (nxt < len(starts)) & (day[np.minimum(nxt, len(day) - 1)] == day[sig])
         sig, nxt = sig[ok], nxt[ok]
         if not len(sig):
             return _empty()
@@ -407,8 +415,12 @@ class Trade:
         return self.entry_time.date().isoformat()
 
 
+MAX_GAP_S = 120.0           # a longer silence inside a session is missing data
+
+
 def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
-            cooldown_min=0.0, timeout_min=240.0, limit_px=None) -> list[Trade]:
+            cooldown_min=0.0, timeout_min=240.0, limit_px=None,
+            max_gap_s=MAX_GAP_S) -> list[Trade]:
     """Walk ticks from each entry to its exit. One position at a time.
 
     Bounded forward scans, deliberately: an unbounded per-trade scan to the end
@@ -430,6 +442,16 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
     free_at = -1
     slip = costs.slippage_ticks * costs.tick_size
 
+    # EVERY POSITION IS FLAT AT THE SESSION CLOSE, and this is not a preference.
+    # The tape is RTH-filtered, so 16:00 of one day sits immediately next to 09:30
+    # of the next IN THE ARRAY. A scan that ignores the boundary lets the next
+    # session's opening gap "breach" today's stop: one FVG trade entered at
+    # 30611.75 was filled out at 29718.50 -- 893 points, -$17,870 -- on a stop 40
+    # ticks away. It also fed a 893-point overnight gap into the intraday drawdown
+    # test, which is the number this whole product exists to get right.
+    day = tp.day_index(ts)
+    gap_limit = int(max_gap_s * tp.TPS)
+
     for k in range(len(entry_idx)):
         i0 = int(entry_idx[k])
         if i0 >= n or ts[i0] < free_at:
@@ -439,6 +461,7 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
             fill = float(px[i0]) + d * slip      # market order pays the spread
         else:
             fill = float(limit_px[k])            # resting limit fills at its price
+        session_end = int(np.searchsorted(day, day[i0], "right"))
         st, tg = float(stop[k]), float(target[k])
         # INVARIANT: a trade cannot open already past its own stop or target.
         # Nobody fills you and then pays you for being stopped out, and nobody
@@ -448,10 +471,22 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
             continue
         if (fill >= tg if d > 0 else fill <= tg):
             continue
-        stop_end = np.searchsorted(ts, ts[i0] + horizon, "right")
+        stop_end = min(int(np.searchsorted(ts, ts[i0] + horizon, "right")),
+                       session_end)
         lo = hi = fill
-        exit_i, exit_px, why = None, None, "timeout"
+        exit_i, exit_px, why = None, None, ("close" if stop_end == session_end
+                                            else "timeout")
         for i in range(i0 + 1, min(stop_end, n)):
+            # A HOLE IN THE TAPE IS NOT A PRICE MOVE. This contract's data has
+            # missing hours -- 2026-07-17 jumps 3,538 seconds in one step, and a
+            # second hole of 377 seconds moved price 98 points. Resolving a stop
+            # across one of those books a fill the market never printed: it turned
+            # a 40-tick stop into a -$1,960 loss. Close at the last real tick and
+            # label it, so the run reports missing data instead of inventing a
+            # catastrophe from it.
+            if ts[i] - ts[i - 1] > gap_limit:
+                exit_i, exit_px, why = i - 1, float(px[i - 1]), "gap"
+                break
             p = float(px[i])
             if p < lo: lo = p
             if p > hi: hi = p
@@ -511,12 +546,21 @@ def backtest(contract, strategy_name, timeframe=5, start=None, end=None,
     cd = p.get("cooldown_min", 0.0)
     trades = resolve(t, ei, dr, st, tg, costs, cooldown_min=cd, limit_px=lim)
 
-    days = np.unique(tp.day_index(t["ts"]))
+    dayi = tp.day_index(t["ts"])
+    days = np.unique(dayi)
+    # Data quality, reported rather than assumed: a silence longer than MAX_GAP_S
+    # inside a session means hourly files are missing, and every bar spanning one
+    # is fiction. The user needs to see that before believing a P&L built on it.
+    dt = np.diff(t["ts"])
+    holes = np.flatnonzero((dt > MAX_GAP_S * tp.TPS) & (np.diff(dayi) == 0))
     meta = dict(contract=contract, strategy=strategy_name, label=strat.label,
                 timeframe=timeframe, start=tp.date_str(days[0]),
                 end=tp.date_str(days[-1]), days=len(days), rth_only=rth_only,
                 params=p, bars=len(bars["t"]), ticks=len(t["ts"]),
                 signals=len(ei), trades=len(trades),
+                data_holes=len(holes),
+                hole_days=sorted({tp.date_str(int(dayi[i])) for i in holes}),
+                gap_exits=sum(1 for x in trades if x.reason == "gap"),
                 commission=costs.commission, slippage_ticks=costs.slippage_ticks)
     return trades, meta
 
@@ -572,7 +616,7 @@ def selfcheck():
 
     # 5. Every trade must resolve to a real exit reason.
     tr, _ = backtest(c, "orb", 5)
-    assert all(t.reason in ("stop", "target", "timeout") for t in tr)
+    assert all(t.reason in ("stop", "target", "timeout", "close", "gap") for t in tr)
     assert all(t.mae <= 0 <= t.mfe for t in tr), "MAE/MFE signs"
 
     # 6. THE INVARIANT THAT CAUGHT A REAL BUG. A stop-out cannot make money and a
@@ -584,6 +628,15 @@ def selfcheck():
     slip_cost = costs.slippage_ticks * costs.tick_size * costs.point_value
     for name in LIBRARY:
         trades, meta = backtest(c, name, 5, costs=costs)
+        # 7. NO TRADE MAY SPAN TWO DATES. The tape is RTH-filtered, so the array
+        #    hides the overnight break entirely: 16:00 sits next to 09:30. Every
+        #    strategy fell through it, and the damage was not subtle -- an FVG
+        #    long entered at 30611.75 was stopped out at 29718.50 by the next
+        #    morning's gap, booking -$17,870 on a 40-tick stop and feeding an
+        #    893-point overnight excursion into the intraday drawdown test.
+        for t in trades:
+            assert t.entry_time.date() == t.exit_time.date(), (
+                f"{name}: trade spans {t.entry_time} -> {t.exit_time}")
         for t in trades:
             if t.reason == "stop":
                 assert t.pnl < 0, f"{name}: profitable stop-out {t.pnl:+.0f}"
@@ -597,6 +650,20 @@ def selfcheck():
                     f"{name}: stop paid {t.pnl:.2f}, excursion implies {want:.2f}")
             elif t.reason == "target":
                 assert t.pnl > 0, f"{name}: losing target exit {t.pnl:+.0f}"
+        # 8. A stop cannot lose an unbounded amount. Slipping through its level is
+        #    real: measured on this tape the median gap-through is 0-3 ticks and
+        #    p90 is 3-8, with a tail to 62 ticks for the strategies that enter in
+        #    the fastest moments. What is NOT real is 392 or 3,573 ticks, which is
+        #    what resolving a fill across a hole in the tape or across the
+        #    overnight break produced. The bound sits above the measured tail and
+        #    far below those, so it catches the class of bug without encoding noise.
+        nominal = meta["params"]["stop_ticks"] * costs.tick_size * costs.point_value
+        bound = -(nominal + 100 * costs.tick_size * costs.point_value)
+        for t in trades:
+            if t.reason == "stop":
+                assert t.pnl >= bound, (
+                    f"{name}: stop lost {t.pnl:,.0f}, bound {bound:,.0f} "
+                    f"({meta['data_holes']} data holes in range)")
 
     print(f"selfcheck OK: ORB timeframe-invariant (${pnls[1]:,.0f} at 1/5/15m); "
           f"MA cross varies ({ma[1]['trades']} vs {ma[15]['trades']} trades); "

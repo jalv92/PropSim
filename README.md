@@ -136,6 +136,9 @@ trade list again does not.
 Where each rule came from, when it was read, what is **unverified**, and which
 rules the simulator does not model at all.
 
+**A tab-by-tab explanation of what each screen does and where its data comes
+from is in [`docs/how-it-works.md`](docs/how-it-works.md).**
+
 ---
 
 ## What it does that other calculators do not
