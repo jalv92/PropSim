@@ -59,13 +59,13 @@ every frame for bottom-edge consistency.
 - scene: One confident green equity curve draws upward, a red floor snaps on beneath it, the curve dies on contact
 - duration: 4s
 - transition_in: cut
-- status: outline
+- status: animated
 - src: compositions/frames/01-hook-found-out.html
 - type: hook
 - blueprint: kinetic-type-beats (Adapt)
 - focal: none — drawn geometry is the hero
 - roles: n/a (no captured assets)
-- asset_candidates: (drawn in-composition — no image files)
+- asset_candidates:
 
 Adapt: keep the beat-slam signature, but the first two beats are **geometry, not
 words** — the shape of the failure lands before any text does.
@@ -91,13 +91,13 @@ curve / type). Settles and reads **still**.
 - scene: The single path multiplies into thousands fanning from one origin — green above, red below — as a counter runs to 10,000
 - duration: 4s
 - transition_in: cut
-- status: outline
+- status: animated
 - src: compositions/frames/02-ten-thousand.html
 - type: pain_point
 - blueprint: dataviz-countup (Adapt)
 - focal: none — the probability cone is the hero
 - roles: n/a (no captured assets)
-- asset_candidates: (drawn in-composition — no image files)
+- asset_candidates:
 
 Adapt: keep the count-up signature, drop the ring — the counter is chrome and
 **the cone is the data**. The cut from Frame 1 is velocity-matched: the dead
@@ -124,13 +124,13 @@ alive. No push, no drift.
 - scene: The cone dims to a ground; the PropSim wordmark lands and the two questions hard-cut in beneath it
 - duration: 4s
 - transition_in: cut
-- status: outline
+- status: animated
 - src: compositions/frames/03-two-questions.html
 - type: product_intro
 - blueprint: kinetic-type-beats (Reproduce)
 - focal: none — type only
 - roles: n/a (no captured assets)
-- asset_candidates: (drawn in-composition — no image files)
+- asset_candidates:
 
 **Held breather #1.** The product is introduced by the two questions it answers
 and nothing else.
@@ -155,13 +155,13 @@ Then everything holds **completely still**.
 - scene: A dense stream of tick marks flows in and condenses into a solid block of real round-trip trades; a folder path resolves beneath
 - duration: 4s
 - transition_in: cut
-- status: outline
+- status: animated
 - src: compositions/frames/04-your-trades.html
 - type: feature_showcase
 - blueprint: grid-card-assemble (Adapt)
 - focal: none — the condensing tape is the hero
 - roles: n/a (no captured assets)
-- asset_candidates: (drawn in-composition — no image files)
+- asset_candidates:
 
 Adapt: keep the staggered self-assembly signature, but the items assemble **out
 of a stream** rather than popping onto a grid — raw tape compressing into
@@ -187,13 +187,13 @@ the upper third: **"your trades. not a model."** Holds.
 - scene: Split stage — the same equity path on both sides; left checks only the daily close and survives, right tests unrealized equity in real time and breaches mid-day
 - duration: 5s
 - transition_in: cut
-- status: outline
+- status: animated
 - src: compositions/frames/05-the-floor.html
 - type: feature_showcase
 - blueprint: comparison-split (Reproduce)
 - focal: none — the two mirrored panels are the hero
 - roles: n/a (no captured assets)
-- asset_candidates: (drawn in-composition — no image files)
+- asset_candidates:
 
 The technical beat. Both panels must show **visibly identical** path geometry —
 the whole point is that only the test differs.
@@ -223,13 +223,13 @@ drift, the comparison does the work.
 - scene: A grid of rule chips assembles — 5 firms, 148 account variants — each stamped with the date it was read; a trials counter ticks alongside
 - duration: 4.5s
 - transition_in: cut
-- status: outline
+- status: animated
 - src: compositions/frames/06-sourced-dated.html
 - type: social_proof
 - blueprint: grid-card-assemble (Reproduce)
 - focal: none — the assembling rule grid is the hero
 - roles: n/a (no captured assets)
-- asset_candidates: (drawn in-composition — no image files)
+- asset_candidates:
 
 Firm names are set as **plain mono text chips — never logos, never brand
 colours.** They are a factual statement of what the rule table covers.
@@ -256,13 +256,13 @@ it came from."** Holds still.
 - scene: Everything clears to the bare cone at low opacity; the honesty line holds alone, then the wordmark and the install line land
 - duration: 4.5s
 - transition_in: cut
-- status: outline
+- status: animated
 - src: compositions/frames/07-not-a-prediction.html
 - type: cta
 - blueprint: titlecard-reveal (Adapt)
 - focal: none — type over the returning cone
 - roles: n/a (no captured assets)
-- asset_candidates: (drawn in-composition — no image files)
+- asset_candidates:
 
 **Held breather #2, and the only frame with a real exit.** Adapt: the calm
 landing beat, but the card that lands is a disclaimer before it is a CTA — the

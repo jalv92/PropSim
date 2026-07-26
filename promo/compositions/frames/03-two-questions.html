@@ -1,5 +1,5 @@
 <template>
-  <div id="root" data-composition-id="03-two-questions">
+  <div id="root" data-composition-id="03-two-questions" data-width="1920" data-height="1080">
     <style>
       #root {
         position: absolute;
@@ -40,13 +40,17 @@
         align-items: center;
       }
 
+      /* the wordmark — mixed case (a brand name is not a statement, so it is the
+         one exception to the lowercase-display rule), display ramp, signal green.
+         Identical face/weight/tracking to frame 07; larger here, where the
+         product is introduced. */
       #tq-wordmark {
         font-family: system-ui;
-        font-size: 13cqw;
+        font-size: 14.5cqw;
         font-weight: 900;
         line-height: 0.88;
         letter-spacing: -0.04em;
-        color: #e7e9ea;
+        color: #34d399;
         transform-origin: 50% 50%;
         will-change: transform;
       }
@@ -95,7 +99,7 @@
       data-duration="4"
       data-track-index="1"
     >
-      <div id="tq-wordmark">propsim</div>
+      <div id="tq-wordmark">PropSim</div>
       <div id="tq-questions">
         <div class="tq-q" id="tq-q1">
           would it <span class="tq-kw" data-word="pass">pass</span>?
@@ -108,13 +112,15 @@
 
     <script>
       (function () {
-        // ---- Scene 1 ground: the same cone as frame 02, already fully drawn at t=0.
-        // Deterministic index-derived pseudo-noise — never Math.random.
-        var ORIGIN_X = 250,
-          ORIGIN_Y = 545,
-          END_X = 1960,
-          STEPS = 24,
-          COUNT = 176;
+        // ---- Scene 1 ground: the same cone as frame 02 (and frame 07's closing
+        // ground) — same origin, step count and noise, so it fans the full frame
+        // from the left edge instead of hugging the right half. Already fully
+        // drawn at t=0. Deterministic index-derived pseudo-noise — never Math.random.
+        var ORIGIN_X = 118,
+          ORIGIN_Y = 512,
+          END_X = 1920,
+          STEPS = 54,
+          COUNT = 150;
 
         function h(a, b) {
           var x = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
@@ -125,18 +131,15 @@
         if (host && !host.childNodes.length) {
           var NS = "http://www.w3.org/2000/svg";
           for (var p = 0; p < COUNT; p++) {
-            var bias = (h(p, 3) - 0.5) * 2; // -1..1 directional drift
-            var vol = 0.55 + h(p, 7) * 0.9; // per-path volatility
+            var drift = (h(p + 1, 3.7) - 0.5) * 2; // -1..1 directional bias
             var y = ORIGIN_Y;
             var pts = ORIGIN_X + "," + ORIGIN_Y;
             for (var s = 1; s <= STEPS; s++) {
-              var f = s / STEPS;
               y +=
-                bias * 19 +
-                (h(p, s * 5 + 11) - 0.5) * 46 * vol * (0.35 + f);
+                drift * 6.4 + (h(p * 7.13 + 2.4, s * 3.71 + 1.3) - 0.5) * 26;
               pts +=
                 " " +
-                (ORIGIN_X + (END_X - ORIGIN_X) * f).toFixed(1) +
+                (ORIGIN_X + (END_X - ORIGIN_X) * (s / STEPS)).toFixed(1) +
                 "," +
                 y.toFixed(1);
             }
@@ -146,10 +149,8 @@
             line.setAttribute("stroke-width", "1");
             // above the origin = a path that survived; below = a path that breached
             line.setAttribute("stroke", y < ORIGIN_Y ? "#34d399" : "#f2635f");
-            line.setAttribute(
-              "stroke-opacity",
-              (0.55 + h(p, 23) * 0.45).toFixed(3),
-            );
+            // flat, like frame 07: 0.62 × the group's 0.16 ≈ the 0.1 ground there
+            line.setAttribute("stroke-opacity", "0.62");
             host.appendChild(line);
           }
         }
@@ -189,7 +190,7 @@
         window.__timelines["03-two-questions"] = tl;
 
         // Scene 2 + 3 land as hard cuts — state pinned at t=0 so seeks are exact.
-        tl.set(["#tq-q1", "#tq-q2"], { opacity: 0 }, 0);
+        gsap.set(["#tq-q1", "#tq-q2"], { opacity: 0 }); // immediate, outside the timeline: a t=0 tl.set does not render at playhead 0
 
         // Scene 1 (0.0-0.9): the cone demotes to ground. Geometry never re-draws.
         tl.fromTo(

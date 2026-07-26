@@ -1,0 +1,1253 @@
+<template>
+  <style>
+    #root {
+      position: relative;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      container-type: size;
+      font-family: system-ui, sans-serif;
+    }
+
+    /* ---------- full-bleed ground (its own clip layer, never on #root) ---------- */
+    .f04-your-trades-ground {
+      position: absolute;
+      inset: 0;
+      background: #0b0b0d;
+    }
+
+    .f04-your-trades-world {
+      position: absolute;
+      inset: 0;
+    }
+
+    /* ---------- scene 1 — the tape ---------- */
+    .f04-your-trades-tape {
+      position: absolute;
+      left: -560px;
+      top: 390px;
+      width: 3000px;
+      height: 340px;
+      transform-origin: 1180px 50%;
+      filter: url(#f04-your-trades-streak);
+    }
+    .f04-your-trades-ghost {
+      filter: none;
+    }
+    .f04-your-trades-tape i {
+      position: absolute;
+      background: #8b9096;
+    }
+
+    /* ---------- scene 2 — the ledger ---------- */
+    .f04-your-trades-head,
+    .f04-your-trades-row {
+      position: relative;
+      display: grid;
+      grid-template-columns: 210px 120px 190px 190px 230px;
+      align-items: center;
+      width: 940px;
+    }
+    .f04-your-trades-head {
+      position: absolute;
+      left: 150px;
+      top: 300px;
+      height: 34px;
+    }
+    .f04-your-trades-head span {
+      font-family: ui-monospace, monospace;
+      white-space: nowrap;
+      font-size: 0.72cqw;
+      font-weight: 500;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #8b9096;
+    }
+    .f04-your-trades-num-h {
+      text-align: right;
+      padding-right: 34px;
+    }
+    .f04-your-trades-hairline {
+      position: absolute;
+      left: 150px;
+      top: 340px;
+      width: 940px;
+      height: 1px;
+      background: #232529;
+    }
+    .f04-your-trades-ledger {
+      position: absolute;
+      left: 150px;
+      top: 348px;
+      width: 940px;
+    }
+    .f04-your-trades-row {
+      height: 54px;
+      border-bottom: 1px solid #232529;
+      font-family: ui-monospace, monospace;
+      font-size: 1.45cqw;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.01em;
+    }
+    .f04-your-trades-sym {
+      color: #8b9096;
+    }
+    .f04-your-trades-side {
+      color: #8b9096;
+      letter-spacing: 0.1em;
+      font-size: 0.9em;
+    }
+    .f04-your-trades-px {
+      color: #e7e9ea;
+      text-align: right;
+      padding-right: 34px;
+    }
+    .f04-your-trades-pnl {
+      display: inline-block;
+      text-align: right;
+      font-weight: 600;
+    }
+    .f04-your-trades-win {
+      color: #34d399;
+    }
+    .f04-your-trades-loss {
+      color: #f2635f;
+    }
+
+    /* ---------- scene 3 — the source path ---------- */
+    .f04-your-trades-rule {
+      position: absolute;
+      left: 150px;
+      top: 830px;
+      width: 36px;
+      height: 2px;
+      background: #34d399;
+      transform-origin: left center;
+    }
+    .f04-your-trades-path {
+      position: absolute;
+      left: 212px;
+      top: 812px;
+      display: flex;
+      align-items: center;
+      font-family: ui-monospace, monospace;
+      font-size: 1.55cqw;
+      letter-spacing: 0;
+      color: #e7e9ea;
+      white-space: pre;
+    }
+    /* typewriter: a clipping window widened in character steps — property-driven,
+       so it renders correctly on a seek (an onUpdate callback would not). */
+    .f04-your-trades-typed {
+      display: block;
+      overflow: hidden;
+      white-space: pre;
+      width: 0;
+    }
+    .f04-your-trades-caret {
+      width: 3px;
+      height: 1.55cqw;
+      margin-left: 4px;
+      background: #34d399;
+    }
+
+    /* ---------- scene 3 — the statement ---------- */
+    .f04-your-trades-kicker {
+      position: absolute;
+      left: 150px;
+      top: 76px;
+      font-family: ui-monospace, monospace;
+      font-size: 0.72cqw;
+      font-weight: 500;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #34d399;
+    }
+    .f04-your-trades-statement {
+      position: absolute;
+      left: 150px;
+      top: 118px;
+      width: 1420px;
+      font-size: 4.5cqw;
+      font-weight: 700;
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      text-transform: lowercase;
+      color: #e7e9ea;
+    }
+    .f04-your-trades-w {
+      display: inline-block;
+      margin-right: 0.26em;
+    }
+    .f04-your-trades-accent {
+      color: #34d399;
+    }
+  </style>
+
+  <div id="root" data-composition-id="04-your-trades" data-width="1920" data-height="1080">
+    <div
+      class="clip f04-your-trades-ground"
+      data-start="0"
+      data-duration="4"
+      data-track-index="0"
+    ></div>
+
+    <div
+      class="clip f04-your-trades-world"
+      data-start="0"
+      data-duration="4"
+      data-track-index="1"
+    >
+      <svg width="0" height="0" aria-hidden="true" style="position: absolute">
+        <filter id="f04-your-trades-streak" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur id="f04-your-trades-blur" in="SourceGraphic" stdDeviation="0 0" />
+        </filter>
+      </svg>
+
+      <div class="f04-your-trades-tape f04-your-trades-ghost" data-i="2" aria-hidden="true">
+        <i style="left:0.0px;top:150.0px;width:2px;height:40px;opacity:0.550"></i>
+        <i style="left:17.3px;top:89.8px;width:1px;height:160.31px;opacity:0.663"></i>
+        <i style="left:26.5px;top:139.8px;width:1px;height:60.43px;opacity:0.775"></i>
+        <i style="left:35.7px;top:79.6px;width:1px;height:180.74px;opacity:0.887"></i>
+        <i style="left:44.9px;top:129.6px;width:1px;height:80.86px;opacity:1.000"></i>
+        <i style="left:62.2px;top:69.4px;width:1px;height:201.17px;opacity:0.625"></i>
+        <i style="left:71.4px;top:119.4px;width:1px;height:101.28999999999999px;opacity:0.738"></i>
+        <i style="left:80.6px;top:59.2px;width:1px;height:221.6px;opacity:0.850"></i>
+        <i style="left:89.8px;top:109.1px;width:1px;height:121.72px;opacity:0.963"></i>
+        <i style="left:99.0px;top:49.0px;width:1px;height:242.03px;opacity:0.588"></i>
+        <i style="left:116.3px;top:98.9px;width:1px;height:142.15px;opacity:0.700"></i>
+        <i style="left:125.5px;top:148.9px;width:1px;height:42.27px;opacity:0.813"></i>
+        <i style="left:134.7px;top:88.7px;width:1px;height:162.57999999999998px;opacity:0.925"></i>
+        <i style="left:143.9px;top:138.7px;width:1px;height:62.7px;opacity:0.550"></i>
+        <i style="left:161.2px;top:78.5px;width:1px;height:183.01px;opacity:0.663"></i>
+        <i style="left:170.4px;top:128.4px;width:1px;height:83.13px;opacity:0.775"></i>
+        <i style="left:179.6px;top:68.3px;width:1px;height:203.44px;opacity:0.887"></i>
+        <i style="left:188.8px;top:118.2px;width:2px;height:103.56px;opacity:1.000"></i>
+        <i style="left:198.0px;top:58.1px;width:1px;height:223.87px;opacity:0.625"></i>
+        <i style="left:215.3px;top:108.0px;width:1px;height:123.99px;opacity:0.738"></i>
+        <i style="left:224.5px;top:47.8px;width:1px;height:244.3px;opacity:0.850"></i>
+        <i style="left:233.7px;top:97.8px;width:1px;height:144.42000000000002px;opacity:0.963"></i>
+        <i style="left:242.9px;top:147.7px;width:1px;height:44.54px;opacity:0.588"></i>
+        <i style="left:260.2px;top:87.6px;width:1px;height:164.85px;opacity:0.700"></i>
+        <i style="left:269.4px;top:137.5px;width:1px;height:64.97px;opacity:0.813"></i>
+        <i style="left:278.6px;top:77.4px;width:1px;height:185.28px;opacity:0.925"></i>
+        <i style="left:287.8px;top:127.3px;width:1px;height:85.4px;opacity:0.550"></i>
+        <i style="left:297.0px;top:67.1px;width:1px;height:205.71px;opacity:0.663"></i>
+        <i style="left:314.3px;top:117.1px;width:1px;height:105.83px;opacity:0.775"></i>
+        <i style="left:323.5px;top:56.9px;width:1px;height:226.14000000000001px;opacity:0.887"></i>
+        <i style="left:332.7px;top:106.9px;width:1px;height:126.26px;opacity:1.000"></i>
+        <i style="left:341.9px;top:46.7px;width:1px;height:246.57px;opacity:0.625"></i>
+        <i style="left:359.2px;top:96.7px;width:1px;height:146.69px;opacity:0.738"></i>
+        <i style="left:368.4px;top:146.6px;width:1px;height:46.81px;opacity:0.850"></i>
+        <i style="left:377.6px;top:86.4px;width:2px;height:167.12px;opacity:0.963"></i>
+        <i style="left:386.8px;top:136.4px;width:1px;height:67.24000000000001px;opacity:0.588"></i>
+        <i style="left:396.0px;top:76.2px;width:1px;height:187.55px;opacity:0.700"></i>
+        <i style="left:413.3px;top:126.2px;width:1px;height:87.67px;opacity:0.813"></i>
+        <i style="left:422.5px;top:66.0px;width:1px;height:207.98px;opacity:0.925"></i>
+        <i style="left:431.7px;top:116.0px;width:1px;height:108.1px;opacity:0.550"></i>
+        <i style="left:440.9px;top:55.8px;width:1px;height:228.41px;opacity:0.663"></i>
+        <i style="left:458.2px;top:105.7px;width:1px;height:128.53px;opacity:0.775"></i>
+        <i style="left:467.4px;top:45.6px;width:1px;height:248.84px;opacity:0.887"></i>
+        <i style="left:476.6px;top:95.5px;width:1px;height:148.96px;opacity:1.000"></i>
+        <i style="left:485.8px;top:145.5px;width:1px;height:49.08px;opacity:0.625"></i>
+        <i style="left:495.0px;top:85.3px;width:1px;height:169.39000000000001px;opacity:0.738"></i>
+        <i style="left:512.3px;top:135.2px;width:1px;height:69.51px;opacity:0.850"></i>
+        <i style="left:521.5px;top:75.1px;width:1px;height:189.82px;opacity:0.963"></i>
+        <i style="left:530.7px;top:125.0px;width:1px;height:89.94px;opacity:0.588"></i>
+        <i style="left:539.9px;top:64.9px;width:1px;height:210.25px;opacity:0.700"></i>
+        <i style="left:557.2px;top:114.8px;width:1px;height:110.37px;opacity:0.813"></i>
+        <i style="left:566.4px;top:54.7px;width:2px;height:230.68px;opacity:0.925"></i>
+        <i style="left:575.6px;top:104.6px;width:1px;height:130.8px;opacity:0.550"></i>
+        <i style="left:584.8px;top:44.4px;width:1px;height:251.11px;opacity:0.663"></i>
+        <i style="left:594.0px;top:94.4px;width:1px;height:151.23000000000002px;opacity:0.775"></i>
+        <i style="left:611.3px;top:144.3px;width:1px;height:51.35px;opacity:0.887"></i>
+        <i style="left:620.5px;top:84.2px;width:1px;height:171.66px;opacity:1.000"></i>
+        <i style="left:629.7px;top:134.1px;width:1px;height:71.78px;opacity:0.625"></i>
+        <i style="left:638.9px;top:74.0px;width:1px;height:192.09px;opacity:0.738"></i>
+        <i style="left:656.2px;top:123.9px;width:1px;height:92.21000000000001px;opacity:0.850"></i>
+        <i style="left:665.4px;top:63.7px;width:1px;height:212.52px;opacity:0.963"></i>
+        <i style="left:674.6px;top:113.7px;width:1px;height:112.64px;opacity:0.588"></i>
+        <i style="left:683.8px;top:53.5px;width:1px;height:232.95px;opacity:0.700"></i>
+        <i style="left:693.0px;top:103.5px;width:1px;height:133.07px;opacity:0.813"></i>
+        <i style="left:710.3px;top:43.3px;width:1px;height:253.38px;opacity:0.925"></i>
+        <i style="left:719.5px;top:93.3px;width:1px;height:153.5px;opacity:0.550"></i>
+        <i style="left:728.7px;top:143.2px;width:1px;height:53.620000000000005px;opacity:0.663"></i>
+        <i style="left:737.9px;top:83.0px;width:1px;height:173.93px;opacity:0.775"></i>
+        <i style="left:755.2px;top:133.0px;width:2px;height:74.05px;opacity:0.887"></i>
+        <i style="left:764.4px;top:72.8px;width:1px;height:194.36px;opacity:1.000"></i>
+        <i style="left:773.6px;top:122.8px;width:1px;height:94.48px;opacity:0.625"></i>
+        <i style="left:782.8px;top:62.6px;width:1px;height:214.79px;opacity:0.738"></i>
+        <i style="left:792.0px;top:112.5px;width:1px;height:114.91px;opacity:0.850"></i>
+        <i style="left:809.3px;top:52.4px;width:1px;height:235.22px;opacity:0.963"></i>
+        <i style="left:818.5px;top:102.3px;width:1px;height:135.34px;opacity:0.588"></i>
+        <i style="left:827.7px;top:42.2px;width:1px;height:255.65px;opacity:0.700"></i>
+        <i style="left:836.9px;top:92.1px;width:1px;height:155.76999999999998px;opacity:0.813"></i>
+        <i style="left:854.2px;top:142.1px;width:1px;height:55.89px;opacity:0.925"></i>
+        <i style="left:863.4px;top:81.9px;width:1px;height:176.2px;opacity:0.550"></i>
+        <i style="left:872.6px;top:131.8px;width:1px;height:76.32px;opacity:0.663"></i>
+        <i style="left:881.8px;top:71.7px;width:1px;height:196.63px;opacity:0.775"></i>
+        <i style="left:891.0px;top:121.6px;width:1px;height:96.75px;opacity:0.887"></i>
+        <i style="left:908.3px;top:61.5px;width:1px;height:217.06px;opacity:1.000"></i>
+        <i style="left:917.5px;top:111.4px;width:1px;height:117.18px;opacity:0.625"></i>
+        <i style="left:926.7px;top:51.3px;width:1px;height:237.49px;opacity:0.738"></i>
+        <i style="left:935.9px;top:101.2px;width:2px;height:137.61px;opacity:0.850"></i>
+        <i style="left:953.2px;top:41.0px;width:1px;height:257.92px;opacity:0.963"></i>
+        <i style="left:962.4px;top:91.0px;width:1px;height:158.04000000000002px;opacity:0.588"></i>
+        <i style="left:971.6px;top:140.9px;width:1px;height:58.16px;opacity:0.700"></i>
+        <i style="left:980.8px;top:80.8px;width:1px;height:178.47px;opacity:0.813"></i>
+        <i style="left:990.0px;top:130.7px;width:1px;height:78.59px;opacity:0.925"></i>
+        <i style="left:1007.3px;top:70.5px;width:1px;height:198.9px;opacity:0.550"></i>
+        <i style="left:1016.5px;top:120.5px;width:1px;height:99.02000000000001px;opacity:0.663"></i>
+        <i style="left:1025.7px;top:60.3px;width:1px;height:219.33px;opacity:0.775"></i>
+        <i style="left:1034.9px;top:110.3px;width:1px;height:119.45px;opacity:0.887"></i>
+        <i style="left:1052.2px;top:50.1px;width:1px;height:239.76px;opacity:1.000"></i>
+        <i style="left:1061.4px;top:100.1px;width:1px;height:139.88px;opacity:0.625"></i>
+        <i style="left:1070.6px;top:150.0px;width:1px;height:40px;opacity:0.738"></i>
+        <i style="left:1079.8px;top:89.8px;width:1px;height:160.31px;opacity:0.850"></i>
+        <i style="left:1089.0px;top:139.8px;width:1px;height:60.43px;opacity:0.963"></i>
+        <i style="left:1106.3px;top:79.6px;width:1px;height:180.74px;opacity:0.588"></i>
+        <i style="left:1115.5px;top:129.6px;width:1px;height:80.86px;opacity:0.700"></i>
+        <i style="left:1124.7px;top:69.4px;width:2px;height:201.17px;opacity:0.813"></i>
+        <i style="left:1133.9px;top:119.4px;width:1px;height:101.28999999999999px;opacity:0.925"></i>
+        <i style="left:1151.2px;top:59.2px;width:1px;height:221.6px;opacity:0.550"></i>
+        <i style="left:1160.4px;top:109.1px;width:1px;height:121.72px;opacity:0.663"></i>
+        <i style="left:1169.6px;top:49.0px;width:1px;height:242.03px;opacity:0.775"></i>
+        <i style="left:1178.8px;top:98.9px;width:1px;height:142.15px;opacity:0.887"></i>
+        <i style="left:1188.0px;top:148.9px;width:1px;height:42.27px;opacity:1.000"></i>
+        <i style="left:1205.3px;top:88.7px;width:1px;height:162.57999999999998px;opacity:0.625"></i>
+        <i style="left:1214.5px;top:138.7px;width:1px;height:62.7px;opacity:0.738"></i>
+        <i style="left:1223.7px;top:78.5px;width:1px;height:183.01px;opacity:0.850"></i>
+        <i style="left:1232.9px;top:128.4px;width:1px;height:83.13px;opacity:0.963"></i>
+        <i style="left:1250.2px;top:68.3px;width:1px;height:203.44px;opacity:0.588"></i>
+        <i style="left:1259.4px;top:118.2px;width:1px;height:103.56px;opacity:0.700"></i>
+        <i style="left:1268.6px;top:58.1px;width:1px;height:223.87px;opacity:0.813"></i>
+        <i style="left:1277.8px;top:108.0px;width:1px;height:123.99px;opacity:0.925"></i>
+        <i style="left:1287.0px;top:47.8px;width:1px;height:244.3px;opacity:0.550"></i>
+        <i style="left:1304.3px;top:97.8px;width:1px;height:144.42000000000002px;opacity:0.663"></i>
+        <i style="left:1313.5px;top:147.7px;width:2px;height:44.54px;opacity:0.775"></i>
+        <i style="left:1322.7px;top:87.6px;width:1px;height:164.85px;opacity:0.887"></i>
+        <i style="left:1331.9px;top:137.5px;width:1px;height:64.97px;opacity:1.000"></i>
+        <i style="left:1349.2px;top:77.4px;width:1px;height:185.28px;opacity:0.625"></i>
+        <i style="left:1358.4px;top:127.3px;width:1px;height:85.4px;opacity:0.738"></i>
+        <i style="left:1367.6px;top:67.1px;width:1px;height:205.71px;opacity:0.850"></i>
+        <i style="left:1376.8px;top:117.1px;width:1px;height:105.83px;opacity:0.963"></i>
+        <i style="left:1386.0px;top:56.9px;width:1px;height:226.14000000000001px;opacity:0.588"></i>
+        <i style="left:1403.3px;top:106.9px;width:1px;height:126.26px;opacity:0.700"></i>
+        <i style="left:1412.5px;top:46.7px;width:1px;height:246.57px;opacity:0.813"></i>
+        <i style="left:1421.7px;top:96.7px;width:1px;height:146.69px;opacity:0.925"></i>
+        <i style="left:1430.9px;top:146.6px;width:1px;height:46.81px;opacity:0.550"></i>
+        <i style="left:1448.2px;top:86.4px;width:1px;height:167.12px;opacity:0.663"></i>
+        <i style="left:1457.4px;top:136.4px;width:1px;height:67.24000000000001px;opacity:0.775"></i>
+        <i style="left:1466.6px;top:76.2px;width:1px;height:187.55px;opacity:0.887"></i>
+        <i style="left:1475.8px;top:126.2px;width:1px;height:87.67px;opacity:1.000"></i>
+        <i style="left:1485.0px;top:66.0px;width:1px;height:207.98px;opacity:0.625"></i>
+        <i style="left:1502.3px;top:116.0px;width:2px;height:108.1px;opacity:0.738"></i>
+        <i style="left:1511.5px;top:55.8px;width:1px;height:228.41px;opacity:0.850"></i>
+        <i style="left:1520.7px;top:105.7px;width:1px;height:128.53px;opacity:0.963"></i>
+        <i style="left:1529.9px;top:45.6px;width:1px;height:248.84px;opacity:0.588"></i>
+        <i style="left:1547.2px;top:95.5px;width:1px;height:148.96px;opacity:0.700"></i>
+        <i style="left:1556.4px;top:145.5px;width:1px;height:49.08px;opacity:0.813"></i>
+        <i style="left:1565.6px;top:85.3px;width:1px;height:169.39000000000001px;opacity:0.925"></i>
+        <i style="left:1574.8px;top:135.2px;width:1px;height:69.51px;opacity:0.550"></i>
+        <i style="left:1584.0px;top:75.1px;width:1px;height:189.82px;opacity:0.663"></i>
+        <i style="left:1601.3px;top:125.0px;width:1px;height:89.94px;opacity:0.775"></i>
+        <i style="left:1610.5px;top:64.9px;width:1px;height:210.25px;opacity:0.887"></i>
+        <i style="left:1619.7px;top:114.8px;width:1px;height:110.37px;opacity:1.000"></i>
+        <i style="left:1628.9px;top:54.7px;width:1px;height:230.68px;opacity:0.625"></i>
+        <i style="left:1646.2px;top:104.6px;width:1px;height:130.8px;opacity:0.738"></i>
+        <i style="left:1655.4px;top:44.4px;width:1px;height:251.11px;opacity:0.850"></i>
+        <i style="left:1664.6px;top:94.4px;width:1px;height:151.23000000000002px;opacity:0.963"></i>
+        <i style="left:1673.8px;top:144.3px;width:1px;height:51.35px;opacity:0.588"></i>
+        <i style="left:1683.0px;top:84.2px;width:2px;height:171.66px;opacity:0.700"></i>
+        <i style="left:1700.3px;top:134.1px;width:1px;height:71.78px;opacity:0.813"></i>
+        <i style="left:1709.5px;top:74.0px;width:1px;height:192.09px;opacity:0.925"></i>
+        <i style="left:1718.7px;top:123.9px;width:1px;height:92.21000000000001px;opacity:0.550"></i>
+        <i style="left:1727.9px;top:63.7px;width:1px;height:212.52px;opacity:0.663"></i>
+        <i style="left:1745.2px;top:113.7px;width:1px;height:112.64px;opacity:0.775"></i>
+        <i style="left:1754.4px;top:53.5px;width:1px;height:232.95px;opacity:0.887"></i>
+        <i style="left:1763.6px;top:103.5px;width:1px;height:133.07px;opacity:1.000"></i>
+        <i style="left:1772.8px;top:43.3px;width:1px;height:253.38px;opacity:0.625"></i>
+        <i style="left:1782.0px;top:93.3px;width:1px;height:153.5px;opacity:0.738"></i>
+        <i style="left:1799.3px;top:143.2px;width:1px;height:53.620000000000005px;opacity:0.850"></i>
+        <i style="left:1808.5px;top:83.0px;width:1px;height:173.93px;opacity:0.963"></i>
+        <i style="left:1817.7px;top:133.0px;width:1px;height:74.05px;opacity:0.588"></i>
+        <i style="left:1826.9px;top:72.8px;width:1px;height:194.36px;opacity:0.700"></i>
+        <i style="left:1844.2px;top:122.8px;width:1px;height:94.48px;opacity:0.813"></i>
+        <i style="left:1853.4px;top:62.6px;width:1px;height:214.79px;opacity:0.925"></i>
+        <i style="left:1862.6px;top:112.5px;width:1px;height:114.91px;opacity:0.550"></i>
+        <i style="left:1871.8px;top:52.4px;width:2px;height:235.22px;opacity:0.663"></i>
+        <i style="left:1881.0px;top:102.3px;width:1px;height:135.34px;opacity:0.775"></i>
+        <i style="left:1898.3px;top:42.2px;width:1px;height:255.65px;opacity:0.887"></i>
+        <i style="left:1907.5px;top:92.1px;width:1px;height:155.76999999999998px;opacity:1.000"></i>
+        <i style="left:1916.7px;top:142.1px;width:1px;height:55.89px;opacity:0.625"></i>
+        <i style="left:1925.9px;top:81.9px;width:1px;height:176.2px;opacity:0.738"></i>
+        <i style="left:1943.2px;top:131.8px;width:1px;height:76.32px;opacity:0.850"></i>
+        <i style="left:1952.4px;top:71.7px;width:1px;height:196.63px;opacity:0.963"></i>
+        <i style="left:1961.6px;top:121.6px;width:1px;height:96.75px;opacity:0.588"></i>
+        <i style="left:1970.8px;top:61.5px;width:1px;height:217.06px;opacity:0.700"></i>
+        <i style="left:1980.0px;top:111.4px;width:1px;height:117.18px;opacity:0.813"></i>
+        <i style="left:1997.3px;top:51.3px;width:1px;height:237.49px;opacity:0.925"></i>
+        <i style="left:2006.5px;top:101.2px;width:1px;height:137.61px;opacity:0.550"></i>
+        <i style="left:2015.7px;top:41.0px;width:1px;height:257.92px;opacity:0.663"></i>
+        <i style="left:2024.9px;top:91.0px;width:1px;height:158.04000000000002px;opacity:0.775"></i>
+        <i style="left:2042.2px;top:140.9px;width:1px;height:58.16px;opacity:0.887"></i>
+        <i style="left:2051.4px;top:80.8px;width:1px;height:178.47px;opacity:1.000"></i>
+        <i style="left:2060.6px;top:130.7px;width:2px;height:78.59px;opacity:0.625"></i>
+        <i style="left:2069.8px;top:70.5px;width:1px;height:198.9px;opacity:0.738"></i>
+        <i style="left:2079.0px;top:120.5px;width:1px;height:99.02000000000001px;opacity:0.850"></i>
+        <i style="left:2096.3px;top:60.3px;width:1px;height:219.33px;opacity:0.963"></i>
+        <i style="left:2105.5px;top:110.3px;width:1px;height:119.45px;opacity:0.588"></i>
+        <i style="left:2114.7px;top:50.1px;width:1px;height:239.76px;opacity:0.700"></i>
+        <i style="left:2123.9px;top:100.1px;width:1px;height:139.88px;opacity:0.813"></i>
+        <i style="left:2141.2px;top:150.0px;width:1px;height:40px;opacity:0.925"></i>
+        <i style="left:2150.4px;top:89.8px;width:1px;height:160.31px;opacity:0.550"></i>
+        <i style="left:2159.6px;top:139.8px;width:1px;height:60.43px;opacity:0.663"></i>
+        <i style="left:2168.8px;top:79.6px;width:1px;height:180.74px;opacity:0.775"></i>
+        <i style="left:2178.0px;top:129.6px;width:1px;height:80.86px;opacity:0.887"></i>
+        <i style="left:2195.3px;top:69.4px;width:1px;height:201.17px;opacity:1.000"></i>
+        <i style="left:2204.5px;top:119.4px;width:1px;height:101.28999999999999px;opacity:0.625"></i>
+        <i style="left:2213.7px;top:59.2px;width:1px;height:221.6px;opacity:0.738"></i>
+        <i style="left:2222.9px;top:109.1px;width:1px;height:121.72px;opacity:0.850"></i>
+        <i style="left:2240.2px;top:49.0px;width:1px;height:242.03px;opacity:0.963"></i>
+        <i style="left:2249.4px;top:98.9px;width:2px;height:142.15px;opacity:0.588"></i>
+        <i style="left:2258.6px;top:148.9px;width:1px;height:42.27px;opacity:0.700"></i>
+        <i style="left:2267.8px;top:88.7px;width:1px;height:162.57999999999998px;opacity:0.813"></i>
+        <i style="left:2277.0px;top:138.7px;width:1px;height:62.7px;opacity:0.925"></i>
+        <i style="left:2294.3px;top:78.5px;width:1px;height:183.01px;opacity:0.550"></i>
+        <i style="left:2303.5px;top:128.4px;width:1px;height:83.13px;opacity:0.663"></i>
+        <i style="left:2312.7px;top:68.3px;width:1px;height:203.44px;opacity:0.775"></i>
+        <i style="left:2321.9px;top:118.2px;width:1px;height:103.56px;opacity:0.887"></i>
+        <i style="left:2339.2px;top:58.1px;width:1px;height:223.87px;opacity:1.000"></i>
+        <i style="left:2348.4px;top:108.0px;width:1px;height:123.99px;opacity:0.625"></i>
+        <i style="left:2357.6px;top:47.8px;width:1px;height:244.3px;opacity:0.738"></i>
+        <i style="left:2366.8px;top:97.8px;width:1px;height:144.42000000000002px;opacity:0.850"></i>
+        <i style="left:2376.0px;top:147.7px;width:1px;height:44.54px;opacity:0.963"></i>
+        <i style="left:2393.3px;top:87.6px;width:1px;height:164.85px;opacity:0.588"></i>
+        <i style="left:2402.5px;top:137.5px;width:1px;height:64.97px;opacity:0.700"></i>
+        <i style="left:2411.7px;top:77.4px;width:1px;height:185.28px;opacity:0.813"></i>
+        <i style="left:2420.9px;top:127.3px;width:1px;height:85.4px;opacity:0.925"></i>
+        <i style="left:2438.2px;top:67.1px;width:2px;height:205.71px;opacity:0.550"></i>
+        <i style="left:2447.4px;top:117.1px;width:1px;height:105.83px;opacity:0.663"></i>
+        <i style="left:2456.6px;top:56.9px;width:1px;height:226.14000000000001px;opacity:0.775"></i>
+        <i style="left:2465.8px;top:106.9px;width:1px;height:126.26px;opacity:0.887"></i>
+        <i style="left:2475.0px;top:46.7px;width:1px;height:246.57px;opacity:1.000"></i>
+        <i style="left:2492.3px;top:96.7px;width:1px;height:146.69px;opacity:0.625"></i>
+        <i style="left:2501.5px;top:146.6px;width:1px;height:46.81px;opacity:0.738"></i>
+        <i style="left:2510.7px;top:86.4px;width:1px;height:167.12px;opacity:0.850"></i>
+        <i style="left:2519.9px;top:136.4px;width:1px;height:67.24000000000001px;opacity:0.963"></i>
+        <i style="left:2537.2px;top:76.2px;width:1px;height:187.55px;opacity:0.588"></i>
+        <i style="left:2546.4px;top:126.2px;width:1px;height:87.67px;opacity:0.700"></i>
+        <i style="left:2555.6px;top:66.0px;width:1px;height:207.98px;opacity:0.813"></i>
+        <i style="left:2564.8px;top:116.0px;width:1px;height:108.1px;opacity:0.925"></i>
+        <i style="left:2574.0px;top:55.8px;width:1px;height:228.41px;opacity:0.550"></i>
+        <i style="left:2591.3px;top:105.7px;width:1px;height:128.53px;opacity:0.663"></i>
+        <i style="left:2600.5px;top:45.6px;width:1px;height:248.84px;opacity:0.775"></i>
+        <i style="left:2609.7px;top:95.5px;width:1px;height:148.96px;opacity:0.887"></i>
+        <i style="left:2618.9px;top:145.5px;width:2px;height:49.08px;opacity:1.000"></i>
+        <i style="left:2636.2px;top:85.3px;width:1px;height:169.39000000000001px;opacity:0.625"></i>
+        <i style="left:2645.4px;top:135.2px;width:1px;height:69.51px;opacity:0.738"></i>
+        <i style="left:2654.6px;top:75.1px;width:1px;height:189.82px;opacity:0.850"></i>
+        <i style="left:2663.8px;top:125.0px;width:1px;height:89.94px;opacity:0.963"></i>
+        <i style="left:2673.0px;top:64.9px;width:1px;height:210.25px;opacity:0.588"></i>
+        <i style="left:2690.3px;top:114.8px;width:1px;height:110.37px;opacity:0.700"></i>
+        <i style="left:2699.5px;top:54.7px;width:1px;height:230.68px;opacity:0.813"></i>
+        <i style="left:2708.7px;top:104.6px;width:1px;height:130.8px;opacity:0.925"></i>
+        <i style="left:2717.9px;top:44.4px;width:1px;height:251.11px;opacity:0.550"></i>
+        <i style="left:2735.2px;top:94.4px;width:1px;height:151.23000000000002px;opacity:0.663"></i>
+        <i style="left:2744.4px;top:144.3px;width:1px;height:51.35px;opacity:0.775"></i>
+        <i style="left:2753.6px;top:84.2px;width:1px;height:171.66px;opacity:0.887"></i>
+        <i style="left:2762.8px;top:134.1px;width:1px;height:71.78px;opacity:1.000"></i>
+        <i style="left:2772.0px;top:74.0px;width:1px;height:192.09px;opacity:0.625"></i>
+        <i style="left:2789.3px;top:123.9px;width:1px;height:92.21000000000001px;opacity:0.738"></i>
+        <i style="left:2798.5px;top:63.7px;width:1px;height:212.52px;opacity:0.850"></i>
+        <i style="left:2807.7px;top:113.7px;width:2px;height:112.64px;opacity:0.963"></i>
+        <i style="left:2816.9px;top:53.5px;width:1px;height:232.95px;opacity:0.588"></i>
+        <i style="left:2834.2px;top:103.5px;width:1px;height:133.07px;opacity:0.700"></i>
+        <i style="left:2843.4px;top:43.3px;width:1px;height:253.38px;opacity:0.813"></i>
+        <i style="left:2852.6px;top:93.3px;width:1px;height:153.5px;opacity:0.925"></i>
+        <i style="left:2861.8px;top:143.2px;width:1px;height:53.620000000000005px;opacity:0.550"></i>
+        <i style="left:2871.0px;top:83.0px;width:1px;height:173.93px;opacity:0.663"></i>
+        <i style="left:2888.3px;top:133.0px;width:1px;height:74.05px;opacity:0.775"></i>
+        <i style="left:2897.5px;top:72.8px;width:1px;height:194.36px;opacity:0.887"></i>
+        <i style="left:2906.7px;top:122.8px;width:1px;height:94.48px;opacity:1.000"></i>
+        <i style="left:2915.9px;top:62.6px;width:1px;height:214.79px;opacity:0.625"></i>
+        <i style="left:2933.2px;top:112.5px;width:1px;height:114.91px;opacity:0.738"></i>
+        <i style="left:2942.4px;top:52.4px;width:1px;height:235.22px;opacity:0.850"></i>
+        <i style="left:2951.6px;top:102.3px;width:1px;height:135.34px;opacity:0.963"></i>
+        <i style="left:2960.8px;top:42.2px;width:1px;height:255.65px;opacity:0.588"></i>
+        <i style="left:2970.0px;top:92.1px;width:1px;height:155.76999999999998px;opacity:0.700"></i>
+        <i style="left:2987.3px;top:142.1px;width:1px;height:55.89px;opacity:0.813"></i>
+      </div>
+      <div class="f04-your-trades-tape f04-your-trades-ghost" data-i="1" aria-hidden="true">
+        <i style="left:0.0px;top:150.0px;width:2px;height:40px;opacity:0.550"></i>
+        <i style="left:17.3px;top:89.8px;width:1px;height:160.31px;opacity:0.663"></i>
+        <i style="left:26.5px;top:139.8px;width:1px;height:60.43px;opacity:0.775"></i>
+        <i style="left:35.7px;top:79.6px;width:1px;height:180.74px;opacity:0.887"></i>
+        <i style="left:44.9px;top:129.6px;width:1px;height:80.86px;opacity:1.000"></i>
+        <i style="left:62.2px;top:69.4px;width:1px;height:201.17px;opacity:0.625"></i>
+        <i style="left:71.4px;top:119.4px;width:1px;height:101.28999999999999px;opacity:0.738"></i>
+        <i style="left:80.6px;top:59.2px;width:1px;height:221.6px;opacity:0.850"></i>
+        <i style="left:89.8px;top:109.1px;width:1px;height:121.72px;opacity:0.963"></i>
+        <i style="left:99.0px;top:49.0px;width:1px;height:242.03px;opacity:0.588"></i>
+        <i style="left:116.3px;top:98.9px;width:1px;height:142.15px;opacity:0.700"></i>
+        <i style="left:125.5px;top:148.9px;width:1px;height:42.27px;opacity:0.813"></i>
+        <i style="left:134.7px;top:88.7px;width:1px;height:162.57999999999998px;opacity:0.925"></i>
+        <i style="left:143.9px;top:138.7px;width:1px;height:62.7px;opacity:0.550"></i>
+        <i style="left:161.2px;top:78.5px;width:1px;height:183.01px;opacity:0.663"></i>
+        <i style="left:170.4px;top:128.4px;width:1px;height:83.13px;opacity:0.775"></i>
+        <i style="left:179.6px;top:68.3px;width:1px;height:203.44px;opacity:0.887"></i>
+        <i style="left:188.8px;top:118.2px;width:2px;height:103.56px;opacity:1.000"></i>
+        <i style="left:198.0px;top:58.1px;width:1px;height:223.87px;opacity:0.625"></i>
+        <i style="left:215.3px;top:108.0px;width:1px;height:123.99px;opacity:0.738"></i>
+        <i style="left:224.5px;top:47.8px;width:1px;height:244.3px;opacity:0.850"></i>
+        <i style="left:233.7px;top:97.8px;width:1px;height:144.42000000000002px;opacity:0.963"></i>
+        <i style="left:242.9px;top:147.7px;width:1px;height:44.54px;opacity:0.588"></i>
+        <i style="left:260.2px;top:87.6px;width:1px;height:164.85px;opacity:0.700"></i>
+        <i style="left:269.4px;top:137.5px;width:1px;height:64.97px;opacity:0.813"></i>
+        <i style="left:278.6px;top:77.4px;width:1px;height:185.28px;opacity:0.925"></i>
+        <i style="left:287.8px;top:127.3px;width:1px;height:85.4px;opacity:0.550"></i>
+        <i style="left:297.0px;top:67.1px;width:1px;height:205.71px;opacity:0.663"></i>
+        <i style="left:314.3px;top:117.1px;width:1px;height:105.83px;opacity:0.775"></i>
+        <i style="left:323.5px;top:56.9px;width:1px;height:226.14000000000001px;opacity:0.887"></i>
+        <i style="left:332.7px;top:106.9px;width:1px;height:126.26px;opacity:1.000"></i>
+        <i style="left:341.9px;top:46.7px;width:1px;height:246.57px;opacity:0.625"></i>
+        <i style="left:359.2px;top:96.7px;width:1px;height:146.69px;opacity:0.738"></i>
+        <i style="left:368.4px;top:146.6px;width:1px;height:46.81px;opacity:0.850"></i>
+        <i style="left:377.6px;top:86.4px;width:2px;height:167.12px;opacity:0.963"></i>
+        <i style="left:386.8px;top:136.4px;width:1px;height:67.24000000000001px;opacity:0.588"></i>
+        <i style="left:396.0px;top:76.2px;width:1px;height:187.55px;opacity:0.700"></i>
+        <i style="left:413.3px;top:126.2px;width:1px;height:87.67px;opacity:0.813"></i>
+        <i style="left:422.5px;top:66.0px;width:1px;height:207.98px;opacity:0.925"></i>
+        <i style="left:431.7px;top:116.0px;width:1px;height:108.1px;opacity:0.550"></i>
+        <i style="left:440.9px;top:55.8px;width:1px;height:228.41px;opacity:0.663"></i>
+        <i style="left:458.2px;top:105.7px;width:1px;height:128.53px;opacity:0.775"></i>
+        <i style="left:467.4px;top:45.6px;width:1px;height:248.84px;opacity:0.887"></i>
+        <i style="left:476.6px;top:95.5px;width:1px;height:148.96px;opacity:1.000"></i>
+        <i style="left:485.8px;top:145.5px;width:1px;height:49.08px;opacity:0.625"></i>
+        <i style="left:495.0px;top:85.3px;width:1px;height:169.39000000000001px;opacity:0.738"></i>
+        <i style="left:512.3px;top:135.2px;width:1px;height:69.51px;opacity:0.850"></i>
+        <i style="left:521.5px;top:75.1px;width:1px;height:189.82px;opacity:0.963"></i>
+        <i style="left:530.7px;top:125.0px;width:1px;height:89.94px;opacity:0.588"></i>
+        <i style="left:539.9px;top:64.9px;width:1px;height:210.25px;opacity:0.700"></i>
+        <i style="left:557.2px;top:114.8px;width:1px;height:110.37px;opacity:0.813"></i>
+        <i style="left:566.4px;top:54.7px;width:2px;height:230.68px;opacity:0.925"></i>
+        <i style="left:575.6px;top:104.6px;width:1px;height:130.8px;opacity:0.550"></i>
+        <i style="left:584.8px;top:44.4px;width:1px;height:251.11px;opacity:0.663"></i>
+        <i style="left:594.0px;top:94.4px;width:1px;height:151.23000000000002px;opacity:0.775"></i>
+        <i style="left:611.3px;top:144.3px;width:1px;height:51.35px;opacity:0.887"></i>
+        <i style="left:620.5px;top:84.2px;width:1px;height:171.66px;opacity:1.000"></i>
+        <i style="left:629.7px;top:134.1px;width:1px;height:71.78px;opacity:0.625"></i>
+        <i style="left:638.9px;top:74.0px;width:1px;height:192.09px;opacity:0.738"></i>
+        <i style="left:656.2px;top:123.9px;width:1px;height:92.21000000000001px;opacity:0.850"></i>
+        <i style="left:665.4px;top:63.7px;width:1px;height:212.52px;opacity:0.963"></i>
+        <i style="left:674.6px;top:113.7px;width:1px;height:112.64px;opacity:0.588"></i>
+        <i style="left:683.8px;top:53.5px;width:1px;height:232.95px;opacity:0.700"></i>
+        <i style="left:693.0px;top:103.5px;width:1px;height:133.07px;opacity:0.813"></i>
+        <i style="left:710.3px;top:43.3px;width:1px;height:253.38px;opacity:0.925"></i>
+        <i style="left:719.5px;top:93.3px;width:1px;height:153.5px;opacity:0.550"></i>
+        <i style="left:728.7px;top:143.2px;width:1px;height:53.620000000000005px;opacity:0.663"></i>
+        <i style="left:737.9px;top:83.0px;width:1px;height:173.93px;opacity:0.775"></i>
+        <i style="left:755.2px;top:133.0px;width:2px;height:74.05px;opacity:0.887"></i>
+        <i style="left:764.4px;top:72.8px;width:1px;height:194.36px;opacity:1.000"></i>
+        <i style="left:773.6px;top:122.8px;width:1px;height:94.48px;opacity:0.625"></i>
+        <i style="left:782.8px;top:62.6px;width:1px;height:214.79px;opacity:0.738"></i>
+        <i style="left:792.0px;top:112.5px;width:1px;height:114.91px;opacity:0.850"></i>
+        <i style="left:809.3px;top:52.4px;width:1px;height:235.22px;opacity:0.963"></i>
+        <i style="left:818.5px;top:102.3px;width:1px;height:135.34px;opacity:0.588"></i>
+        <i style="left:827.7px;top:42.2px;width:1px;height:255.65px;opacity:0.700"></i>
+        <i style="left:836.9px;top:92.1px;width:1px;height:155.76999999999998px;opacity:0.813"></i>
+        <i style="left:854.2px;top:142.1px;width:1px;height:55.89px;opacity:0.925"></i>
+        <i style="left:863.4px;top:81.9px;width:1px;height:176.2px;opacity:0.550"></i>
+        <i style="left:872.6px;top:131.8px;width:1px;height:76.32px;opacity:0.663"></i>
+        <i style="left:881.8px;top:71.7px;width:1px;height:196.63px;opacity:0.775"></i>
+        <i style="left:891.0px;top:121.6px;width:1px;height:96.75px;opacity:0.887"></i>
+        <i style="left:908.3px;top:61.5px;width:1px;height:217.06px;opacity:1.000"></i>
+        <i style="left:917.5px;top:111.4px;width:1px;height:117.18px;opacity:0.625"></i>
+        <i style="left:926.7px;top:51.3px;width:1px;height:237.49px;opacity:0.738"></i>
+        <i style="left:935.9px;top:101.2px;width:2px;height:137.61px;opacity:0.850"></i>
+        <i style="left:953.2px;top:41.0px;width:1px;height:257.92px;opacity:0.963"></i>
+        <i style="left:962.4px;top:91.0px;width:1px;height:158.04000000000002px;opacity:0.588"></i>
+        <i style="left:971.6px;top:140.9px;width:1px;height:58.16px;opacity:0.700"></i>
+        <i style="left:980.8px;top:80.8px;width:1px;height:178.47px;opacity:0.813"></i>
+        <i style="left:990.0px;top:130.7px;width:1px;height:78.59px;opacity:0.925"></i>
+        <i style="left:1007.3px;top:70.5px;width:1px;height:198.9px;opacity:0.550"></i>
+        <i style="left:1016.5px;top:120.5px;width:1px;height:99.02000000000001px;opacity:0.663"></i>
+        <i style="left:1025.7px;top:60.3px;width:1px;height:219.33px;opacity:0.775"></i>
+        <i style="left:1034.9px;top:110.3px;width:1px;height:119.45px;opacity:0.887"></i>
+        <i style="left:1052.2px;top:50.1px;width:1px;height:239.76px;opacity:1.000"></i>
+        <i style="left:1061.4px;top:100.1px;width:1px;height:139.88px;opacity:0.625"></i>
+        <i style="left:1070.6px;top:150.0px;width:1px;height:40px;opacity:0.738"></i>
+        <i style="left:1079.8px;top:89.8px;width:1px;height:160.31px;opacity:0.850"></i>
+        <i style="left:1089.0px;top:139.8px;width:1px;height:60.43px;opacity:0.963"></i>
+        <i style="left:1106.3px;top:79.6px;width:1px;height:180.74px;opacity:0.588"></i>
+        <i style="left:1115.5px;top:129.6px;width:1px;height:80.86px;opacity:0.700"></i>
+        <i style="left:1124.7px;top:69.4px;width:2px;height:201.17px;opacity:0.813"></i>
+        <i style="left:1133.9px;top:119.4px;width:1px;height:101.28999999999999px;opacity:0.925"></i>
+        <i style="left:1151.2px;top:59.2px;width:1px;height:221.6px;opacity:0.550"></i>
+        <i style="left:1160.4px;top:109.1px;width:1px;height:121.72px;opacity:0.663"></i>
+        <i style="left:1169.6px;top:49.0px;width:1px;height:242.03px;opacity:0.775"></i>
+        <i style="left:1178.8px;top:98.9px;width:1px;height:142.15px;opacity:0.887"></i>
+        <i style="left:1188.0px;top:148.9px;width:1px;height:42.27px;opacity:1.000"></i>
+        <i style="left:1205.3px;top:88.7px;width:1px;height:162.57999999999998px;opacity:0.625"></i>
+        <i style="left:1214.5px;top:138.7px;width:1px;height:62.7px;opacity:0.738"></i>
+        <i style="left:1223.7px;top:78.5px;width:1px;height:183.01px;opacity:0.850"></i>
+        <i style="left:1232.9px;top:128.4px;width:1px;height:83.13px;opacity:0.963"></i>
+        <i style="left:1250.2px;top:68.3px;width:1px;height:203.44px;opacity:0.588"></i>
+        <i style="left:1259.4px;top:118.2px;width:1px;height:103.56px;opacity:0.700"></i>
+        <i style="left:1268.6px;top:58.1px;width:1px;height:223.87px;opacity:0.813"></i>
+        <i style="left:1277.8px;top:108.0px;width:1px;height:123.99px;opacity:0.925"></i>
+        <i style="left:1287.0px;top:47.8px;width:1px;height:244.3px;opacity:0.550"></i>
+        <i style="left:1304.3px;top:97.8px;width:1px;height:144.42000000000002px;opacity:0.663"></i>
+        <i style="left:1313.5px;top:147.7px;width:2px;height:44.54px;opacity:0.775"></i>
+        <i style="left:1322.7px;top:87.6px;width:1px;height:164.85px;opacity:0.887"></i>
+        <i style="left:1331.9px;top:137.5px;width:1px;height:64.97px;opacity:1.000"></i>
+        <i style="left:1349.2px;top:77.4px;width:1px;height:185.28px;opacity:0.625"></i>
+        <i style="left:1358.4px;top:127.3px;width:1px;height:85.4px;opacity:0.738"></i>
+        <i style="left:1367.6px;top:67.1px;width:1px;height:205.71px;opacity:0.850"></i>
+        <i style="left:1376.8px;top:117.1px;width:1px;height:105.83px;opacity:0.963"></i>
+        <i style="left:1386.0px;top:56.9px;width:1px;height:226.14000000000001px;opacity:0.588"></i>
+        <i style="left:1403.3px;top:106.9px;width:1px;height:126.26px;opacity:0.700"></i>
+        <i style="left:1412.5px;top:46.7px;width:1px;height:246.57px;opacity:0.813"></i>
+        <i style="left:1421.7px;top:96.7px;width:1px;height:146.69px;opacity:0.925"></i>
+        <i style="left:1430.9px;top:146.6px;width:1px;height:46.81px;opacity:0.550"></i>
+        <i style="left:1448.2px;top:86.4px;width:1px;height:167.12px;opacity:0.663"></i>
+        <i style="left:1457.4px;top:136.4px;width:1px;height:67.24000000000001px;opacity:0.775"></i>
+        <i style="left:1466.6px;top:76.2px;width:1px;height:187.55px;opacity:0.887"></i>
+        <i style="left:1475.8px;top:126.2px;width:1px;height:87.67px;opacity:1.000"></i>
+        <i style="left:1485.0px;top:66.0px;width:1px;height:207.98px;opacity:0.625"></i>
+        <i style="left:1502.3px;top:116.0px;width:2px;height:108.1px;opacity:0.738"></i>
+        <i style="left:1511.5px;top:55.8px;width:1px;height:228.41px;opacity:0.850"></i>
+        <i style="left:1520.7px;top:105.7px;width:1px;height:128.53px;opacity:0.963"></i>
+        <i style="left:1529.9px;top:45.6px;width:1px;height:248.84px;opacity:0.588"></i>
+        <i style="left:1547.2px;top:95.5px;width:1px;height:148.96px;opacity:0.700"></i>
+        <i style="left:1556.4px;top:145.5px;width:1px;height:49.08px;opacity:0.813"></i>
+        <i style="left:1565.6px;top:85.3px;width:1px;height:169.39000000000001px;opacity:0.925"></i>
+        <i style="left:1574.8px;top:135.2px;width:1px;height:69.51px;opacity:0.550"></i>
+        <i style="left:1584.0px;top:75.1px;width:1px;height:189.82px;opacity:0.663"></i>
+        <i style="left:1601.3px;top:125.0px;width:1px;height:89.94px;opacity:0.775"></i>
+        <i style="left:1610.5px;top:64.9px;width:1px;height:210.25px;opacity:0.887"></i>
+        <i style="left:1619.7px;top:114.8px;width:1px;height:110.37px;opacity:1.000"></i>
+        <i style="left:1628.9px;top:54.7px;width:1px;height:230.68px;opacity:0.625"></i>
+        <i style="left:1646.2px;top:104.6px;width:1px;height:130.8px;opacity:0.738"></i>
+        <i style="left:1655.4px;top:44.4px;width:1px;height:251.11px;opacity:0.850"></i>
+        <i style="left:1664.6px;top:94.4px;width:1px;height:151.23000000000002px;opacity:0.963"></i>
+        <i style="left:1673.8px;top:144.3px;width:1px;height:51.35px;opacity:0.588"></i>
+        <i style="left:1683.0px;top:84.2px;width:2px;height:171.66px;opacity:0.700"></i>
+        <i style="left:1700.3px;top:134.1px;width:1px;height:71.78px;opacity:0.813"></i>
+        <i style="left:1709.5px;top:74.0px;width:1px;height:192.09px;opacity:0.925"></i>
+        <i style="left:1718.7px;top:123.9px;width:1px;height:92.21000000000001px;opacity:0.550"></i>
+        <i style="left:1727.9px;top:63.7px;width:1px;height:212.52px;opacity:0.663"></i>
+        <i style="left:1745.2px;top:113.7px;width:1px;height:112.64px;opacity:0.775"></i>
+        <i style="left:1754.4px;top:53.5px;width:1px;height:232.95px;opacity:0.887"></i>
+        <i style="left:1763.6px;top:103.5px;width:1px;height:133.07px;opacity:1.000"></i>
+        <i style="left:1772.8px;top:43.3px;width:1px;height:253.38px;opacity:0.625"></i>
+        <i style="left:1782.0px;top:93.3px;width:1px;height:153.5px;opacity:0.738"></i>
+        <i style="left:1799.3px;top:143.2px;width:1px;height:53.620000000000005px;opacity:0.850"></i>
+        <i style="left:1808.5px;top:83.0px;width:1px;height:173.93px;opacity:0.963"></i>
+        <i style="left:1817.7px;top:133.0px;width:1px;height:74.05px;opacity:0.588"></i>
+        <i style="left:1826.9px;top:72.8px;width:1px;height:194.36px;opacity:0.700"></i>
+        <i style="left:1844.2px;top:122.8px;width:1px;height:94.48px;opacity:0.813"></i>
+        <i style="left:1853.4px;top:62.6px;width:1px;height:214.79px;opacity:0.925"></i>
+        <i style="left:1862.6px;top:112.5px;width:1px;height:114.91px;opacity:0.550"></i>
+        <i style="left:1871.8px;top:52.4px;width:2px;height:235.22px;opacity:0.663"></i>
+        <i style="left:1881.0px;top:102.3px;width:1px;height:135.34px;opacity:0.775"></i>
+        <i style="left:1898.3px;top:42.2px;width:1px;height:255.65px;opacity:0.887"></i>
+        <i style="left:1907.5px;top:92.1px;width:1px;height:155.76999999999998px;opacity:1.000"></i>
+        <i style="left:1916.7px;top:142.1px;width:1px;height:55.89px;opacity:0.625"></i>
+        <i style="left:1925.9px;top:81.9px;width:1px;height:176.2px;opacity:0.738"></i>
+        <i style="left:1943.2px;top:131.8px;width:1px;height:76.32px;opacity:0.850"></i>
+        <i style="left:1952.4px;top:71.7px;width:1px;height:196.63px;opacity:0.963"></i>
+        <i style="left:1961.6px;top:121.6px;width:1px;height:96.75px;opacity:0.588"></i>
+        <i style="left:1970.8px;top:61.5px;width:1px;height:217.06px;opacity:0.700"></i>
+        <i style="left:1980.0px;top:111.4px;width:1px;height:117.18px;opacity:0.813"></i>
+        <i style="left:1997.3px;top:51.3px;width:1px;height:237.49px;opacity:0.925"></i>
+        <i style="left:2006.5px;top:101.2px;width:1px;height:137.61px;opacity:0.550"></i>
+        <i style="left:2015.7px;top:41.0px;width:1px;height:257.92px;opacity:0.663"></i>
+        <i style="left:2024.9px;top:91.0px;width:1px;height:158.04000000000002px;opacity:0.775"></i>
+        <i style="left:2042.2px;top:140.9px;width:1px;height:58.16px;opacity:0.887"></i>
+        <i style="left:2051.4px;top:80.8px;width:1px;height:178.47px;opacity:1.000"></i>
+        <i style="left:2060.6px;top:130.7px;width:2px;height:78.59px;opacity:0.625"></i>
+        <i style="left:2069.8px;top:70.5px;width:1px;height:198.9px;opacity:0.738"></i>
+        <i style="left:2079.0px;top:120.5px;width:1px;height:99.02000000000001px;opacity:0.850"></i>
+        <i style="left:2096.3px;top:60.3px;width:1px;height:219.33px;opacity:0.963"></i>
+        <i style="left:2105.5px;top:110.3px;width:1px;height:119.45px;opacity:0.588"></i>
+        <i style="left:2114.7px;top:50.1px;width:1px;height:239.76px;opacity:0.700"></i>
+        <i style="left:2123.9px;top:100.1px;width:1px;height:139.88px;opacity:0.813"></i>
+        <i style="left:2141.2px;top:150.0px;width:1px;height:40px;opacity:0.925"></i>
+        <i style="left:2150.4px;top:89.8px;width:1px;height:160.31px;opacity:0.550"></i>
+        <i style="left:2159.6px;top:139.8px;width:1px;height:60.43px;opacity:0.663"></i>
+        <i style="left:2168.8px;top:79.6px;width:1px;height:180.74px;opacity:0.775"></i>
+        <i style="left:2178.0px;top:129.6px;width:1px;height:80.86px;opacity:0.887"></i>
+        <i style="left:2195.3px;top:69.4px;width:1px;height:201.17px;opacity:1.000"></i>
+        <i style="left:2204.5px;top:119.4px;width:1px;height:101.28999999999999px;opacity:0.625"></i>
+        <i style="left:2213.7px;top:59.2px;width:1px;height:221.6px;opacity:0.738"></i>
+        <i style="left:2222.9px;top:109.1px;width:1px;height:121.72px;opacity:0.850"></i>
+        <i style="left:2240.2px;top:49.0px;width:1px;height:242.03px;opacity:0.963"></i>
+        <i style="left:2249.4px;top:98.9px;width:2px;height:142.15px;opacity:0.588"></i>
+        <i style="left:2258.6px;top:148.9px;width:1px;height:42.27px;opacity:0.700"></i>
+        <i style="left:2267.8px;top:88.7px;width:1px;height:162.57999999999998px;opacity:0.813"></i>
+        <i style="left:2277.0px;top:138.7px;width:1px;height:62.7px;opacity:0.925"></i>
+        <i style="left:2294.3px;top:78.5px;width:1px;height:183.01px;opacity:0.550"></i>
+        <i style="left:2303.5px;top:128.4px;width:1px;height:83.13px;opacity:0.663"></i>
+        <i style="left:2312.7px;top:68.3px;width:1px;height:203.44px;opacity:0.775"></i>
+        <i style="left:2321.9px;top:118.2px;width:1px;height:103.56px;opacity:0.887"></i>
+        <i style="left:2339.2px;top:58.1px;width:1px;height:223.87px;opacity:1.000"></i>
+        <i style="left:2348.4px;top:108.0px;width:1px;height:123.99px;opacity:0.625"></i>
+        <i style="left:2357.6px;top:47.8px;width:1px;height:244.3px;opacity:0.738"></i>
+        <i style="left:2366.8px;top:97.8px;width:1px;height:144.42000000000002px;opacity:0.850"></i>
+        <i style="left:2376.0px;top:147.7px;width:1px;height:44.54px;opacity:0.963"></i>
+        <i style="left:2393.3px;top:87.6px;width:1px;height:164.85px;opacity:0.588"></i>
+        <i style="left:2402.5px;top:137.5px;width:1px;height:64.97px;opacity:0.700"></i>
+        <i style="left:2411.7px;top:77.4px;width:1px;height:185.28px;opacity:0.813"></i>
+        <i style="left:2420.9px;top:127.3px;width:1px;height:85.4px;opacity:0.925"></i>
+        <i style="left:2438.2px;top:67.1px;width:2px;height:205.71px;opacity:0.550"></i>
+        <i style="left:2447.4px;top:117.1px;width:1px;height:105.83px;opacity:0.663"></i>
+        <i style="left:2456.6px;top:56.9px;width:1px;height:226.14000000000001px;opacity:0.775"></i>
+        <i style="left:2465.8px;top:106.9px;width:1px;height:126.26px;opacity:0.887"></i>
+        <i style="left:2475.0px;top:46.7px;width:1px;height:246.57px;opacity:1.000"></i>
+        <i style="left:2492.3px;top:96.7px;width:1px;height:146.69px;opacity:0.625"></i>
+        <i style="left:2501.5px;top:146.6px;width:1px;height:46.81px;opacity:0.738"></i>
+        <i style="left:2510.7px;top:86.4px;width:1px;height:167.12px;opacity:0.850"></i>
+        <i style="left:2519.9px;top:136.4px;width:1px;height:67.24000000000001px;opacity:0.963"></i>
+        <i style="left:2537.2px;top:76.2px;width:1px;height:187.55px;opacity:0.588"></i>
+        <i style="left:2546.4px;top:126.2px;width:1px;height:87.67px;opacity:0.700"></i>
+        <i style="left:2555.6px;top:66.0px;width:1px;height:207.98px;opacity:0.813"></i>
+        <i style="left:2564.8px;top:116.0px;width:1px;height:108.1px;opacity:0.925"></i>
+        <i style="left:2574.0px;top:55.8px;width:1px;height:228.41px;opacity:0.550"></i>
+        <i style="left:2591.3px;top:105.7px;width:1px;height:128.53px;opacity:0.663"></i>
+        <i style="left:2600.5px;top:45.6px;width:1px;height:248.84px;opacity:0.775"></i>
+        <i style="left:2609.7px;top:95.5px;width:1px;height:148.96px;opacity:0.887"></i>
+        <i style="left:2618.9px;top:145.5px;width:2px;height:49.08px;opacity:1.000"></i>
+        <i style="left:2636.2px;top:85.3px;width:1px;height:169.39000000000001px;opacity:0.625"></i>
+        <i style="left:2645.4px;top:135.2px;width:1px;height:69.51px;opacity:0.738"></i>
+        <i style="left:2654.6px;top:75.1px;width:1px;height:189.82px;opacity:0.850"></i>
+        <i style="left:2663.8px;top:125.0px;width:1px;height:89.94px;opacity:0.963"></i>
+        <i style="left:2673.0px;top:64.9px;width:1px;height:210.25px;opacity:0.588"></i>
+        <i style="left:2690.3px;top:114.8px;width:1px;height:110.37px;opacity:0.700"></i>
+        <i style="left:2699.5px;top:54.7px;width:1px;height:230.68px;opacity:0.813"></i>
+        <i style="left:2708.7px;top:104.6px;width:1px;height:130.8px;opacity:0.925"></i>
+        <i style="left:2717.9px;top:44.4px;width:1px;height:251.11px;opacity:0.550"></i>
+        <i style="left:2735.2px;top:94.4px;width:1px;height:151.23000000000002px;opacity:0.663"></i>
+        <i style="left:2744.4px;top:144.3px;width:1px;height:51.35px;opacity:0.775"></i>
+        <i style="left:2753.6px;top:84.2px;width:1px;height:171.66px;opacity:0.887"></i>
+        <i style="left:2762.8px;top:134.1px;width:1px;height:71.78px;opacity:1.000"></i>
+        <i style="left:2772.0px;top:74.0px;width:1px;height:192.09px;opacity:0.625"></i>
+        <i style="left:2789.3px;top:123.9px;width:1px;height:92.21000000000001px;opacity:0.738"></i>
+        <i style="left:2798.5px;top:63.7px;width:1px;height:212.52px;opacity:0.850"></i>
+        <i style="left:2807.7px;top:113.7px;width:2px;height:112.64px;opacity:0.963"></i>
+        <i style="left:2816.9px;top:53.5px;width:1px;height:232.95px;opacity:0.588"></i>
+        <i style="left:2834.2px;top:103.5px;width:1px;height:133.07px;opacity:0.700"></i>
+        <i style="left:2843.4px;top:43.3px;width:1px;height:253.38px;opacity:0.813"></i>
+        <i style="left:2852.6px;top:93.3px;width:1px;height:153.5px;opacity:0.925"></i>
+        <i style="left:2861.8px;top:143.2px;width:1px;height:53.620000000000005px;opacity:0.550"></i>
+        <i style="left:2871.0px;top:83.0px;width:1px;height:173.93px;opacity:0.663"></i>
+        <i style="left:2888.3px;top:133.0px;width:1px;height:74.05px;opacity:0.775"></i>
+        <i style="left:2897.5px;top:72.8px;width:1px;height:194.36px;opacity:0.887"></i>
+        <i style="left:2906.7px;top:122.8px;width:1px;height:94.48px;opacity:1.000"></i>
+        <i style="left:2915.9px;top:62.6px;width:1px;height:214.79px;opacity:0.625"></i>
+        <i style="left:2933.2px;top:112.5px;width:1px;height:114.91px;opacity:0.738"></i>
+        <i style="left:2942.4px;top:52.4px;width:1px;height:235.22px;opacity:0.850"></i>
+        <i style="left:2951.6px;top:102.3px;width:1px;height:135.34px;opacity:0.963"></i>
+        <i style="left:2960.8px;top:42.2px;width:1px;height:255.65px;opacity:0.588"></i>
+        <i style="left:2970.0px;top:92.1px;width:1px;height:155.76999999999998px;opacity:0.700"></i>
+        <i style="left:2987.3px;top:142.1px;width:1px;height:55.89px;opacity:0.813"></i>
+      </div>
+      <div class="f04-your-trades-tape" id="f04-your-trades-tape">
+        <i style="left:0.0px;top:150.0px;width:2px;height:40px;opacity:0.550"></i>
+        <i style="left:17.3px;top:89.8px;width:1px;height:160.31px;opacity:0.663"></i>
+        <i style="left:26.5px;top:139.8px;width:1px;height:60.43px;opacity:0.775"></i>
+        <i style="left:35.7px;top:79.6px;width:1px;height:180.74px;opacity:0.887"></i>
+        <i style="left:44.9px;top:129.6px;width:1px;height:80.86px;opacity:1.000"></i>
+        <i style="left:62.2px;top:69.4px;width:1px;height:201.17px;opacity:0.625"></i>
+        <i style="left:71.4px;top:119.4px;width:1px;height:101.28999999999999px;opacity:0.738"></i>
+        <i style="left:80.6px;top:59.2px;width:1px;height:221.6px;opacity:0.850"></i>
+        <i style="left:89.8px;top:109.1px;width:1px;height:121.72px;opacity:0.963"></i>
+        <i style="left:99.0px;top:49.0px;width:1px;height:242.03px;opacity:0.588"></i>
+        <i style="left:116.3px;top:98.9px;width:1px;height:142.15px;opacity:0.700"></i>
+        <i style="left:125.5px;top:148.9px;width:1px;height:42.27px;opacity:0.813"></i>
+        <i style="left:134.7px;top:88.7px;width:1px;height:162.57999999999998px;opacity:0.925"></i>
+        <i style="left:143.9px;top:138.7px;width:1px;height:62.7px;opacity:0.550"></i>
+        <i style="left:161.2px;top:78.5px;width:1px;height:183.01px;opacity:0.663"></i>
+        <i style="left:170.4px;top:128.4px;width:1px;height:83.13px;opacity:0.775"></i>
+        <i style="left:179.6px;top:68.3px;width:1px;height:203.44px;opacity:0.887"></i>
+        <i style="left:188.8px;top:118.2px;width:2px;height:103.56px;opacity:1.000"></i>
+        <i style="left:198.0px;top:58.1px;width:1px;height:223.87px;opacity:0.625"></i>
+        <i style="left:215.3px;top:108.0px;width:1px;height:123.99px;opacity:0.738"></i>
+        <i style="left:224.5px;top:47.8px;width:1px;height:244.3px;opacity:0.850"></i>
+        <i style="left:233.7px;top:97.8px;width:1px;height:144.42000000000002px;opacity:0.963"></i>
+        <i style="left:242.9px;top:147.7px;width:1px;height:44.54px;opacity:0.588"></i>
+        <i style="left:260.2px;top:87.6px;width:1px;height:164.85px;opacity:0.700"></i>
+        <i style="left:269.4px;top:137.5px;width:1px;height:64.97px;opacity:0.813"></i>
+        <i style="left:278.6px;top:77.4px;width:1px;height:185.28px;opacity:0.925"></i>
+        <i style="left:287.8px;top:127.3px;width:1px;height:85.4px;opacity:0.550"></i>
+        <i style="left:297.0px;top:67.1px;width:1px;height:205.71px;opacity:0.663"></i>
+        <i style="left:314.3px;top:117.1px;width:1px;height:105.83px;opacity:0.775"></i>
+        <i style="left:323.5px;top:56.9px;width:1px;height:226.14000000000001px;opacity:0.887"></i>
+        <i style="left:332.7px;top:106.9px;width:1px;height:126.26px;opacity:1.000"></i>
+        <i style="left:341.9px;top:46.7px;width:1px;height:246.57px;opacity:0.625"></i>
+        <i style="left:359.2px;top:96.7px;width:1px;height:146.69px;opacity:0.738"></i>
+        <i style="left:368.4px;top:146.6px;width:1px;height:46.81px;opacity:0.850"></i>
+        <i style="left:377.6px;top:86.4px;width:2px;height:167.12px;opacity:0.963"></i>
+        <i style="left:386.8px;top:136.4px;width:1px;height:67.24000000000001px;opacity:0.588"></i>
+        <i style="left:396.0px;top:76.2px;width:1px;height:187.55px;opacity:0.700"></i>
+        <i style="left:413.3px;top:126.2px;width:1px;height:87.67px;opacity:0.813"></i>
+        <i style="left:422.5px;top:66.0px;width:1px;height:207.98px;opacity:0.925"></i>
+        <i style="left:431.7px;top:116.0px;width:1px;height:108.1px;opacity:0.550"></i>
+        <i style="left:440.9px;top:55.8px;width:1px;height:228.41px;opacity:0.663"></i>
+        <i style="left:458.2px;top:105.7px;width:1px;height:128.53px;opacity:0.775"></i>
+        <i style="left:467.4px;top:45.6px;width:1px;height:248.84px;opacity:0.887"></i>
+        <i style="left:476.6px;top:95.5px;width:1px;height:148.96px;opacity:1.000"></i>
+        <i style="left:485.8px;top:145.5px;width:1px;height:49.08px;opacity:0.625"></i>
+        <i style="left:495.0px;top:85.3px;width:1px;height:169.39000000000001px;opacity:0.738"></i>
+        <i style="left:512.3px;top:135.2px;width:1px;height:69.51px;opacity:0.850"></i>
+        <i style="left:521.5px;top:75.1px;width:1px;height:189.82px;opacity:0.963"></i>
+        <i style="left:530.7px;top:125.0px;width:1px;height:89.94px;opacity:0.588"></i>
+        <i style="left:539.9px;top:64.9px;width:1px;height:210.25px;opacity:0.700"></i>
+        <i style="left:557.2px;top:114.8px;width:1px;height:110.37px;opacity:0.813"></i>
+        <i style="left:566.4px;top:54.7px;width:2px;height:230.68px;opacity:0.925"></i>
+        <i style="left:575.6px;top:104.6px;width:1px;height:130.8px;opacity:0.550"></i>
+        <i style="left:584.8px;top:44.4px;width:1px;height:251.11px;opacity:0.663"></i>
+        <i style="left:594.0px;top:94.4px;width:1px;height:151.23000000000002px;opacity:0.775"></i>
+        <i style="left:611.3px;top:144.3px;width:1px;height:51.35px;opacity:0.887"></i>
+        <i style="left:620.5px;top:84.2px;width:1px;height:171.66px;opacity:1.000"></i>
+        <i style="left:629.7px;top:134.1px;width:1px;height:71.78px;opacity:0.625"></i>
+        <i style="left:638.9px;top:74.0px;width:1px;height:192.09px;opacity:0.738"></i>
+        <i style="left:656.2px;top:123.9px;width:1px;height:92.21000000000001px;opacity:0.850"></i>
+        <i style="left:665.4px;top:63.7px;width:1px;height:212.52px;opacity:0.963"></i>
+        <i style="left:674.6px;top:113.7px;width:1px;height:112.64px;opacity:0.588"></i>
+        <i style="left:683.8px;top:53.5px;width:1px;height:232.95px;opacity:0.700"></i>
+        <i style="left:693.0px;top:103.5px;width:1px;height:133.07px;opacity:0.813"></i>
+        <i style="left:710.3px;top:43.3px;width:1px;height:253.38px;opacity:0.925"></i>
+        <i style="left:719.5px;top:93.3px;width:1px;height:153.5px;opacity:0.550"></i>
+        <i style="left:728.7px;top:143.2px;width:1px;height:53.620000000000005px;opacity:0.663"></i>
+        <i style="left:737.9px;top:83.0px;width:1px;height:173.93px;opacity:0.775"></i>
+        <i style="left:755.2px;top:133.0px;width:2px;height:74.05px;opacity:0.887"></i>
+        <i style="left:764.4px;top:72.8px;width:1px;height:194.36px;opacity:1.000"></i>
+        <i style="left:773.6px;top:122.8px;width:1px;height:94.48px;opacity:0.625"></i>
+        <i style="left:782.8px;top:62.6px;width:1px;height:214.79px;opacity:0.738"></i>
+        <i style="left:792.0px;top:112.5px;width:1px;height:114.91px;opacity:0.850"></i>
+        <i style="left:809.3px;top:52.4px;width:1px;height:235.22px;opacity:0.963"></i>
+        <i style="left:818.5px;top:102.3px;width:1px;height:135.34px;opacity:0.588"></i>
+        <i style="left:827.7px;top:42.2px;width:1px;height:255.65px;opacity:0.700"></i>
+        <i style="left:836.9px;top:92.1px;width:1px;height:155.76999999999998px;opacity:0.813"></i>
+        <i style="left:854.2px;top:142.1px;width:1px;height:55.89px;opacity:0.925"></i>
+        <i style="left:863.4px;top:81.9px;width:1px;height:176.2px;opacity:0.550"></i>
+        <i style="left:872.6px;top:131.8px;width:1px;height:76.32px;opacity:0.663"></i>
+        <i style="left:881.8px;top:71.7px;width:1px;height:196.63px;opacity:0.775"></i>
+        <i style="left:891.0px;top:121.6px;width:1px;height:96.75px;opacity:0.887"></i>
+        <i style="left:908.3px;top:61.5px;width:1px;height:217.06px;opacity:1.000"></i>
+        <i style="left:917.5px;top:111.4px;width:1px;height:117.18px;opacity:0.625"></i>
+        <i style="left:926.7px;top:51.3px;width:1px;height:237.49px;opacity:0.738"></i>
+        <i style="left:935.9px;top:101.2px;width:2px;height:137.61px;opacity:0.850"></i>
+        <i style="left:953.2px;top:41.0px;width:1px;height:257.92px;opacity:0.963"></i>
+        <i style="left:962.4px;top:91.0px;width:1px;height:158.04000000000002px;opacity:0.588"></i>
+        <i style="left:971.6px;top:140.9px;width:1px;height:58.16px;opacity:0.700"></i>
+        <i style="left:980.8px;top:80.8px;width:1px;height:178.47px;opacity:0.813"></i>
+        <i style="left:990.0px;top:130.7px;width:1px;height:78.59px;opacity:0.925"></i>
+        <i style="left:1007.3px;top:70.5px;width:1px;height:198.9px;opacity:0.550"></i>
+        <i style="left:1016.5px;top:120.5px;width:1px;height:99.02000000000001px;opacity:0.663"></i>
+        <i style="left:1025.7px;top:60.3px;width:1px;height:219.33px;opacity:0.775"></i>
+        <i style="left:1034.9px;top:110.3px;width:1px;height:119.45px;opacity:0.887"></i>
+        <i style="left:1052.2px;top:50.1px;width:1px;height:239.76px;opacity:1.000"></i>
+        <i style="left:1061.4px;top:100.1px;width:1px;height:139.88px;opacity:0.625"></i>
+        <i style="left:1070.6px;top:150.0px;width:1px;height:40px;opacity:0.738"></i>
+        <i style="left:1079.8px;top:89.8px;width:1px;height:160.31px;opacity:0.850"></i>
+        <i style="left:1089.0px;top:139.8px;width:1px;height:60.43px;opacity:0.963"></i>
+        <i style="left:1106.3px;top:79.6px;width:1px;height:180.74px;opacity:0.588"></i>
+        <i style="left:1115.5px;top:129.6px;width:1px;height:80.86px;opacity:0.700"></i>
+        <i style="left:1124.7px;top:69.4px;width:2px;height:201.17px;opacity:0.813"></i>
+        <i style="left:1133.9px;top:119.4px;width:1px;height:101.28999999999999px;opacity:0.925"></i>
+        <i style="left:1151.2px;top:59.2px;width:1px;height:221.6px;opacity:0.550"></i>
+        <i style="left:1160.4px;top:109.1px;width:1px;height:121.72px;opacity:0.663"></i>
+        <i style="left:1169.6px;top:49.0px;width:1px;height:242.03px;opacity:0.775"></i>
+        <i style="left:1178.8px;top:98.9px;width:1px;height:142.15px;opacity:0.887"></i>
+        <i style="left:1188.0px;top:148.9px;width:1px;height:42.27px;opacity:1.000"></i>
+        <i style="left:1205.3px;top:88.7px;width:1px;height:162.57999999999998px;opacity:0.625"></i>
+        <i style="left:1214.5px;top:138.7px;width:1px;height:62.7px;opacity:0.738"></i>
+        <i style="left:1223.7px;top:78.5px;width:1px;height:183.01px;opacity:0.850"></i>
+        <i style="left:1232.9px;top:128.4px;width:1px;height:83.13px;opacity:0.963"></i>
+        <i style="left:1250.2px;top:68.3px;width:1px;height:203.44px;opacity:0.588"></i>
+        <i style="left:1259.4px;top:118.2px;width:1px;height:103.56px;opacity:0.700"></i>
+        <i style="left:1268.6px;top:58.1px;width:1px;height:223.87px;opacity:0.813"></i>
+        <i style="left:1277.8px;top:108.0px;width:1px;height:123.99px;opacity:0.925"></i>
+        <i style="left:1287.0px;top:47.8px;width:1px;height:244.3px;opacity:0.550"></i>
+        <i style="left:1304.3px;top:97.8px;width:1px;height:144.42000000000002px;opacity:0.663"></i>
+        <i style="left:1313.5px;top:147.7px;width:2px;height:44.54px;opacity:0.775"></i>
+        <i style="left:1322.7px;top:87.6px;width:1px;height:164.85px;opacity:0.887"></i>
+        <i style="left:1331.9px;top:137.5px;width:1px;height:64.97px;opacity:1.000"></i>
+        <i style="left:1349.2px;top:77.4px;width:1px;height:185.28px;opacity:0.625"></i>
+        <i style="left:1358.4px;top:127.3px;width:1px;height:85.4px;opacity:0.738"></i>
+        <i style="left:1367.6px;top:67.1px;width:1px;height:205.71px;opacity:0.850"></i>
+        <i style="left:1376.8px;top:117.1px;width:1px;height:105.83px;opacity:0.963"></i>
+        <i style="left:1386.0px;top:56.9px;width:1px;height:226.14000000000001px;opacity:0.588"></i>
+        <i style="left:1403.3px;top:106.9px;width:1px;height:126.26px;opacity:0.700"></i>
+        <i style="left:1412.5px;top:46.7px;width:1px;height:246.57px;opacity:0.813"></i>
+        <i style="left:1421.7px;top:96.7px;width:1px;height:146.69px;opacity:0.925"></i>
+        <i style="left:1430.9px;top:146.6px;width:1px;height:46.81px;opacity:0.550"></i>
+        <i style="left:1448.2px;top:86.4px;width:1px;height:167.12px;opacity:0.663"></i>
+        <i style="left:1457.4px;top:136.4px;width:1px;height:67.24000000000001px;opacity:0.775"></i>
+        <i style="left:1466.6px;top:76.2px;width:1px;height:187.55px;opacity:0.887"></i>
+        <i style="left:1475.8px;top:126.2px;width:1px;height:87.67px;opacity:1.000"></i>
+        <i style="left:1485.0px;top:66.0px;width:1px;height:207.98px;opacity:0.625"></i>
+        <i style="left:1502.3px;top:116.0px;width:2px;height:108.1px;opacity:0.738"></i>
+        <i style="left:1511.5px;top:55.8px;width:1px;height:228.41px;opacity:0.850"></i>
+        <i style="left:1520.7px;top:105.7px;width:1px;height:128.53px;opacity:0.963"></i>
+        <i style="left:1529.9px;top:45.6px;width:1px;height:248.84px;opacity:0.588"></i>
+        <i style="left:1547.2px;top:95.5px;width:1px;height:148.96px;opacity:0.700"></i>
+        <i style="left:1556.4px;top:145.5px;width:1px;height:49.08px;opacity:0.813"></i>
+        <i style="left:1565.6px;top:85.3px;width:1px;height:169.39000000000001px;opacity:0.925"></i>
+        <i style="left:1574.8px;top:135.2px;width:1px;height:69.51px;opacity:0.550"></i>
+        <i style="left:1584.0px;top:75.1px;width:1px;height:189.82px;opacity:0.663"></i>
+        <i style="left:1601.3px;top:125.0px;width:1px;height:89.94px;opacity:0.775"></i>
+        <i style="left:1610.5px;top:64.9px;width:1px;height:210.25px;opacity:0.887"></i>
+        <i style="left:1619.7px;top:114.8px;width:1px;height:110.37px;opacity:1.000"></i>
+        <i style="left:1628.9px;top:54.7px;width:1px;height:230.68px;opacity:0.625"></i>
+        <i style="left:1646.2px;top:104.6px;width:1px;height:130.8px;opacity:0.738"></i>
+        <i style="left:1655.4px;top:44.4px;width:1px;height:251.11px;opacity:0.850"></i>
+        <i style="left:1664.6px;top:94.4px;width:1px;height:151.23000000000002px;opacity:0.963"></i>
+        <i style="left:1673.8px;top:144.3px;width:1px;height:51.35px;opacity:0.588"></i>
+        <i style="left:1683.0px;top:84.2px;width:2px;height:171.66px;opacity:0.700"></i>
+        <i style="left:1700.3px;top:134.1px;width:1px;height:71.78px;opacity:0.813"></i>
+        <i style="left:1709.5px;top:74.0px;width:1px;height:192.09px;opacity:0.925"></i>
+        <i style="left:1718.7px;top:123.9px;width:1px;height:92.21000000000001px;opacity:0.550"></i>
+        <i style="left:1727.9px;top:63.7px;width:1px;height:212.52px;opacity:0.663"></i>
+        <i style="left:1745.2px;top:113.7px;width:1px;height:112.64px;opacity:0.775"></i>
+        <i style="left:1754.4px;top:53.5px;width:1px;height:232.95px;opacity:0.887"></i>
+        <i style="left:1763.6px;top:103.5px;width:1px;height:133.07px;opacity:1.000"></i>
+        <i style="left:1772.8px;top:43.3px;width:1px;height:253.38px;opacity:0.625"></i>
+        <i style="left:1782.0px;top:93.3px;width:1px;height:153.5px;opacity:0.738"></i>
+        <i style="left:1799.3px;top:143.2px;width:1px;height:53.620000000000005px;opacity:0.850"></i>
+        <i style="left:1808.5px;top:83.0px;width:1px;height:173.93px;opacity:0.963"></i>
+        <i style="left:1817.7px;top:133.0px;width:1px;height:74.05px;opacity:0.588"></i>
+        <i style="left:1826.9px;top:72.8px;width:1px;height:194.36px;opacity:0.700"></i>
+        <i style="left:1844.2px;top:122.8px;width:1px;height:94.48px;opacity:0.813"></i>
+        <i style="left:1853.4px;top:62.6px;width:1px;height:214.79px;opacity:0.925"></i>
+        <i style="left:1862.6px;top:112.5px;width:1px;height:114.91px;opacity:0.550"></i>
+        <i style="left:1871.8px;top:52.4px;width:2px;height:235.22px;opacity:0.663"></i>
+        <i style="left:1881.0px;top:102.3px;width:1px;height:135.34px;opacity:0.775"></i>
+        <i style="left:1898.3px;top:42.2px;width:1px;height:255.65px;opacity:0.887"></i>
+        <i style="left:1907.5px;top:92.1px;width:1px;height:155.76999999999998px;opacity:1.000"></i>
+        <i style="left:1916.7px;top:142.1px;width:1px;height:55.89px;opacity:0.625"></i>
+        <i style="left:1925.9px;top:81.9px;width:1px;height:176.2px;opacity:0.738"></i>
+        <i style="left:1943.2px;top:131.8px;width:1px;height:76.32px;opacity:0.850"></i>
+        <i style="left:1952.4px;top:71.7px;width:1px;height:196.63px;opacity:0.963"></i>
+        <i style="left:1961.6px;top:121.6px;width:1px;height:96.75px;opacity:0.588"></i>
+        <i style="left:1970.8px;top:61.5px;width:1px;height:217.06px;opacity:0.700"></i>
+        <i style="left:1980.0px;top:111.4px;width:1px;height:117.18px;opacity:0.813"></i>
+        <i style="left:1997.3px;top:51.3px;width:1px;height:237.49px;opacity:0.925"></i>
+        <i style="left:2006.5px;top:101.2px;width:1px;height:137.61px;opacity:0.550"></i>
+        <i style="left:2015.7px;top:41.0px;width:1px;height:257.92px;opacity:0.663"></i>
+        <i style="left:2024.9px;top:91.0px;width:1px;height:158.04000000000002px;opacity:0.775"></i>
+        <i style="left:2042.2px;top:140.9px;width:1px;height:58.16px;opacity:0.887"></i>
+        <i style="left:2051.4px;top:80.8px;width:1px;height:178.47px;opacity:1.000"></i>
+        <i style="left:2060.6px;top:130.7px;width:2px;height:78.59px;opacity:0.625"></i>
+        <i style="left:2069.8px;top:70.5px;width:1px;height:198.9px;opacity:0.738"></i>
+        <i style="left:2079.0px;top:120.5px;width:1px;height:99.02000000000001px;opacity:0.850"></i>
+        <i style="left:2096.3px;top:60.3px;width:1px;height:219.33px;opacity:0.963"></i>
+        <i style="left:2105.5px;top:110.3px;width:1px;height:119.45px;opacity:0.588"></i>
+        <i style="left:2114.7px;top:50.1px;width:1px;height:239.76px;opacity:0.700"></i>
+        <i style="left:2123.9px;top:100.1px;width:1px;height:139.88px;opacity:0.813"></i>
+        <i style="left:2141.2px;top:150.0px;width:1px;height:40px;opacity:0.925"></i>
+        <i style="left:2150.4px;top:89.8px;width:1px;height:160.31px;opacity:0.550"></i>
+        <i style="left:2159.6px;top:139.8px;width:1px;height:60.43px;opacity:0.663"></i>
+        <i style="left:2168.8px;top:79.6px;width:1px;height:180.74px;opacity:0.775"></i>
+        <i style="left:2178.0px;top:129.6px;width:1px;height:80.86px;opacity:0.887"></i>
+        <i style="left:2195.3px;top:69.4px;width:1px;height:201.17px;opacity:1.000"></i>
+        <i style="left:2204.5px;top:119.4px;width:1px;height:101.28999999999999px;opacity:0.625"></i>
+        <i style="left:2213.7px;top:59.2px;width:1px;height:221.6px;opacity:0.738"></i>
+        <i style="left:2222.9px;top:109.1px;width:1px;height:121.72px;opacity:0.850"></i>
+        <i style="left:2240.2px;top:49.0px;width:1px;height:242.03px;opacity:0.963"></i>
+        <i style="left:2249.4px;top:98.9px;width:2px;height:142.15px;opacity:0.588"></i>
+        <i style="left:2258.6px;top:148.9px;width:1px;height:42.27px;opacity:0.700"></i>
+        <i style="left:2267.8px;top:88.7px;width:1px;height:162.57999999999998px;opacity:0.813"></i>
+        <i style="left:2277.0px;top:138.7px;width:1px;height:62.7px;opacity:0.925"></i>
+        <i style="left:2294.3px;top:78.5px;width:1px;height:183.01px;opacity:0.550"></i>
+        <i style="left:2303.5px;top:128.4px;width:1px;height:83.13px;opacity:0.663"></i>
+        <i style="left:2312.7px;top:68.3px;width:1px;height:203.44px;opacity:0.775"></i>
+        <i style="left:2321.9px;top:118.2px;width:1px;height:103.56px;opacity:0.887"></i>
+        <i style="left:2339.2px;top:58.1px;width:1px;height:223.87px;opacity:1.000"></i>
+        <i style="left:2348.4px;top:108.0px;width:1px;height:123.99px;opacity:0.625"></i>
+        <i style="left:2357.6px;top:47.8px;width:1px;height:244.3px;opacity:0.738"></i>
+        <i style="left:2366.8px;top:97.8px;width:1px;height:144.42000000000002px;opacity:0.850"></i>
+        <i style="left:2376.0px;top:147.7px;width:1px;height:44.54px;opacity:0.963"></i>
+        <i style="left:2393.3px;top:87.6px;width:1px;height:164.85px;opacity:0.588"></i>
+        <i style="left:2402.5px;top:137.5px;width:1px;height:64.97px;opacity:0.700"></i>
+        <i style="left:2411.7px;top:77.4px;width:1px;height:185.28px;opacity:0.813"></i>
+        <i style="left:2420.9px;top:127.3px;width:1px;height:85.4px;opacity:0.925"></i>
+        <i style="left:2438.2px;top:67.1px;width:2px;height:205.71px;opacity:0.550"></i>
+        <i style="left:2447.4px;top:117.1px;width:1px;height:105.83px;opacity:0.663"></i>
+        <i style="left:2456.6px;top:56.9px;width:1px;height:226.14000000000001px;opacity:0.775"></i>
+        <i style="left:2465.8px;top:106.9px;width:1px;height:126.26px;opacity:0.887"></i>
+        <i style="left:2475.0px;top:46.7px;width:1px;height:246.57px;opacity:1.000"></i>
+        <i style="left:2492.3px;top:96.7px;width:1px;height:146.69px;opacity:0.625"></i>
+        <i style="left:2501.5px;top:146.6px;width:1px;height:46.81px;opacity:0.738"></i>
+        <i style="left:2510.7px;top:86.4px;width:1px;height:167.12px;opacity:0.850"></i>
+        <i style="left:2519.9px;top:136.4px;width:1px;height:67.24000000000001px;opacity:0.963"></i>
+        <i style="left:2537.2px;top:76.2px;width:1px;height:187.55px;opacity:0.588"></i>
+        <i style="left:2546.4px;top:126.2px;width:1px;height:87.67px;opacity:0.700"></i>
+        <i style="left:2555.6px;top:66.0px;width:1px;height:207.98px;opacity:0.813"></i>
+        <i style="left:2564.8px;top:116.0px;width:1px;height:108.1px;opacity:0.925"></i>
+        <i style="left:2574.0px;top:55.8px;width:1px;height:228.41px;opacity:0.550"></i>
+        <i style="left:2591.3px;top:105.7px;width:1px;height:128.53px;opacity:0.663"></i>
+        <i style="left:2600.5px;top:45.6px;width:1px;height:248.84px;opacity:0.775"></i>
+        <i style="left:2609.7px;top:95.5px;width:1px;height:148.96px;opacity:0.887"></i>
+        <i style="left:2618.9px;top:145.5px;width:2px;height:49.08px;opacity:1.000"></i>
+        <i style="left:2636.2px;top:85.3px;width:1px;height:169.39000000000001px;opacity:0.625"></i>
+        <i style="left:2645.4px;top:135.2px;width:1px;height:69.51px;opacity:0.738"></i>
+        <i style="left:2654.6px;top:75.1px;width:1px;height:189.82px;opacity:0.850"></i>
+        <i style="left:2663.8px;top:125.0px;width:1px;height:89.94px;opacity:0.963"></i>
+        <i style="left:2673.0px;top:64.9px;width:1px;height:210.25px;opacity:0.588"></i>
+        <i style="left:2690.3px;top:114.8px;width:1px;height:110.37px;opacity:0.700"></i>
+        <i style="left:2699.5px;top:54.7px;width:1px;height:230.68px;opacity:0.813"></i>
+        <i style="left:2708.7px;top:104.6px;width:1px;height:130.8px;opacity:0.925"></i>
+        <i style="left:2717.9px;top:44.4px;width:1px;height:251.11px;opacity:0.550"></i>
+        <i style="left:2735.2px;top:94.4px;width:1px;height:151.23000000000002px;opacity:0.663"></i>
+        <i style="left:2744.4px;top:144.3px;width:1px;height:51.35px;opacity:0.775"></i>
+        <i style="left:2753.6px;top:84.2px;width:1px;height:171.66px;opacity:0.887"></i>
+        <i style="left:2762.8px;top:134.1px;width:1px;height:71.78px;opacity:1.000"></i>
+        <i style="left:2772.0px;top:74.0px;width:1px;height:192.09px;opacity:0.625"></i>
+        <i style="left:2789.3px;top:123.9px;width:1px;height:92.21000000000001px;opacity:0.738"></i>
+        <i style="left:2798.5px;top:63.7px;width:1px;height:212.52px;opacity:0.850"></i>
+        <i style="left:2807.7px;top:113.7px;width:2px;height:112.64px;opacity:0.963"></i>
+        <i style="left:2816.9px;top:53.5px;width:1px;height:232.95px;opacity:0.588"></i>
+        <i style="left:2834.2px;top:103.5px;width:1px;height:133.07px;opacity:0.700"></i>
+        <i style="left:2843.4px;top:43.3px;width:1px;height:253.38px;opacity:0.813"></i>
+        <i style="left:2852.6px;top:93.3px;width:1px;height:153.5px;opacity:0.925"></i>
+        <i style="left:2861.8px;top:143.2px;width:1px;height:53.620000000000005px;opacity:0.550"></i>
+        <i style="left:2871.0px;top:83.0px;width:1px;height:173.93px;opacity:0.663"></i>
+        <i style="left:2888.3px;top:133.0px;width:1px;height:74.05px;opacity:0.775"></i>
+        <i style="left:2897.5px;top:72.8px;width:1px;height:194.36px;opacity:0.887"></i>
+        <i style="left:2906.7px;top:122.8px;width:1px;height:94.48px;opacity:1.000"></i>
+        <i style="left:2915.9px;top:62.6px;width:1px;height:214.79px;opacity:0.625"></i>
+        <i style="left:2933.2px;top:112.5px;width:1px;height:114.91px;opacity:0.738"></i>
+        <i style="left:2942.4px;top:52.4px;width:1px;height:235.22px;opacity:0.850"></i>
+        <i style="left:2951.6px;top:102.3px;width:1px;height:135.34px;opacity:0.963"></i>
+        <i style="left:2960.8px;top:42.2px;width:1px;height:255.65px;opacity:0.588"></i>
+        <i style="left:2970.0px;top:92.1px;width:1px;height:155.76999999999998px;opacity:0.700"></i>
+        <i style="left:2987.3px;top:142.1px;width:1px;height:55.89px;opacity:0.813"></i>
+      </div>
+
+      <div class="f04-your-trades-head" id="f04-your-trades-head">
+        <span>Instrument</span><span>Side</span
+        ><span class="f04-your-trades-num-h">Entry</span><span class="f04-your-trades-num-h">Exit</span
+        ><span style="text-align: right">P&amp;L</span>
+      </div>
+      <div class="f04-your-trades-hairline" id="f04-your-trades-hairline"></div>
+
+      <div class="f04-your-trades-ledger" id="f04-your-trades-ledger">
+      <div class="f04-your-trades-row">
+        <span class="f04-your-trades-sym">NQ 09-26</span
+        ><span class="f04-your-trades-side">LONG</span
+        ><span class="f04-your-trades-px">20418.25</span
+        ><span class="f04-your-trades-px">20431.75</span
+        ><span class="f04-your-trades-pnl f04-your-trades-win">+$270.00</span>
+      </div>
+      <div class="f04-your-trades-row">
+        <span class="f04-your-trades-sym">NQ 09-26</span
+        ><span class="f04-your-trades-side">SHORT</span
+        ><span class="f04-your-trades-px">20444.50</span
+        ><span class="f04-your-trades-px">20452.25</span
+        ><span class="f04-your-trades-pnl f04-your-trades-loss">-$155.00</span>
+      </div>
+      <div class="f04-your-trades-row">
+        <span class="f04-your-trades-sym">NQ 09-26</span
+        ><span class="f04-your-trades-side">LONG</span
+        ><span class="f04-your-trades-px">20402.75</span
+        ><span class="f04-your-trades-px">20396.00</span
+        ><span class="f04-your-trades-pnl f04-your-trades-loss">-$135.00</span>
+      </div>
+      <div class="f04-your-trades-row">
+        <span class="f04-your-trades-sym">NQ 09-26</span
+        ><span class="f04-your-trades-side">SHORT</span
+        ><span class="f04-your-trades-px">20471.00</span
+        ><span class="f04-your-trades-px">20452.50</span
+        ><span class="f04-your-trades-pnl f04-your-trades-win">+$370.00</span>
+      </div>
+      <div class="f04-your-trades-row">
+        <span class="f04-your-trades-sym">NQ 09-26</span
+        ><span class="f04-your-trades-side">LONG</span
+        ><span class="f04-your-trades-px">20388.50</span
+        ><span class="f04-your-trades-px">20383.25</span
+        ><span class="f04-your-trades-pnl f04-your-trades-loss">-$105.00</span>
+      </div>
+      <div class="f04-your-trades-row">
+        <span class="f04-your-trades-sym">NQ 09-26</span
+        ><span class="f04-your-trades-side">LONG</span
+        ><span class="f04-your-trades-px">20461.25</span
+        ><span class="f04-your-trades-px">20469.00</span
+        ><span class="f04-your-trades-pnl f04-your-trades-win">+$155.00</span>
+      </div>
+      <div class="f04-your-trades-row">
+        <span class="f04-your-trades-sym">NQ 09-26</span
+        ><span class="f04-your-trades-side">SHORT</span
+        ><span class="f04-your-trades-px">20455.75</span
+        ><span class="f04-your-trades-px">20463.50</span
+        ><span class="f04-your-trades-pnl f04-your-trades-loss">-$155.00</span>
+      </div>
+      <div class="f04-your-trades-row">
+        <span class="f04-your-trades-sym">NQ 09-26</span
+        ><span class="f04-your-trades-side">LONG</span
+        ><span class="f04-your-trades-px">20427.00</span
+        ><span class="f04-your-trades-px">20441.25</span
+        ><span class="f04-your-trades-pnl f04-your-trades-win">+$285.00</span>
+      </div>
+      </div>
+
+      <div class="f04-your-trades-rule" id="f04-your-trades-rule"></div>
+      <div class="f04-your-trades-path">
+        <span class="f04-your-trades-typed" id="f04-your-trades-typed">db/NinjaTrader.sqlite</span
+        ><span class="f04-your-trades-caret" id="f04-your-trades-caret"></span>
+      </div>
+
+      <div class="f04-your-trades-kicker" id="f04-your-trades-kicker">Round-trip ledger</div>
+      <div class="f04-your-trades-statement" id="f04-your-trades-statement">
+        <span class="f04-your-trades-w f04-your-trades-accent">your</span>
+        <span class="f04-your-trades-w f04-your-trades-accent">trades.</span>
+        <span class="f04-your-trades-w">not</span>
+        <span class="f04-your-trades-w">a</span>
+        <span class="f04-your-trades-w">model.</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var root = document.querySelector('[data-composition-id="04-your-trades"]');
+      var q = function (id) {
+        return root.querySelector("#" + id);
+      };
+      var qa = function (sel) {
+        return Array.prototype.slice.call(root.querySelectorAll(sel));
+      };
+
+      var world = root.querySelector(".f04-your-trades-world");
+      var tape = q("f04-your-trades-tape");
+      var ghosts = qa(".f04-your-trades-ghost");
+      var hairline = q("f04-your-trades-hairline");
+      var heads = qa(".f04-your-trades-head span");
+      var rows = qa(".f04-your-trades-row");
+      var pnls = qa(".f04-your-trades-pnl");
+      var ruleBar = q("f04-your-trades-rule");
+      var caret = q("f04-your-trades-caret");
+      var kicker = q("f04-your-trades-kicker");
+      var words = qa(".f04-your-trades-w");
+
+      // motion-blur-streak, path A — directional blur tweened as an ATTRIBUTE, not through
+      // an onUpdate proxy: a seeked renderer suppresses callbacks, so a proxy would freeze.
+      var blurNode = q("f04-your-trades-blur");
+      var typed = q("f04-your-trades-typed");
+      var CHARS = typed.textContent.length;
+
+      window.__timelines = window.__timelines || {};
+      var tl = gsap.timeline({ paused: true });
+
+      // Every entrance is a fromTo: its from-state renders immediately at build time, so a
+      // seek to any frame before the entrance shows the element correctly hidden.
+
+      // macro camera: a slow push under the whole shot
+      tl.fromTo(world, { scale: 1 }, { scale: 1.022, duration: 4, ease: "none" }, 0);
+
+      // ---- Scene 1 (0.0–1.2) — the tape streaks in from the left edge ----
+      tl.fromTo(tape, { x: -1500 }, { x: 0, duration: 0.55, ease: "power3.out" }, 0);
+      // motion-blur-streak path B: an SVG smear is invisible on a 1px tick field, so the
+      // velocity is carried by echo ghosts on the SAME window and ease. ECHO_STEP is scaled
+      // to the TICK (4px against 11px spacing), not to the tape — the smear must read on the
+      // hairline, which is the thing the eye tracks.
+      ghosts.forEach(function (g) {
+        var i = +g.getAttribute("data-i");
+        tl.fromTo(
+          g,
+          { x: -1500 - i * 4, opacity: 0.5 / i },
+          { x: 0, opacity: 0, duration: 0.55, ease: "power3.out" },
+          0,
+        );
+      });
+      tl.to(tape, { x: -34, duration: 0.65, ease: "none" }, 0.55); // live-feed drift
+
+      // ---- Scene 2 (1.2–2.5) — the stream collapses inward, structure assembles ----
+      tl.to(
+        tape,
+        {
+          x: 0,
+          scaleX: 0.313,
+          scaleY: 0.012,
+          y: -220,
+          opacity: 0.4,
+          duration: 0.55,
+          ease: "power2.inOut",
+        },
+        1.15,
+      );
+      // inOut leg: blur peaks at mid-leg velocity, resolves as the tape lands on the hairline
+      tl.to(blurNode, { attr: { stdDeviation: "7 0" }, duration: 0.28, ease: "power2.in" }, 1.15);
+      tl.to(blurNode, { attr: { stdDeviation: "0 0" }, duration: 0.27, ease: "power2.out" }, 1.43);
+      tl.to(tape, { opacity: 0, duration: 0.18, ease: "none" }, 1.7);
+
+      tl.fromTo(
+        hairline,
+        { scaleX: 0, transformOrigin: "left center" },
+        { scaleX: 1, duration: 0.4, ease: "expo.out" },
+        1.6,
+      );
+      // the kicker labels the ledger, so it arrives with the ledger's chrome — it anchors
+      // the upper field while the statement waits for its Scene 3 beat.
+      tl.fromTo(
+        kicker,
+        { opacity: 0, y: -8 },
+        { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" },
+        1.62,
+      );
+      tl.fromTo(
+        heads,
+        { opacity: 0, y: 10 },
+        { opacity: 1, y: 0, duration: 0.3, ease: "power2.out", stagger: 0.03 },
+        1.62,
+      );
+
+      rows.forEach(function (row, i) {
+        var at = 1.66 + i * 0.05;
+        tl.fromTo(
+          row,
+          { opacity: 0, x: -46 },
+          { opacity: 1, x: 0, duration: 0.36, ease: "power3.out" },
+          at,
+        );
+        // the P&L prints a beat after its row lands — the number is the payload
+        tl.fromTo(
+          pnls[i],
+          { opacity: 0, x: -14 },
+          { opacity: 1, x: 0, duration: 0.3, ease: "power2.out" },
+          at + 0.12,
+        );
+      });
+
+      // ---- Scene 3 (1.7–4.0) — the statement lands, THEN the source path types on ----
+      // The headline is the claim and the path is its footnote, so the claim goes
+      // first: at 2.94 the frame read as an unlabelled table for 73% of its life.
+      tl.fromTo(
+        words,
+        { opacity: 0, y: 30 },
+        { opacity: 1, y: 0, duration: 0.5, ease: "power3.out", stagger: 0.055 },
+        1.7,
+      );
+      tl.fromTo(
+        ruleBar,
+        { scaleX: 0 },
+        { scaleX: 1, duration: 0.25, ease: "power3.out" },
+        2.32,
+      );
+      tl.fromTo(caret, { opacity: 0 }, { opacity: 1, duration: 0.12, ease: "none" }, 2.38);
+      tl.fromTo(
+        typed,
+        { width: 0 },
+        { width: CHARS + "ch", duration: 0.55, ease: "steps(" + CHARS + ")" },
+        2.40,
+      );
+
+      // hold the landed frame out to the full duration
+      tl.to(caret, { opacity: 1, duration: 0.01, ease: "none" }, 3.99);
+
+      window.__timelines["04-your-trades"] = tl;
+    })();
+  </script>
+</template>

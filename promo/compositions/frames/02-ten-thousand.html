@@ -72,23 +72,35 @@
     }
   </style>
 
-  <div id="root" data-composition-id="02-ten-thousand">
+  <div id="root" data-composition-id="02-ten-thousand" data-width="1920" data-height="1080">
     <div class="clip tt-ground" data-start="0" data-duration="4" data-track-index="0"></div>
 
     <div class="clip tt-stage" data-start="0" data-duration="4" data-track-index="1">
       <svg class="tt-svg" viewBox="0 0 1920 1080" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <!-- leading-edge ramp: the cone dissipates instead of hitting a wall -->
+          <linearGradient id="tt-fade" gradientUnits="userSpaceOnUse" x1="1560" y1="0" x2="1815" y2="0">
+            <stop offset="0" stop-color="#fff" stop-opacity="1" />
+            <stop offset="0.45" stop-color="#fff" stop-opacity="0.68" />
+            <stop offset="1" stop-color="#fff" stop-opacity="0" />
+          </linearGradient>
+          <mask id="tt-fade-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="1920" height="1080">
+            <rect x="0" y="0" width="1920" height="1080" fill="url(#tt-fade)" />
+          </mask>
+        </defs>
         <!-- origin line -->
         <line
           id="tt-baseline"
           x1="250"
           y1="580"
-          x2="1640"
+          x2="1800"
           y2="580"
           stroke="#232529"
           stroke-width="1"
           pathLength="1"
           stroke-dasharray="1"
           stroke-dashoffset="1"
+          mask="url(#tt-fade-mask)"
         />
         <!-- the single path carried over from frame 1 -->
         <path
@@ -101,7 +113,7 @@
           opacity="0.78"
         />
         <!-- the cone: ~200 hairline paths, injected below -->
-        <g id="tt-cone">
+        <g id="tt-cone" mask="url(#tt-fade-mask)">
           <g id="tt-inner"></g>
           <g id="tt-outer-up"></g>
           <g id="tt-outer-down"></g>
@@ -127,7 +139,8 @@
       // ---- cone geometry -------------------------------------------------
       const ORIGIN_X = 250;
       const ORIGIN_Y = 580;
-      const END_X = 1640;
+      const END_X = 1800; // fades out under #tt-fade-mask before the counter
+      const END_JITTER = 180; // ragged leading edge — no two paths stop at the same x
       const MAX_SPREAD = 260; // keeps every stroke inside the 83% keep-out
       const Y_MIN = 300;
       const Y_MAX = 872;
@@ -143,7 +156,7 @@
 
       // brownian-bridge equity curve: pinned at the origin, lands on its own
       // outcome, jagged in between
-      function pathD(i, spread, amp) {
+      function pathD(i, spread, amp, endX) {
         const w = [0];
         let acc = 0;
         for (let k = 1; k <= STEPS; k++) {
@@ -158,7 +171,7 @@
           let y = ORIGIN_Y + spread * t + bridge * amp;
           if (y < Y_MIN) y = Y_MIN;
           if (y > Y_MAX) y = Y_MAX;
-          d += " L " + (ORIGIN_X + (END_X - ORIGIN_X) * t).toFixed(1) + " " + y.toFixed(1);
+          d += " L " + (ORIGIN_X + (endX - ORIGIN_X) * t).toFixed(1) + " " + y.toFixed(1);
         }
         return d;
       }
@@ -178,7 +191,8 @@
         const s = side * Math.pow(u, 1.5); // density peaks at the mean
         const a = Math.abs(s);
         const el = document.createElementNS(NS, "path");
-        el.setAttribute("d", pathD(i, -s * MAX_SPREAD, 13 + 24 * a));
+        const endX = END_X - Math.abs(nz(i + 7, 53)) * END_JITTER;
+        el.setAttribute("d", pathD(i, -s * MAX_SPREAD, 13 + 24 * a, endX));
         el.setAttribute("stroke", s > 0 ? "#34d399" : "#f2635f");
         el.setAttribute("stroke-width", "1.15");
         el.setAttribute("stroke-linejoin", "round");

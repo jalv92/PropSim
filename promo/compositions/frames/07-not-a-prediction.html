@@ -1,0 +1,304 @@
+<template>
+  <style>
+    /* ── 07 · not a prediction — closing lockup over the returning cone ───────────
+       Broadside / dark register only. ink-black ground, cream type, one accent
+       (PropSim signal green). signal-red appears ONLY as the cone's downside
+       paths — meaning, not decoration.                                          */
+
+    #root {
+      position: absolute;
+      inset: 0;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      container-type: size;
+      font-family: system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── ground: full-bleed clip layer (never on #root) ─────────────────────── */
+    .f07-ground {
+      position: absolute;
+      inset: 0;
+      background: #0b0b0d;
+    }
+    .f07-cone-svg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .f07-cone path {
+      fill: none;
+      stroke-width: 1;
+      stroke-opacity: 0.1;
+      stroke-dasharray: 1;
+      stroke-dashoffset: 1;
+    }
+    .f07-up {
+      stroke: #34d399;
+    }
+    .f07-down {
+      stroke: #f2635f;
+    }
+
+    /* ── content layer ──────────────────────────────────────────────────────── */
+    .f07-stage {
+      position: absolute;
+      inset: 0;
+    }
+
+    /* the honesty line — display ramp h2, lands centred, later recedes + drops */
+    .f07-honesty {
+      position: absolute;
+      top: 327px;
+      left: 0;
+      right: 0;
+      text-align: center;
+      color: #e7e9ea;
+      font-size: 4.5cqw;
+      font-weight: 700;
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      transform-origin: 50% 50%;
+    }
+    .f07-hline {
+      display: block;
+      overflow: hidden;
+      padding-bottom: 0.22em;
+      margin-bottom: -0.22em;
+      white-space: nowrap;
+    }
+    .f07-hline > span {
+      display: block;
+    }
+
+    /* the wordmark — the one display moment of the closing frame. Mixed case,
+       display ramp, signal green: the same mark frame 03 opened on, smaller
+       here because this frame closes on it rather than introducing it. */
+    .f07-mark {
+      position: absolute;
+      top: 240px;
+      left: 0;
+      right: 0;
+      text-align: center;
+      color: #34d399;
+      font-size: 13cqw;
+      font-weight: 900;
+      line-height: 0.88;
+      letter-spacing: -0.04em;
+      transform-origin: 50% 50%;
+    }
+
+    /* mono chrome */
+    .f07-repo {
+      position: absolute;
+      top: 498px;
+      left: 0;
+      right: 0;
+      text-align: center;
+      color: #e7e9ea;
+      font-family: ui-monospace, monospace;
+      font-size: 2.1cqw;
+      font-weight: 500;
+      line-height: 1.4;
+      letter-spacing: 0.04em;
+      white-space: pre;
+    }
+    .f07-ch {
+      display: inline-block;
+    }
+    .f07-rail {
+      position: absolute;
+      top: 574px;
+      left: 0;
+      right: 0;
+      text-align: center;
+      color: #8b9096;
+      font-family: ui-monospace, monospace;
+      font-size: 1.25cqw;
+      font-weight: 500;
+      line-height: 1.5;
+      letter-spacing: 0.14em;
+    }
+  </style>
+
+  <div
+    id="root"
+    data-composition-id="07-not-a-prediction"
+    data-width="1920"
+    data-height="1080"
+  >
+    <!-- ground -->
+    <div
+      class="f07-ground clip"
+      data-start="0"
+      data-duration="4.5"
+      data-track-index="0"
+    >
+      <svg
+        class="f07-cone-svg"
+        viewBox="0 0 1920 1080"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        <g class="f07-cone"></g>
+      </svg>
+    </div>
+
+    <!-- content -->
+    <div
+      class="f07-stage clip"
+      data-start="0"
+      data-duration="4.5"
+      data-track-index="1"
+    >
+      <div class="f07-honesty">
+        <span class="f07-hline"><span>a simulated pass rate</span></span>
+        <span class="f07-hline"><span>is not a prediction</span></span>
+        <span class="f07-hline"><span>about your account.</span></span>
+      </div>
+
+      <div class="f07-mark">PropSim</div>
+
+      <div class="f07-repo"></div>
+
+      <div class="f07-rail">free · mit · runs on your machine</div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var ID = "07-not-a-prediction";
+      var rootEl = document.querySelector('[data-composition-id="' + ID + '"]');
+      var scope = rootEl || document;
+      var q = function (sel) {
+        return Array.prototype.slice.call(scope.querySelectorAll(sel));
+      };
+
+      /* ── deterministic pseudo-noise (never Math.random) ─────────────────── */
+      function rnd(a, b) {
+        var s = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+        return s - Math.floor(s);
+      }
+
+      /* ── the probability cone from frame 02, returning as the ground ─────── */
+      var OX = 118,
+        OY = 512,
+        W = 1920,
+        STEPS = 54,
+        COUNT = 150;
+      var strands = [];
+      for (var i = 0; i < COUNT; i++) {
+        var drift = (rnd(i + 1, 3.7) - 0.5) * 2; // -1..1, the path's own bias
+        var y = OY;
+        var d = "M" + OX + " " + OY.toFixed(1);
+        for (var s = 1; s <= STEPS; s++) {
+          var x = OX + (W - OX) * (s / STEPS);
+          y += drift * 6.4 + (rnd(i * 7.13 + 2.4, s * 3.71 + 1.3) - 0.5) * 26;
+          d += "L" + x.toFixed(1) + " " + y.toFixed(1);
+        }
+        strands.push({ d: d, spread: Math.abs(drift), up: y < OY });
+      }
+      // centre-out draw order: the tight paths resolve first, the tails last
+      strands.sort(function (a, b) {
+        return a.spread - b.spread;
+      });
+
+      var g = scope.querySelector(".f07-cone");
+      var svgNS = "http://www.w3.org/2000/svg";
+      strands.forEach(function (st) {
+        var p = document.createElementNS(svgNS, "path");
+        p.setAttribute("d", st.d);
+        p.setAttribute("pathLength", "1");
+        p.setAttribute("class", st.up ? "f07-up" : "f07-down");
+        g.appendChild(p);
+      });
+
+      /* ── the repo line, one span per character (mono ⇒ no reflow) ────────── */
+      var repoEl = scope.querySelector(".f07-repo");
+      var REPO = "github.com/jalv92/PropSim";
+      for (var c = 0; c < REPO.length; c++) {
+        var sp = document.createElement("span");
+        sp.className = "f07-ch";
+        sp.textContent = REPO.charAt(c);
+        repoEl.appendChild(sp);
+      }
+
+      /* ── timeline ───────────────────────────────────────────────────────── */
+      window.__timelines = window.__timelines || {};
+      var tl = gsap.timeline({ paused: true });
+
+      // Scene 1 (0.0–1.3s) — the cone is DRAWN, not popped; the line holds alone.
+      tl.fromTo(
+        q(".f07-cone path"),
+        { strokeDashoffset: 1 },
+        {
+          strokeDashoffset: 0,
+          duration: 0.85,
+          ease: "power1.out",
+          stagger: { each: 0.0033, from: 0 },
+        },
+        0.02,
+      );
+
+      tl.fromTo(
+        q(".f07-hline > span"),
+        { yPercent: 112 },
+        { yPercent: 0, duration: 0.72, ease: "power3.out", stagger: 0.1 },
+        0.06,
+      );
+
+      // Scene 2 (1.3–2.6s) — the line recedes to cream-muted and drops to the
+      // lower third; the wordmark spring-pops into the vacated centre.
+      tl.fromTo(
+        ".f07-honesty",
+        { y: 0, scale: 1, color: "#e7e9ea" },
+        {
+          y: 262, // clears the enlarged repo + rail block, still above the keep-out
+          scale: 0.62,
+          color: "#8b9096",
+          duration: 0.62,
+          ease: "power2.inOut",
+        },
+        1.3,
+      );
+
+      // spring-pop-entrance, calm-settle variation: power3.out, no overshoot.
+      tl.fromTo(
+        ".f07-mark",
+        { scale: 0, opacity: 0, y: 12 },
+        { scale: 1, opacity: 1, y: 0, duration: 0.6, ease: "power3.out" },
+        1.84,
+      );
+
+      // Scene 3 (2.6–4.5s) — the repo line types on, the rail settles under it.
+      tl.fromTo(
+        q(".f07-ch"),
+        { opacity: 0 },
+        { opacity: 1, duration: 0.01, ease: "none", stagger: 0.026 },
+        2.62,
+      );
+
+      tl.fromTo(
+        ".f07-rail",
+        { opacity: 0, y: 10 },
+        { opacity: 1, y: 0, duration: 0.46, ease: "power2.out" },
+        3.32,
+      );
+
+      // The final beat: the cone ground fades to ink-black. The only exit.
+      tl.fromTo(
+        ".f07-cone",
+        { opacity: 1 },
+        { opacity: 0, duration: 0.36, ease: "power2.in" },
+        4.1,
+      );
+
+      tl.to({}, { duration: 0.04 }, 4.46);
+
+      window.__timelines[ID] = tl;
+    })();
+  </script>
+</template>

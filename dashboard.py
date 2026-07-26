@@ -43,6 +43,17 @@ import engine
 HERE = Path(__file__).resolve().parent
 PAGE = pr._res("dashboard.html")
 PATHS_DRAWN = 1000          # spaghetti lines; the screenshot's reference count
+
+# A pass rate computed from a handful of trading days is not "uncertain" -- it is
+# structurally meaningless. The bootstrap resamples whole DAYS, so a pool holding
+# one profitable session produces ten thousand identical winning paths and reports
+# P(pass) = 100%. Measured, on a real two-trade Playback session: 100.0% pass,
+# $105,111 mean payout. Below MIN_DAYS the headline figure is withheld rather than
+# rendered with a warning next to it, because a number on a screen outranks a
+# caption every time. MEANINGFUL_DAYS is the separate, larger threshold at which
+# the figure stops being a statement about the fortnight you happened to replay.
+MIN_DAYS = 10
+MEANINGFUL_DAYS = 60
 UPDATE_RESULT = {}          # filled once at startup, shown in the UI
 
 
@@ -246,9 +257,18 @@ def run_stream(q, write):
     ledger.append("score", firm=firm, variant=variant, size=size, sims=sims,
                   source=(src or profile), policy=policy_name)
 
+    thin = None
+    if pool:
+        n_days = int(pool["n_days"])
+        distinct = int(pool.get("distinct_days") or n_days)
+        if min(n_days, distinct) < MIN_DAYS:
+            thin = dict(n_days=n_days, distinct=distinct,
+                        needed=MIN_DAYS, meaningful=MEANINGFUL_DAYS)
+
     write("meta", dict(
         firm=firm, variant=variant, size=size, sims=sims, fee=fee,
         profile=profile, policy=policy_name, fidelity=fidelity,
+        insufficient=thin,
         ledger=ledger.stats(),
         target=ev_rules.profit_target, max_dd=ev_rules.max_dd,
         start=ev_rules.start_balance, dd_lock=ev_rules.dd_floor_lock,

@@ -384,18 +384,35 @@ function drawDonut(p_pass,p_bust,p_time,daysPass,sims,labels){
   x.fillStyle="#e7e9ea"; x.textAlign="center"; x.font="600 19px ui-monospace,monospace";
   x.fillText(sims.toLocaleString(), cx, cy+2);
   x.fillStyle="#8b9096"; x.font="11px system-ui"; x.fillText("sims", cx, cy+18);
+  // WITHHELD, not caveated. Below the day-block minimum the percentage is an
+  // artefact of resampling one session ten thousand times, and a number on screen
+  // outranks any caption sitting next to it.
+  const thin = META && META.insufficient;
+  const show = v => thin ? "n/a" : pct(v);
   x.textAlign="left"; x.font="600 12.5px system-ui";
-  x.fillStyle="#34d399"; x.fillText(labels[0]+": "+pct(p_pass), 8, 20);
+  x.fillStyle="#34d399"; x.fillText(labels[0]+": "+show(p_pass), 8, 20);
   x.fillStyle="#8b9096"; x.font="11px system-ui";
-  x.fillText(daysPass!=null?("avg "+daysPass.toFixed(1)+" days"):"—", 8, 36);
+  x.fillText(thin ? `${thin.distinct} distinct session(s) — needs ${thin.needed}`
+                  : (daysPass!=null?("avg "+daysPass.toFixed(1)+" days"):"—"), 8, 36);
   x.fillStyle="#f2635f"; x.font="600 12.5px system-ui";
-  x.fillText(labels[1]+": "+pct(p_bust), 8, h-26);
+  x.fillText(labels[1]+": "+show(p_bust), 8, h-26);
   x.fillStyle="#f0b429"; x.font="600 12px system-ui";
-  x.fillText(labels[2]+": "+pct(p_time), 8, h-8);
+  x.fillText(labels[2]+": "+show(p_time), 8, h-8);
 }
 
 /* ---------- KPI tiles ---------- */
 function drawKpis(t){
+  // Every tile here is an output of the simulation, so when the day-block sample
+  // is too thin they are all artefacts of resampling one session -- including
+  // "mean payout", which came out at $105,111 from a single two-trade Playback
+  // day. Withhold the lot; the trade list and the equity paths below are real and
+  // stay.
+  if(META && META.insufficient){
+    $("#kpis").innerHTML = t.map(([l])=>
+      `<div class="kpi"><div class="lab">${l}</div>
+       <div class="val" style="color:#5f646b">n/a</div></div>`).join("");
+    return;
+  }
   $("#kpis").innerHTML = t.map(([l,v,c])=>
     `<div class="kpi"><div class="lab">${l}</div>
      <div class="val ${c}">${v}</div></div>`).join("");
@@ -495,6 +512,20 @@ function run(){
     // rebuilt by showWarnings(); these are run-level and were stacking up one
     // copy per run until the panel was a wall of duplicates.
     document.querySelectorAll("#warns .run-warn").forEach(el=>el.remove());
+    if(META.insufficient){
+      const t=META.insufficient;
+      $("#warns").insertAdjacentHTML("beforeend",
+        `<div class="warn bad run-warn"><b>⚠ No pass rate is shown for this run.</b>
+         The Monte Carlo resamples whole trading <b>days</b>, and this source has
+         <b>${t.n_days} day-block(s)</b> with <b>${t.distinct} distinct daily
+         outcome(s)</b>. Bootstrapping that produces ten thousand copies of the same
+         session, so the figure would be an artefact of the resampling, not a
+         property of the strategy — a single profitable session comes out as
+         P(pass) = 100%. Minimum to display: <b>${t.needed} sessions</b>. Before the
+         number describes the strategy rather than the fortnight you replayed:
+         <b>${t.meaningful}+</b>. The trades, paths and P&L below are still real —
+         only the probability is withheld.</div>`);
+    }
     if(META.pool && META.pool.distinct_days != null && META.pool.distinct_days < 10){
       $("#warns").insertAdjacentHTML("beforeend",
         `<div class="warn run-warn"><b>The equity paths below will look like a repeating

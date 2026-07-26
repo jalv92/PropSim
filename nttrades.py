@@ -112,8 +112,17 @@ def _instruments(con):
                                     JOIN MasterInstruments m ON m.Id=i.MasterInstrument""")}
 
 
+# NinjaTrader's connection provider id for the Playback connection. Measured on a
+# real database: Playback101 = 13, while Sim101 and Backtest are 15 and live
+# brokers are 38/50. This is how a replay run is identified, because
+# `Strategies.IsReplay` is NOT set for one -- a strategy that traded a full
+# Playback session came back with IsReplay = 0.
+PLAYBACK_PROVIDER = 13
+
+
 def _accounts(con):
-    return {r["Id"]: r["Name"] for r in con.execute("SELECT Id, Name FROM Accounts")}
+    return {r["Id"]: (r["Name"], r["Provider"])
+            for r in con.execute("SELECT Id, Name, Provider FROM Accounts")}
 
 
 def _strategies(con):
@@ -226,14 +235,15 @@ def read_trades(nt_root=None, account=None, strategy=None) -> list[Trade]:
         # Attribution comes from the ENTRY: that is the execution that opened the
         # position, and a protective exit is sometimes recorded without it.
         s = strat_of.get(en["Id"]) or strat_of.get(r["Id"]) or {}
+        acct_name, provider = accts.get(r["Account"], (str(r["Account"]), None))
         trades.append(Trade(
-            account=accts.get(r["Account"], str(r["Account"])), instrument=name,
+            account=acct_name, instrument=name,
             direction=direction, qty=qty,
             entry_time=_dt(en["Time"]), exit_time=_dt(r["Time"]),
             entry_price=en["Price"], exit_price=r["Price"], point_value=pv,
             commission=comm, pnl=gross - comm, mae=mae, mfe=mfe,
             strategy=s.get("name"), strategy_id=s.get("id"),
-            is_replay=bool(s.get("is_replay"))))
+            is_replay=(provider == PLAYBACK_PROVIDER) or bool(s.get("is_replay"))))
 
     if mismatched:
         print(f"  warning: {mismatched} execution pair(s) had a same-side "

@@ -1,0 +1,430 @@
+<template>
+  <div
+    id="root"
+    data-composition-id="06-sourced-dated"
+    data-width="1920"
+    data-height="1080"
+  >
+    <style>
+      #root {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 1920px;
+        height: 1080px;
+        container-type: size;
+        overflow: hidden;
+        color: #e7e9ea;
+        font-family: system-ui;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* --- full-bleed ground: its own clip layer, never on #root --- */
+      #f06-bg {
+        position: absolute;
+        inset: 0;
+        background: #0b0b0d;
+      }
+
+      #f06-stage {
+        position: absolute;
+        inset: 0;
+      }
+
+      .f06-mono {
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* --- slide chrome (top bar only; bottom bar would fall in the keep-out) --- */
+      #f06-chrome-l,
+      #f06-chrome-r {
+        position: absolute;
+        top: 52px;
+        font-size: 0.72cqw;
+        font-weight: 500;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      #f06-chrome-l {
+        left: 106px;
+        color: #34d399;
+      }
+      #f06-chrome-r {
+        right: 106px;
+        color: #8b9096;
+      }
+      #f06-chrome-rule {
+        position: absolute;
+        left: 106px;
+        top: 90px;
+        width: 1708px;
+        height: 1px;
+        background: #232529;
+        transform-origin: 0 50%;
+      }
+
+      /* --- scene 1: five firm chips --- */
+      #f06-chips {
+        position: absolute;
+        left: 106px;
+        top: 148px;
+        width: 1708px;
+        display: flex;
+        gap: 22px;
+      }
+      .f06-chip {
+        flex: 1 1 0;
+        height: 78px;
+        border: 1px solid #232529;
+        background: #121316;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        font-size: 1.04cqw;
+        font-weight: 500;
+        letter-spacing: 0.06em;
+        color: #e7e9ea;
+        text-align: center;
+      }
+
+      /* --- scene 3: retrieved-date stamps --- */
+      #f06-dates {
+        position: absolute;
+        left: 106px;
+        top: 244px;
+        width: 1708px;
+        display: flex;
+        gap: 22px;
+      }
+      .f06-date {
+        flex: 1 1 0;
+        text-align: center;
+        font-size: 0.68cqw;
+        font-weight: 500;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #8b9096;
+        white-space: nowrap;
+      }
+      .f06-date span {
+        display: inline-block;
+      }
+      .f06-date span + span {
+        margin-left: 0.5em;
+      }
+
+      /* --- scene 2: counter + 148-variant grid --- */
+      #f06-band-rule {
+        position: absolute;
+        left: 106px;
+        top: 300px;
+        width: 1708px;
+        height: 1px;
+        background: #232529;
+        transform-origin: 0 50%;
+      }
+      #f06-counter {
+        position: absolute;
+        left: 106px;
+        top: 604px;
+        display: flex;
+        align-items: flex-end;
+        gap: 28px;
+      }
+      #f06-count {
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        font-variant-numeric: tabular-nums;
+        font-size: 4.2cqw;
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: -0.03em;
+        color: #34d399;
+      }
+      #f06-count-label {
+        padding-bottom: 8px;
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        font-size: 0.72cqw;
+        font-weight: 500;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #8b9096;
+        line-height: 1.6;
+      }
+      #f06-count-sub {
+        color: #8b9096;
+      }
+      /* the 148 variants: five clusters, one per firm, column-aligned with the
+         chips above; each mark is a 7px hairline square, not a bar */
+      #f06-field {
+        position: absolute;
+        left: 106px;
+        top: 348px;
+        width: 1708px;
+        display: flex;
+        gap: 22px;
+        align-items: flex-start;
+      }
+      .f06-cluster {
+        flex: 1 1 0;
+        display: grid;
+        grid-template-columns: repeat(6, 7px);
+        gap: 28px;
+        justify-content: center;
+        align-content: start;
+      }
+      .f06-mark {
+        width: 7px;
+        height: 7px;
+        background: #5f646b;
+      }
+
+      /* --- scene 4: the statement --- */
+      #f06-stub {
+        position: absolute;
+        left: 106px;
+        top: 740px;
+        width: 36px;
+        height: 2px;
+        background: #34d399;
+        transform-origin: 0 50%;
+      }
+      #f06-statement {
+        position: absolute;
+        left: 106px;
+        top: 768px;
+        width: 1708px;
+        font-size: 3.4cqw;
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: -0.02em;
+        color: #e7e9ea;
+      }
+      #f06-statement span {
+        display: inline-block;
+      }
+      #f06-statement span + span {
+        margin-left: 0.28em;
+      }
+    </style>
+
+    <div
+      id="f06-bg"
+      class="clip"
+      data-start="0"
+      data-duration="4.5"
+      data-track-index="0"
+    ></div>
+
+    <div
+      id="f06-stage"
+      class="clip"
+      data-start="0"
+      data-duration="4.5"
+      data-track-index="1"
+    >
+      <div id="f06-chrome-l" class="f06-mono">rule sources</div>
+      <div id="f06-chrome-r" class="f06-mono">no. 06</div>
+      <div id="f06-chrome-rule"></div>
+
+      <div id="f06-chips">
+        <div class="f06-chip">my funded futures</div>
+        <div class="f06-chip">apex</div>
+        <div class="f06-chip">topstep</div>
+        <div class="f06-chip">take profit trader</div>
+        <div class="f06-chip">lucid trading</div>
+      </div>
+
+      <div id="f06-dates">
+        <div class="f06-date"><span>retrieved</span><span>2026-06-11</span></div>
+        <div class="f06-date"><span>retrieved</span><span>2026-06-04</span></div>
+        <div class="f06-date"><span>retrieved</span><span>2026-05-29</span></div>
+        <div class="f06-date"><span>retrieved</span><span>2026-06-23</span></div>
+        <div class="f06-date"><span>retrieved</span><span>2026-07-02</span></div>
+      </div>
+
+      <div id="f06-band-rule"></div>
+
+      <div id="f06-counter">
+        <div id="f06-count">000</div>
+        <div id="f06-count-label">
+          account variants<br /><span id="f06-count-sub">across 5 firms</span>
+        </div>
+      </div>
+
+      <div id="f06-field"></div>
+
+      <div id="f06-stub"></div>
+
+      <div id="f06-statement">
+        <span>every</span><span>value</span><span>carries</span><span>where</span
+        ><span>it</span><span>came</span><span>from.</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var scope = document.querySelector(
+        '[data-composition-id="06-sourced-dated"]',
+      );
+      if (!scope) return;
+      var q = function (sel) {
+        return scope.querySelector(sel);
+      };
+      var qa = function (sel) {
+        return Array.prototype.slice.call(scope.querySelectorAll(sel));
+      };
+
+      /* ---- build the 148-variant field: one cluster per firm, real counts
+             from prop_rules.json (36+32+22+20+38 = 148) ---- */
+      var FIRM_VARIANTS = [36, 32, 22, 20, 38];
+      var fieldEl = q("#f06-field");
+      var marks = [];
+      FIRM_VARIANTS.forEach(function (n, ci) {
+        var cluster = document.createElement("div");
+        cluster.className = "f06-cluster";
+        fieldEl.appendChild(cluster);
+        for (var j = 0; j < n; j++) {
+          var el = document.createElement("div");
+          el.className = "f06-mark";
+          cluster.appendChild(el);
+          // stagger is pure index math: cluster order, then reading order inside it
+          marks.push({ el: el, at: 1.22 + ci * 0.08 + (j / n) * 0.62 });
+        }
+      });
+
+      var tl = gsap.timeline({ paused: true });
+
+      /* ---- macro camera: slow push-in under the whole shot ---- */
+      tl.fromTo(
+        q("#f06-stage"),
+        { scale: 1 },
+        { scale: 1.022, duration: 4.5, ease: "none" },
+        0,
+      );
+
+      /* ---- chrome ---- */
+      tl.fromTo(
+        [q("#f06-chrome-l"), q("#f06-chrome-r")],
+        { opacity: 0 },
+        { opacity: 1, duration: 0.4, ease: "power2.out", stagger: 0.08 },
+        0,
+      );
+      tl.fromTo(
+        q("#f06-chrome-rule"),
+        { scaleX: 0 },
+        { scaleX: 1, duration: 0.8, ease: "power3.out" },
+        0.06,
+      );
+
+      /* ---- SCENE 1 (0.0-1.2s): five firm chips self-assemble ---- */
+      tl.fromTo(
+        qa(".f06-chip"),
+        { opacity: 0, y: 26, scale: 0.94 },
+        {
+          opacity: 1,
+          y: 0,
+          scale: 1,
+          duration: 0.6,
+          ease: "power3.out",
+          stagger: 0.13,
+        },
+        0.08,
+      );
+
+      /* ---- SCENE 2 (1.2-2.5s): band, counter, 148 ticks ---- */
+      tl.fromTo(
+        q("#f06-band-rule"),
+        { scaleX: 0 },
+        { scaleX: 1, duration: 0.7, ease: "power3.out" },
+        1.08,
+      );
+
+      // counter: 000 -> 148, chorded with a matching scale-up (counting-dynamic-scale)
+      var countEl = q("#f06-count");
+      var ctr = { v: 0 };
+      tl.fromTo(
+        countEl,
+        { opacity: 0, scale: 0.92 },
+        { opacity: 1, scale: 1, duration: 1.2, ease: "power2.out" },
+        1.22,
+      );
+      tl.to(
+        ctr,
+        {
+          v: 148,
+          duration: 1.2,
+          ease: "power2.out",
+          snap: { v: 1 },
+          onUpdate: function () {
+            countEl.textContent = String(Math.round(ctr.v)).padStart(3, "0");
+          },
+        },
+        1.22,
+      );
+      // land it hard: any frame sampled after the count-up reads 148, never 147
+      tl.set(countEl, { textContent: "148" }, 2.42);
+      tl.fromTo(
+        q("#f06-count-label"),
+        { opacity: 0, y: 10 },
+        { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" },
+        1.42,
+      );
+
+      // the marks: each one flickers in green and settles to cream-hint, cluster
+      // by cluster — the field fills on the same beat as the count-up
+      marks.forEach(function (m) {
+        tl.fromTo(
+          m.el,
+          { scale: 0.4, opacity: 0, backgroundColor: "#34d399" },
+          {
+            scale: 1,
+            opacity: 0.82,
+            backgroundColor: "#5f646b",
+            duration: 0.28,
+            ease: "power3.out",
+          },
+          m.at,
+        );
+      });
+
+      /* ---- SCENE 3 (2.5-3.5s): retrieved-date stamps, per-word stagger ---- */
+      qa(".f06-date").forEach(function (dateEl, ci) {
+        var words = Array.prototype.slice.call(dateEl.querySelectorAll("span"));
+        words.forEach(function (w, wi) {
+          tl.fromTo(
+            w,
+            { opacity: 0, y: 8 },
+            { opacity: 1, y: 0, duration: 0.34, ease: "power2.out" },
+            2.52 + ci * 0.13 + wi * 0.07,
+          );
+        });
+      });
+
+      /* ---- SCENE 4 (3.5-4.5s): the statement lands, then holds ---- */
+      tl.fromTo(
+        q("#f06-stub"),
+        { scaleX: 0, opacity: 0 },
+        { scaleX: 1, opacity: 1, duration: 0.42, ease: "power3.out" },
+        3.46,
+      );
+      tl.fromTo(
+        qa("#f06-statement span"),
+        { opacity: 0, y: 22 },
+        {
+          opacity: 1,
+          y: 0,
+          duration: 0.5,
+          ease: "power3.out",
+          stagger: 0.055,
+        },
+        3.54,
+      );
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["06-sourced-dated"] = tl;
+    })();
+  </script>
+</template>

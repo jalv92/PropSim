@@ -5,9 +5,10 @@
     "path": "assets/bgm/track.wav",
     "volume": 0.9,
     "mode": "detached-seed-loop",
-    "duration_s": null
+    "duration_s": 30.0,
+    "provider": "musicgen"
   },
-  "bgm_pending": true,
+  "bgm_pending": false,
   "bgm_provider": "musicgen",
   "bgm_pid": 26584,
   "bgm_log": "/home/javlo/Code Projects/main-project/projects/Trading/PropSim/promo/assets/bgm/bgm-1785080133150.log",

@@ -1,0 +1,398 @@
+<template>
+  <style>
+    #root {
+      position: relative;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      container-type: size;
+      font-family: system-ui, sans-serif;
+    }
+
+    /* full-bleed ground rides on its own clip layer, never on #root */
+    .f05-the-floor-bg {
+      position: absolute;
+      inset: 0;
+      background: #0b0b0d;
+    }
+
+    .f05-the-floor-stage {
+      position: absolute;
+      inset: 0;
+      perspective: 1800px;
+      perspective-origin: 50% 42%;
+    }
+
+    /* the 1px vertical hairline the stage splits on */
+    .f05-the-floor-divider {
+      position: absolute;
+      left: 960px;
+      top: 150px;
+      width: 1px;
+      height: 486px;
+      background: #232529;
+    }
+
+    .f05-the-floor-label {
+      position: absolute;
+      top: 118px;
+      width: 832px;
+      font-family: ui-monospace, monospace;
+      font-size: 1.25cqw;
+      font-weight: 500;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #8b9096;
+      white-space: nowrap;
+    }
+    .f05-the-floor-label-l { left: 106px; }
+    .f05-the-floor-label-r { left: 982px; }
+
+    .f05-the-floor-row {
+      position: absolute;
+      top: 172px;
+      left: 106px;
+      width: 1708px;
+      height: 442px;
+      display: flex;
+      gap: 44px;
+      transform-style: preserve-3d;
+    }
+
+    .f05-the-floor-panel {
+      width: 832px;
+      height: 442px;
+      background: #121316;
+      border: 1px solid #232529;
+      transform-style: preserve-3d;
+      will-change: transform;
+    }
+    .f05-the-floor-panel svg {
+      display: block;
+      width: 830px;
+      height: 440px;
+    }
+
+    /* verdict pills live on the STAGE, not inside a panel — they must not
+       inherit the entry rotationY */
+    .f05-the-floor-pill {
+      position: absolute;
+      top: 190px;
+      padding: 9px 18px;
+      font-family: ui-monospace, monospace;
+      font-size: 1.15cqw;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #0b0b0d;
+      opacity: 0;
+    }
+    .f05-the-floor-pill-l {
+      right: 1006px;
+      background: #34d399;
+    }
+    .f05-the-floor-pill-r {
+      left: 1006px;
+      background: #f2635f;
+    }
+
+    .f05-the-floor-line {
+      position: absolute;
+      top: 672px;
+      left: 0;
+      width: 1920px;
+      text-align: center;
+      font-size: 4.5cqw;
+      font-weight: 700;
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      color: #e7e9ea;
+      opacity: 0;
+    }
+
+    .f05-the-floor-grid line { stroke: #232529; stroke-width: 1; opacity: 0; }
+    .f05-the-floor-floorline {
+      stroke: #5f646b;
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0;
+    }
+    .f05-the-floor-floorlabel {
+      font-family: ui-monospace, monospace;
+      font-size: 14px;
+      letter-spacing: 0.14em;
+      fill: #5f646b;
+      opacity: 0;
+    }
+    .f05-the-floor-eq {
+      fill: none;
+      stroke-linejoin: round;
+      stroke-linecap: round;
+    }
+    .f05-the-floor-base { stroke: #5f646b; stroke-width: 2.5; opacity: 0.7; }
+    .f05-the-floor-green { stroke: #34d399; stroke-width: 3.5; }
+    .f05-the-floor-red { stroke: #f2635f; stroke-width: 3.5; }
+    .f05-the-floor-breach { fill: #f2635f; opacity: 0; }
+    .f05-the-floor-tick { stroke: #f0b429; stroke-width: 1.5; opacity: 0.5; }
+    .f05-the-floor-dot { fill: #f0b429; }
+    .f05-the-floor-mark { fill: #f2635f; }
+    .f05-the-floor-ring { fill: none; stroke: #f2635f; stroke-width: 2; opacity: 0; }
+  </style>
+
+  <div id="root" data-composition-id="05-the-floor" data-width="1920" data-height="1080">
+    <div class="clip f05-the-floor-bg" data-start="0" data-duration="5" data-track-index="0"></div>
+
+    <div class="clip f05-the-floor-stage" data-start="0" data-duration="5" data-track-index="1">
+      <div class="f05-the-floor-divider"></div>
+
+      <div class="f05-the-floor-label f05-the-floor-label-l">checked at the close</div>
+      <div class="f05-the-floor-label f05-the-floor-label-r">tested on unrealized equity, in real time</div>
+
+      <div class="f05-the-floor-row">
+        <div class="f05-the-floor-panel f05-the-floor-panel-l">
+          <svg viewBox="0 0 830 440">
+            <g class="f05-the-floor-grid"></g>
+            <line class="f05-the-floor-floorline" x1="40" y1="300" x2="790" y2="300"></line>
+            <text class="f05-the-floor-floorlabel" x="44" y="291">DRAWDOWN FLOOR</text>
+            <path class="f05-the-floor-eq f05-the-floor-base"></path>
+            <path class="f05-the-floor-eq f05-the-floor-green f05-the-floor-green-l"></path>
+            <g class="f05-the-floor-samples"></g>
+          </svg>
+        </div>
+
+        <div class="f05-the-floor-panel f05-the-floor-panel-r">
+          <svg viewBox="0 0 830 440">
+            <defs>
+              <clipPath id="f05-the-floor-redclip">
+                <rect class="f05-the-floor-redrect" x="0" y="0" width="0" height="440"></rect>
+              </clipPath>
+            </defs>
+            <g class="f05-the-floor-grid"></g>
+            <line class="f05-the-floor-floorline" x1="40" y1="300" x2="790" y2="300"></line>
+            <text class="f05-the-floor-floorlabel" x="44" y="291">DRAWDOWN FLOOR</text>
+            <path class="f05-the-floor-breach"></path>
+            <path class="f05-the-floor-eq f05-the-floor-base"></path>
+            <path class="f05-the-floor-eq f05-the-floor-green f05-the-floor-green-r"></path>
+            <g clip-path="url(#f05-the-floor-redclip)">
+              <path class="f05-the-floor-eq f05-the-floor-red f05-the-floor-red-r"></path>
+            </g>
+            <g class="f05-the-floor-crossing"></g>
+          </svg>
+        </div>
+      </div>
+
+      <div class="f05-the-floor-pill f05-the-floor-pill-l">survives</div>
+      <div class="f05-the-floor-pill f05-the-floor-pill-r">breached</div>
+
+      <div class="f05-the-floor-line">same trades. one of these is real.</div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <script>
+    (function () {
+      var NS = "http://www.w3.org/2000/svg";
+      var root = document.querySelector('[data-composition-id="05-the-floor"]');
+      var q = function (sel) { return root.querySelectorAll(sel); };
+
+      /* ------------------------------------------------------------------
+         THE equity path. Defined ONCE, rendered into BOTH panels verbatim.
+         Only the TEST applied to it differs, never the geometry.
+         y grows downward, so a LOWER y is a HIGHER account balance:
+         the floor sits at y=300 and equity is "below the floor" when y>300.
+         Four trading days; every end-of-day close is above the floor,
+         and exactly one mid-day trough (day 2) is not.
+      ------------------------------------------------------------------ */
+      var FLOOR = 300;
+      var PTS = [
+        [56, 250], [78, 242], [100, 256], [122, 238], [145, 247],
+        [168, 231], [190, 241], [213, 222], [236, 225],            // close 1
+        [258, 246], [280, 272], [302, 310], [320, 345], [338, 332],
+        [356, 318], [378, 290], [396, 275], [415, 262],            // close 2
+        [437, 275], [460, 258], [482, 268], [505, 250], [528, 262],
+        [550, 244], [573, 252], [595, 238],                        // close 3
+        [618, 248], [640, 228], [663, 236], [686, 214], [708, 222],
+        [731, 200], [752, 208], [774, 178]                         // close 4
+      ];
+      var CLOSE_IDX = [8, 17, 25, 33];
+
+      var D = PTS.map(function (p, i) {
+        return (i === 0 ? "M " : "L ") + p[0] + " " + p[1];
+      }).join(" ");
+
+      // one string -> every path element in both panels
+      Array.prototype.forEach.call(q(".f05-the-floor-eq"), function (p) {
+        p.setAttribute("d", D);
+      });
+
+      // cumulative arc length (straight segments, so this is exact)
+      var arc = [0];
+      for (var i = 1; i < PTS.length; i++) {
+        arc.push(arc[i - 1] + Math.hypot(PTS[i][0] - PTS[i - 1][0], PTS[i][1] - PTS[i - 1][1]));
+      }
+      var L = arc[arc.length - 1];
+      var DASH = L + 2;
+
+      // first downward crossing of the floor, and the recovery back above it
+      var ci = -1, bi = -1;
+      for (var a = 0; a < PTS.length - 1; a++) {
+        if (PTS[a][1] <= FLOOR && PTS[a + 1][1] > FLOOR) { ci = a; break; }
+      }
+      var ct = (FLOOR - PTS[ci][1]) / (PTS[ci + 1][1] - PTS[ci][1]);
+      var crossX = PTS[ci][0] + ct * (PTS[ci + 1][0] - PTS[ci][0]);
+      var crossLen = arc[ci] + ct * (arc[ci + 1] - arc[ci]);
+
+      for (var b = ci + 1; b < PTS.length - 1; b++) {
+        if (PTS[b][1] > FLOOR && PTS[b + 1][1] <= FLOOR) { bi = b; break; }
+      }
+      var bt = (PTS[bi][1] - FLOOR) / (PTS[bi][1] - PTS[bi + 1][1]);
+      var backX = PTS[bi][0] + bt * (PTS[bi + 1][0] - PTS[bi][0]);
+
+      // day separators — same in both panels, built from the same closes
+      Array.prototype.forEach.call(q(".f05-the-floor-grid"), function (g) {
+        CLOSE_IDX.forEach(function (idx) {
+          var ln = document.createElementNS(NS, "line");
+          ln.setAttribute("x1", PTS[idx][0]);
+          ln.setAttribute("x2", PTS[idx][0]);
+          ln.setAttribute("y1", 60);
+          ln.setAttribute("y2", 400);
+          g.appendChild(ln);
+        });
+      });
+
+      /* LEFT panel test: four end-of-day samples, nothing in between. */
+      var samples = root.querySelector(".f05-the-floor-samples");
+      var dots = [], ticks = [];
+      CLOSE_IDX.forEach(function (idx) {
+        var cx = PTS[idx][0], cy = PTS[idx][1];
+        var tk = document.createElementNS(NS, "line");
+        tk.setAttribute("class", "f05-the-floor-tick");
+        tk.setAttribute("x1", cx); tk.setAttribute("x2", cx);
+        tk.setAttribute("y1", cy); tk.setAttribute("y2", cy);
+        samples.appendChild(tk);
+        ticks.push({ el: tk, to: FLOOR });
+
+        var dc = document.createElementNS(NS, "circle");
+        dc.setAttribute("class", "f05-the-floor-dot");
+        dc.setAttribute("cx", cx); dc.setAttribute("cy", cy);
+        dc.setAttribute("r", 0);
+        samples.appendChild(dc);
+        dots.push(dc);
+      });
+
+      /* RIGHT panel test: continuous, so the breach between closes is seen. */
+      var crossing = root.querySelector(".f05-the-floor-crossing");
+      var ring = document.createElementNS(NS, "circle");
+      ring.setAttribute("class", "f05-the-floor-ring");
+      ring.setAttribute("cx", crossX.toFixed(2));
+      ring.setAttribute("cy", FLOOR);
+      ring.setAttribute("r", 9);
+      crossing.appendChild(ring);
+
+      var mark = document.createElementNS(NS, "circle");
+      mark.setAttribute("class", "f05-the-floor-mark");
+      mark.setAttribute("cx", crossX.toFixed(2));
+      mark.setAttribute("cy", FLOOR);
+      mark.setAttribute("r", 0);
+      crossing.appendChild(mark);
+
+      // the region where equity actually sat under the floor
+      var bd = "M " + crossX.toFixed(2) + " " + FLOOR;
+      for (var k = ci + 1; k <= bi; k++) bd += " L " + PTS[k][0] + " " + PTS[k][1];
+      bd += " L " + backX.toFixed(2) + " " + FLOOR + " Z";
+      root.querySelector(".f05-the-floor-breach").setAttribute("d", bd);
+
+      // everything from the crossing onward is dead
+      var redrect = root.querySelector(".f05-the-floor-redrect");
+      redrect.setAttribute("x", crossX.toFixed(2));
+      redrect.setAttribute("width", (830 - crossX).toFixed(2));
+
+      Array.prototype.forEach.call(q(".f05-the-floor-eq"), function (p) {
+        p.style.strokeDasharray = DASH;
+        p.style.strokeDashoffset = DASH;
+      });
+
+      /* ---------------------------- timeline ---------------------------- */
+      window.__timelines = window.__timelines || {};
+      var tl = gsap.timeline({ paused: true });
+
+      // Scene 1 (0.0–1.1) — the stage splits, the panels pivot in from
+      // opposite wings and flatten to face-on carrying the same path.
+      tl.fromTo(".f05-the-floor-divider",
+        { scaleY: 0, opacity: 0 },
+        { scaleY: 1, opacity: 1, duration: 0.55, ease: "power2.out" }, 0);
+
+      tl.fromTo(".f05-the-floor-panel-l",
+        { x: -280, rotationY: 24, opacity: 0 },
+        { x: 0, rotationY: 0, opacity: 1, duration: 0.85, ease: "power3.out" }, 0);
+      tl.fromTo(".f05-the-floor-panel-r",
+        { x: 280, rotationY: -24, opacity: 0 },
+        { x: 0, rotationY: 0, opacity: 1, duration: 0.85, ease: "power3.out" }, 0.12);
+
+      tl.fromTo(".f05-the-floor-floorline",
+        { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "power1.out" }, 0.5);
+      tl.fromTo(".f05-the-floor-floorlabel",
+        { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "power1.out" }, 0.56);
+      tl.fromTo(".f05-the-floor-grid line",
+        { opacity: 0 }, { opacity: 1, duration: 0.3, stagger: 0.03, ease: "power1.out" }, 0.62);
+
+      // both base paths draw on ONE tween — identical by construction
+      tl.fromTo(".f05-the-floor-base",
+        { strokeDashoffset: DASH },
+        { strokeDashoffset: 0, duration: 0.6, ease: "power1.inOut" }, 0.55);
+
+      // counter-phase settle (the pair reads alive, then holds)
+      tl.to(".f05-the-floor-panel-l", { y: -4, duration: 0.45, ease: "sine.inOut" }, 1.0);
+      tl.to(".f05-the-floor-panel-r", { y: 4, duration: 0.45, ease: "sine.inOut" }, 1.0);
+      tl.to(".f05-the-floor-panel-l", { y: 0, duration: 0.45, ease: "sine.inOut" }, 1.45);
+      tl.to(".f05-the-floor-panel-r", { y: 0, duration: 0.45, ease: "sine.inOut" }, 1.45);
+
+      // Scene 2 (1.1–2.4) — the naive simulator: four closes, all above.
+      tl.fromTo(".f05-the-floor-label-l",
+        { opacity: 0, y: 10 },
+        { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" }, 1.1);
+      tl.fromTo(".f05-the-floor-green-l",
+        { strokeDashoffset: DASH },
+        { strokeDashoffset: 0, duration: 0.5, ease: "none" }, 1.18);
+      ticks.forEach(function (t, n) {
+        tl.to(t.el, { attr: { y2: t.to }, duration: 0.26, ease: "power2.out" }, 1.7 + n * 0.13);
+      });
+      tl.to(dots, { attr: { r: 8 }, duration: 0.3, stagger: 0.13, ease: "back.out(2.4)" }, 1.7);
+      tl.fromTo(".f05-the-floor-pill-l",
+        { scale: 0.6, opacity: 0, transformOrigin: "100% 50%" },
+        { scale: 1, opacity: 1, duration: 0.5, ease: "back.out(3)" }, 2.16);
+
+      // Scene 3 (2.4–3.7) — reality: the same path, tested continuously.
+      var TRACE_AT = 2.52, TRACE_DUR = 1.05;
+      var breachAt = TRACE_AT + TRACE_DUR * (crossLen / L);
+
+      tl.fromTo(".f05-the-floor-label-r",
+        { opacity: 0, y: 10 },
+        { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" }, 2.42);
+      // green trace + red continuation on ONE tween: they cannot drift apart;
+      // the red is clipped to x >= crossX, so it only appears at the breach.
+      tl.fromTo(".f05-the-floor-green-r, .f05-the-floor-red-r",
+        { strokeDashoffset: DASH },
+        { strokeDashoffset: 0, duration: TRACE_DUR, ease: "none" }, TRACE_AT);
+
+      tl.to(mark, { attr: { r: 9 }, duration: 0.22, ease: "back.out(3)" }, breachAt);
+      tl.fromTo(ring,
+        { attr: { r: 9 }, opacity: 0.9 },
+        { attr: { r: 34 }, opacity: 0, duration: 0.55, ease: "power2.out" }, breachAt);
+      tl.fromTo(".f05-the-floor-breach",
+        { opacity: 0 }, { opacity: 0.22, duration: 0.35, ease: "power1.out" }, breachAt + 0.05);
+      tl.fromTo(".f05-the-floor-pill-r",
+        { scale: 0.6, opacity: 0, transformOrigin: "0% 50%" },
+        { scale: 1, opacity: 1, duration: 0.45, ease: "back.out(3)" }, breachAt + 0.34);
+
+      // Scene 4 (3.7–5.0) — both verdicts hold. One line, then stillness.
+      tl.fromTo(".f05-the-floor-line",
+        { opacity: 0, y: 26 },
+        { opacity: 1, y: 0, duration: 0.7, ease: "power3.out" }, 3.78);
+
+      tl.set({}, {}, 5);
+
+      window.__timelines["05-the-floor"] = tl;
+    })();
+  </script>
+</template>

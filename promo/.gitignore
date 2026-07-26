@@ -1,0 +1,8 @@
+# HyperFrames working files — the deliverable is renders/video.mp4
+node_modules/
+snapshots/
+.hyperframes/frame-packets/
+*.log
+
+# Generated audio: 1.9 MB of MusicGen output, reproducible from audio_request.json
+assets/bgm/
