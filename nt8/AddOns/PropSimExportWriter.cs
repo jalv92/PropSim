@@ -106,7 +106,14 @@ namespace NinjaTrader.NinjaScript.PropSim
 				Field(sb, "schema", Schema);
 				Field(sb, "source", source);
 				Field(sb, "written", DateTime.Now.ToString("s", CultureInfo.InvariantCulture));
-				Field(sb, "strategy", Safe(() => trades[0].Entry.Name));
+				// NOT the strategy name. A performance metric never sees the
+				// strategy object, and Execution.Name is the SIGNAL name -- "Long1",
+				// "PB Long". Writing that into the strategy field labelled every
+				// metric-captured run with the name of its first entry signal, which
+				// reads like a strategy name and is not one. Null is honest; the
+				// signal is reported separately.
+				Field(sb, "strategy", null);
+				Field(sb, "entry_signal", Safe(() => trades[0].Entry.Name));
 				Field(sb, "instrument", Safe(() => trades[0].Entry.Instrument.FullName));
 				Num(sb, "point_value", Safe(() => trades[0].Entry.Instrument.MasterInstrument.PointValue, 0.0));
 				Num(sb, "tick_size", Safe(() => trades[0].Entry.Instrument.MasterInstrument.TickSize, 0.0));

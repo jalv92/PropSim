@@ -1,0 +1,12 @@
+{
+  "provider": "auto",
+  "speed": 1,
+  "lines": [],
+  "bgm": {
+    "mode": "generate",
+    "query": "tense driving minimal electronic, percussive pulse, no melody, dark",
+    "prompt": "dark minimal techno underscore, driving muted percussive pulse at 124 bpm, deep sub bass, tense sustained synth drone, no melody, no vocals, clinical and relentless, trading terminal tension",
+    "blob": "Find out if your strategy survives the prop firm before you pay for the evaluation",
+    "arc": "Hook to Problem to Product intro to Mechanism to Proof to CTA"
+  }
+}

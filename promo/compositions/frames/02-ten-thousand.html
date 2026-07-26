@@ -1,0 +1,275 @@
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+      width: 1920px;
+      height: 1080px;
+      container-type: size;
+      overflow: hidden;
+    }
+
+    /* full-bleed ground rides its own clip layer, never #root */
+    .tt-ground {
+      position: absolute;
+      inset: 0;
+      background: #0b0b0d;
+    }
+
+    .tt-stage {
+      position: absolute;
+      inset: 0;
+    }
+
+    .tt-svg {
+      position: absolute;
+      inset: 0;
+      width: 1920px;
+      height: 1080px;
+      transform-origin: 250px 580px;
+    }
+
+    .tt-mono {
+      font-family: ui-monospace, monospace;
+    }
+
+    .tt-meter {
+      position: absolute;
+      top: 140px;
+      right: 5.5cqw;
+      text-align: right;
+    }
+
+    .tt-kicker {
+      font-size: 1cqw;
+      font-weight: 500;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #34d399;
+      margin-bottom: 1.1cqw;
+    }
+
+    .tt-counter {
+      display: inline-block;
+      width: 7ch;
+      text-align: right;
+      font-size: 6.4cqw;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: -0.03em;
+      color: #e7e9ea;
+      font-variant-numeric: tabular-nums;
+      transform-origin: right center;
+    }
+
+    .tt-label {
+      font-size: 1.5cqw;
+      font-weight: 500;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #8b9096;
+      margin-top: 1.3cqw;
+    }
+  </style>
+
+  <div id="root" data-composition-id="02-ten-thousand">
+    <div class="clip tt-ground" data-start="0" data-duration="4" data-track-index="0"></div>
+
+    <div class="clip tt-stage" data-start="0" data-duration="4" data-track-index="1">
+      <svg class="tt-svg" viewBox="0 0 1920 1080" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- origin line -->
+        <line
+          id="tt-baseline"
+          x1="250"
+          y1="580"
+          x2="1640"
+          y2="580"
+          stroke="#232529"
+          stroke-width="1"
+          pathLength="1"
+          stroke-dasharray="1"
+          stroke-dashoffset="1"
+        />
+        <!-- the single path carried over from frame 1 -->
+        <path
+          id="tt-seed"
+          d="M 44 620 L 78 604 L 112 612 L 146 592 L 180 599 L 214 585 L 250 580"
+          stroke="#e7e9ea"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          opacity="0.78"
+        />
+        <!-- the cone: ~200 hairline paths, injected below -->
+        <g id="tt-cone">
+          <g id="tt-inner"></g>
+          <g id="tt-outer-up"></g>
+          <g id="tt-outer-down"></g>
+        </g>
+        <circle id="tt-origin" cx="250" cy="580" r="4.5" fill="#34d399" />
+      </svg>
+
+      <div class="tt-meter">
+        <div class="tt-kicker tt-mono" id="tt-kicker">monte carlo</div>
+        <div><span class="tt-counter tt-mono" id="tt-count">0</span></div>
+        <div class="tt-label tt-mono" id="tt-label">paths &middot; not one run</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <script>
+    (function () {
+      const ID = "02-ten-thousand";
+      const root = document.querySelector('[data-composition-id="' + ID + '"]');
+      const q = (sel) => root.querySelector(sel);
+
+      // ---- cone geometry -------------------------------------------------
+      const ORIGIN_X = 250;
+      const ORIGIN_Y = 580;
+      const END_X = 1640;
+      const MAX_SPREAD = 260; // keeps every stroke inside the 83% keep-out
+      const Y_MIN = 300;
+      const Y_MAX = 872;
+      const PATHS = 200;
+      const STEPS = 24;
+      const WALK_NORM = Math.sqrt(STEPS / 3); // normalises the walk to ~1 sigma
+
+      // index-derived pseudo-noise — deterministic, no Math.random
+      function nz(a, b) {
+        const s = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
+        return (s - Math.floor(s)) * 2 - 1;
+      }
+
+      // brownian-bridge equity curve: pinned at the origin, lands on its own
+      // outcome, jagged in between
+      function pathD(i, spread, amp) {
+        const w = [0];
+        let acc = 0;
+        for (let k = 1; k <= STEPS; k++) {
+          acc += nz(i + 1, k);
+          w.push(acc);
+        }
+        const last = w[STEPS];
+        let d = "M " + ORIGIN_X + " " + ORIGIN_Y;
+        for (let k = 1; k <= STEPS; k++) {
+          const t = k / STEPS;
+          const bridge = (w[k] - last * t) / WALK_NORM;
+          let y = ORIGIN_Y + spread * t + bridge * amp;
+          if (y < Y_MIN) y = Y_MIN;
+          if (y > Y_MAX) y = Y_MAX;
+          d += " L " + (ORIGIN_X + (END_X - ORIGIN_X) * t).toFixed(1) + " " + y.toFixed(1);
+        }
+        return d;
+      }
+
+      const gInner = q("#tt-inner");
+      const gUp = q("#tt-outer-up");
+      const gDown = q("#tt-outer-down");
+      const NS = "http://www.w3.org/2000/svg";
+
+      const strokes = []; // built center-outward: index IS the expansion order
+      const finalOpacity = [];
+
+      for (let i = 0; i < PATHS; i++) {
+        const rank = Math.floor(i / 2);
+        const side = i % 2 === 0 ? 1 : -1; // +1 = above the origin line
+        const u = (rank + 0.5) / (PATHS / 2);
+        const s = side * Math.pow(u, 1.5); // density peaks at the mean
+        const a = Math.abs(s);
+        const el = document.createElementNS(NS, "path");
+        el.setAttribute("d", pathD(i, -s * MAX_SPREAD, 13 + 24 * a));
+        el.setAttribute("stroke", s > 0 ? "#34d399" : "#f2635f");
+        el.setAttribute("stroke-width", "1.15");
+        el.setAttribute("stroke-linejoin", "round");
+        el.setAttribute("fill", "none");
+        el.setAttribute("vector-effect", "non-scaling-stroke");
+        el.setAttribute("pathLength", "1");
+        el.setAttribute("stroke-dasharray", "1");
+        (a < 0.55 ? gInner : s > 0 ? gUp : gDown).appendChild(el);
+        strokes.push(el);
+        finalOpacity.push(0.38 - 0.24 * a); // outer envelope faintest
+      }
+
+      // ---- timeline ------------------------------------------------------
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      window.__timelines[ID] = tl;
+
+      // scene 1 — the fan expands out of frame 1's single path, in waves
+      tl.fromTo("#tt-baseline", { strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.7, ease: "power2.out" }, 0);
+      tl.fromTo("#tt-origin", { scale: 0.3, transformOrigin: "250px 580px" }, { scale: 1, duration: 0.45, ease: "power3.out" }, 0);
+
+      const WAVES = 7;
+      const delayOf = (i) => {
+        const p = i / (PATHS - 1);
+        const wave = Math.floor(p * WAVES) / WAVES;
+        return 0.16 + (0.55 * p + 0.45 * wave) * 1.95;
+      };
+
+      tl.fromTo(
+        strokes,
+        { strokeDashoffset: 1, opacity: 0 },
+        {
+          strokeDashoffset: 0,
+          opacity: (i) => finalOpacity[i],
+          duration: 0.55,
+          ease: "power2.out",
+          stagger: (i) => delayOf(i),
+        },
+        0,
+      );
+
+      // the whole cone settles out of the seed's own velocity
+      tl.fromTo(".tt-svg", { scale: 1.035 }, { scale: 1, duration: 2.7, ease: "power2.out" }, 0);
+      tl.to("#tt-seed", { opacity: 0.32, duration: 0.8, ease: "power1.out" }, 1.0);
+
+      // scene 2 — the count-up, chrome to the cone's data
+      const counter = q("#tt-count");
+      const state = { v: 0 };
+      const COUNT_AT = 1.1;
+      const COUNT_DUR = 1.5;
+      const COUNT_EASE = "power3.out";
+
+      tl.fromTo("#tt-kicker", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 1.02);
+      tl.to(
+        state,
+        {
+          v: 10000,
+          duration: COUNT_DUR,
+          ease: COUNT_EASE,
+          onUpdate: () => {
+            counter.textContent = Math.round(state.v).toLocaleString("en-US");
+          },
+        },
+        COUNT_AT,
+      );
+      tl.fromTo(counter, { scale: 0.58, opacity: 0 }, { scale: 1, opacity: 1, duration: COUNT_DUR, ease: COUNT_EASE }, COUNT_AT);
+
+      // scene 3 — the label lands, the volume holds, only the envelope breathes
+      tl.fromTo("#tt-label", { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 2.72);
+
+      const IDLE_AT = 2.72;
+      const IDLE_DUR = 1.28;
+      const CYCLES = 0.6;
+      const AMP = 2.2;
+      const phase = { p: 0 };
+      tl.to(
+        phase,
+        {
+          p: Math.PI * 2 * CYCLES,
+          duration: IDLE_DUR,
+          ease: "none",
+          onUpdate: () => {
+            const t = phase.p / (Math.PI * 2 * CYCLES);
+            const env = t < 0.75 ? 1 : (1 - t) / 0.25; // settle before the cut
+            const s = Math.sin(phase.p) * AMP * env;
+            gUp.style.transform = "translateY(" + -s.toFixed(2) + "px)";
+            gDown.style.transform = "translateY(" + s.toFixed(2) + "px)";
+          },
+        },
+        IDLE_AT,
+      );
+    })();
+  </script>
+</template>

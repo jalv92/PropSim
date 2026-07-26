@@ -1,0 +1,18 @@
+{
+  "generated_at": "2026-07-26T15:43:44.577Z",
+  "enabled": true,
+  "provider": "musicgen",
+  "mode": "detached-seed-loop",
+  "path": "assets/bgm/track.wav",
+  "log": "/home/javlo/Code Projects/main-project/projects/Trading/PropSim/promo/assets/bgm/bgm-1785080133150.log",
+  "pid": 26584,
+  "target_duration_s": 30,
+  "seed_duration_s": 28,
+  "loop_count": 2,
+  "timeout_ms": 120000,
+  "status": "ready",
+  "ready": true,
+  "waited_ms": 0,
+  "size_bytes": 1920044,
+  "message": "BGM ready at assets/bgm/track.wav."
+}

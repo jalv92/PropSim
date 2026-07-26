@@ -212,6 +212,18 @@ def run_stream(q, write):
         m = bt["meta"]
         src = (f"{len(bt['trades'])} trades from a backtest: {m['label']} · "
                f"{m['contract']} · {m['timeframe']}m · {m['start']}..{m['end']}")
+    elif account.startswith("__strategy:"):
+        # One NinjaScript strategy's own trades, isolated from everything else on
+        # the account. NinjaTrader records the attribution; nothing is inferred.
+        sid = account.split(":", 1)[1]
+        tl = nttrades.read_trades(strategy=sid)
+        if not tl:
+            raise SystemExit("that strategy has no recorded trades any more")
+        pool = nttrades.to_pool(tl)
+        name = tl[0].strategy or sid
+        where = "Playback" if tl[0].is_replay else "live/sim"
+        src = (f"{len(tl)} trades from strategy {name} ({where}, "
+               f"account {tl[0].account})")
     elif account:
         # the user's own trades, straight out of NinjaTrader -- no export step
         tl = nttrades.read_trades(account=account)
@@ -387,6 +399,14 @@ class Handler(BaseHTTPRequestHandler):
                                              hi=v.hi, desc=v.desc)
                                         for k, v in S.params.items()]))
             return self._send(200, json.dumps(dict(strategies=lib)).encode(),
+                              "application/json")
+        if u.path == "/api/ntstrategies":
+            try:
+                rows = nttrades.detected_strategies()
+            except SystemExit as exc:
+                return self._send(200, json.dumps(
+                    dict(strategies=[], error=str(exc))).encode(), "application/json")
+            return self._send(200, json.dumps(dict(strategies=rows)).encode(),
                               "application/json")
         if u.path == "/api/imports":
             try:

@@ -1,0 +1,10 @@
+· no SCRIPT.md — silent film (BGM only)
+· bgm: disabled
+✓ audio engine → /home/javlo/Code Projects/main-project/projects/Trading/PropSim/promo/audio_engine_meta.json
+  heygen: no  ·  ran: tts,bgm
+  voices: 0  ·  bgm: none  ·  sfx: 0
+  total voice duration: 0s
+
+anomalies (non-fatal):
+  - bgm: retrieve requires a HeyGen credential — skipped (no generate fallback for an explicit retrieve)
+✓ audio generate: 0 voice + no bgm → /home/javlo/Code Projects/main-project/projects/Trading/PropSim/promo/audio_meta.json

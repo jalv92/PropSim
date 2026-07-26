@@ -289,7 +289,7 @@ const $ = s => document.querySelector(s);
 const fmt$ = v => (v<0?"-":"")+"$"+Math.abs(Math.round(v)).toLocaleString();
 const fmtK = v => "$"+(Math.abs(v)>=1000 ? (v/1000).toFixed(1)+"K" : Math.round(v));
 const pct = v => (v*100).toFixed(2)+"%";
-let CFG=null, RES=null, META=null, ES=null, ACCOUNTS=[], PHASE="challenge", V=null;
+let CFG=null, RES=null, META=null, ES=null, ACCOUNTS=[], NTSTRATS=[], PHASE="challenge", V=null;
 
 /* ---------- crisp canvas ---------- */
 function ctxOf(c){
@@ -952,9 +952,20 @@ $("#mcBody").innerHTML = `
 
 /* ---------- boot ---------- */
 function loadAccounts(){
-  return fetch("/api/accounts").then(r=>r.json()).then(a=>{
+  return Promise.all([
+    fetch("/api/accounts").then(r=>r.json()),
+    // Strategies NinjaTrader itself attributed trades to. Listed FIRST because
+    // "what did this strategy do" is a different question from "what happened on
+    // this account", and on an account that also holds discretionary trades it is
+    // the only one of the two that is about the strategy.
+    fetch("/api/ntstrategies").then(r=>r.json()).catch(()=>({strategies:[]})),
+  ]).then(([a, s])=>{
     ACCOUNTS = a.accounts || [];
+    NTSTRATS = s.strategies || [];
     const opts = ['<option value="__none">— parametric profile (no real trades) —</option>']
+      .concat(NTSTRATS.map(d=>
+        `<option value="__strategy:${d.strategy_id}">strategy ${d.strategy} — `
+        + `${d.n} trades${d.is_replay?", Playback":""}, account ${d.account}</option>`))
       .concat(ACCOUNTS.map(d=>{
         const m=d.match;
         const tag = m ? (m.firm.replace(/_/g," ")+(m.phase?" / "+m.phase:"")) : "unmatched";

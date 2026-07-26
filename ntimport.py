@@ -76,10 +76,27 @@ def fidelity(meta: dict) -> dict:
                            "order-fill resolution of this run were not recorded. "
                            "PropSim cannot certify these fills. Re-run it with the "
                            "PropSim fitness selected to get a labelled run.")
-    high = str(meta.get("fill_resolution")) == "High"
+    res = str(meta.get("fill_resolution") or "")
+    ftype = str(meta.get("fill_resolution_type") or "")
+    fval = float(meta.get("fill_resolution_value") or 0)
     tick_bars = str(meta.get("bar_type")) == "Tick" and float(meta.get("bar_value") or 0) <= 1
     replay = bool(meta.get("tick_replay"))
-    if high or tick_bars:
+
+    # "High" ALONE IS NOT TICK RESOLUTION, and reading it that way is the exact
+    # error this label exists to prevent. OrderFillResolutionType defaults to
+    # Minute and OrderFillResolutionValue to 1, so a user who sets only "High"
+    # gets one-minute fill bars -- which on NQ still straddle a 15-tick
+    # stop-to-target span. The add-on records all three fields; all three decide.
+    tick_fills = res == "High" and ftype == "Tick" and fval <= 1
+    if res == "High" and not tick_fills and not tick_bars:
+        return dict(level="fills-guessed", label="fills guessed inside the fill bar",
+                    detail=(f"Order-fill resolution was High, but its series is "
+                            f"{fval:g}-{ftype.lower()} rather than 1-tick, so fills "
+                            f"were resolved on bars {fval:g} {ftype.lower()}(s) wide. "
+                            "A stop and a target inside one of those is still ordered "
+                            "by NinjaTrader rather than measured. Set Order fill "
+                            "resolution type = Tick and value = 1 to make this exact."))
+    if tick_fills or tick_bars:
         d = ("Fills were resolved at tick granularity, so a stop and a target "
              "inside the same bar were ordered correctly.")
         if not replay:
@@ -151,9 +168,14 @@ def load_run(path: Path) -> tuple[list[engine.Trade], dict]:
     trades.sort(key=lambda t: t.entry_time)
 
     days = sorted({t.date for t in trades})
+    # A metric-captured run has no strategy name to give (see the writer): it is
+    # reported as unknown with its entry signal, never as a name that only looks
+    # like one.
+    sig = d.get("entry_signal")
+    strat_name = d.get("strategy") or (f"unknown (signal {sig})" if sig else "unknown")
     meta = dict(
         run_id=Path(path).stem, path=str(path), source=d.get("source"),
-        strategy=d.get("strategy") or "?", instrument=d.get("instrument") or "?",
+        strategy=strat_name, instrument=d.get("instrument") or "?",
         written=d.get("written"), params=d.get("params") or {},
         bar_type=d.get("bar_type"), bar_value=d.get("bar_value"),
         tick_replay=d.get("tick_replay"), fill_resolution=d.get("fill_resolution"),
@@ -220,7 +242,8 @@ def list_runs(runs_dir: Path | None = None) -> list[dict]:
 
 # --------------------------------------------------------------------------
 
-def _fixture(dirpath: Path, source="nt8-optimization-fitness", perf=True) -> Path:
+def _fixture(dirpath: Path, source="nt8-optimization-fitness", perf=True,
+             fill_resolution="Standard", fill_type="Minute", fill_value=1.0) -> Path:
     """A synthetic captured run, in exactly the add-on's format."""
     trades, gross = [], 0.0
     for i in range(12):
@@ -236,12 +259,15 @@ def _fixture(dirpath: Path, source="nt8-optimization-fitness", perf=True) -> Pat
             profit=profit, commission=4.0, fee=1.0,
             mae=80.0 if win else 160.0, mfe=260.0 if win else 20.0,
             signal="Long1"))
+    metric = source == "nt8-performance-metric"
     doc = dict(schema=SCHEMA, source=source, written="2026-07-26T10:00:00",
-               strategy="MyBarStrategy", instrument="NQ 09-26",
+               strategy=(None if metric else "MyBarStrategy"),
+               entry_signal=("Long1" if metric else None),
+               instrument="NQ 09-26",
                point_value=20.0, tick_size=0.25,
                bar_type="Minute", bar_value=5.0, tick_replay=True,
-               fill_resolution="Standard", fill_resolution_type="Minute",
-               fill_resolution_value=1.0, slippage_ticks=0.0,
+               fill_resolution=fill_resolution, fill_resolution_type=fill_type,
+               fill_resolution_value=fill_value, slippage_ticks=0.0,
                calculate="OnBarClose", params=dict(Fast=20, Slow=60),
                trades=trades)
     if perf:
@@ -252,7 +278,8 @@ def _fixture(dirpath: Path, source="nt8-optimization-fitness", perf=True) -> Pat
     else:
         doc["perf"] = None
     dirpath.mkdir(parents=True, exist_ok=True)
-    p = dirpath / f"fixture-{source[-6:]}-{'perf' if perf else 'noperf'}.json"
+    p = (dirpath / f"fixture-{source[-6:]}-{'perf' if perf else 'noperf'}"
+                   f"-{fill_resolution}{fill_type}{fill_value:g}.json")
     p.write_text(json.dumps(doc))
     return p
 
@@ -286,6 +313,22 @@ def selfcheck():
     p3 = _fixture(tmp, source="nt8-performance-metric")
     _, m3 = load_run(p3)
     assert m3["fidelity"]["level"] == "unknown", m3["fidelity"]
+    # ...and it must not wear the name of its first entry signal as a strategy name
+    assert m3["strategy"].startswith("unknown"), m3["strategy"]
+    assert "Long1" in m3["strategy"], m3["strategy"]
+
+    # 4b. THE LABEL THAT FLATTERED. "High" order-fill resolution with its type
+    #     left at the default Minute/1 resolves fills on ONE-MINUTE bars, and an
+    #     earlier version of this function stamped that "fills resolved tick by
+    #     tick" purely because the word High appeared. Only High + Tick + 1 (or a
+    #     1-tick primary series) is exact.
+    hm = Path(tempfile.mkdtemp(prefix="propsim-fill-"))
+    _, m_min = load_run(_fixture(hm, fill_resolution="High",
+                                 fill_type="Minute", fill_value=1.0))
+    assert m_min["fidelity"]["level"] == "fills-guessed", m_min["fidelity"]
+    _, m_tick = load_run(_fixture(hm, fill_resolution="High",
+                                  fill_type="Tick", fill_value=1.0))
+    assert m_tick["fidelity"]["level"] == "exact", m_tick["fidelity"]
 
     # 5. Dedup. All three fixtures describe the SAME run (same instrument, trade
     #    count, first entry and net), so the folder must collapse to one row --

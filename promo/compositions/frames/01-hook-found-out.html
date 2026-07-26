@@ -1,0 +1,240 @@
+<template>
+  <style>
+    /* Frame 01 — hook. Dark register only. Ground #0b0b0d, cream type,
+       green equity path, red floor. Type ramp in cqw against #root. */
+    #root {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      container-type: size;
+      font-family: system-ui, sans-serif;
+      color: #e7e9ea;
+    }
+
+    /* — track 0 : full-bleed ground (never on #root) — */
+    #hk-ground {
+      position: absolute;
+      inset: 0;
+      background: #0b0b0d;
+    }
+
+    /* — track 1 : the hairlines (floor / baseline / contact tick) — */
+    #hk-rules {
+      position: absolute;
+      inset: 0;
+    }
+    #hk-baseline {
+      position: absolute;
+      left: 106px;
+      top: 845px;
+      width: 1190px;
+      height: 1px;
+      background: #232529;
+    }
+    #hk-floor {
+      position: absolute;
+      left: 106px;
+      top: 805px;
+      width: 1314px;
+      height: 1px;
+      background: #f2635f;
+      opacity: 0;
+    }
+    #hk-tick {
+      position: absolute;
+      left: 1295px;
+      top: 792px;
+      width: 2px;
+      height: 26px;
+      background: #f2635f;
+      opacity: 0;
+    }
+
+    /* — track 2 : the equity path — */
+    #hk-curve {
+      position: absolute;
+      left: 106px;
+      top: 505px;
+      width: 1190px;
+      height: 340px;
+    }
+    #hk-curve svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+    }
+    .hk-eq {
+      fill: none;
+      stroke: #34d399;
+      stroke-width: 3;
+      stroke-linecap: butt;
+      stroke-linejoin: miter;
+    }
+
+    /* — track 3 : the type — */
+    #hk-type {
+      position: absolute;
+      left: 106px;
+      top: 148px;
+      width: 1500px;
+    }
+    .hk-line {
+      font-size: 7.5cqw;
+      font-weight: 800;
+      line-height: 0.9;
+      letter-spacing: -0.03em;
+      text-transform: lowercase;
+      white-space: nowrap;
+      transform-origin: 0% 50%;
+      opacity: 0;
+    }
+  </style>
+
+  <div
+    id="root"
+    data-composition-id="01-hook-found-out"
+    data-width="1920"
+    data-height="1080"
+  >
+    <div
+      id="hk-ground"
+      class="clip"
+      data-start="0"
+      data-duration="4"
+      data-track-index="0"
+    ></div>
+
+    <div
+      id="hk-rules"
+      class="clip"
+      data-start="0"
+      data-duration="4"
+      data-track-index="1"
+    >
+      <div id="hk-baseline"></div>
+      <div id="hk-floor"></div>
+      <div id="hk-tick"></div>
+    </div>
+
+    <div
+      id="hk-curve"
+      class="clip"
+      data-start="0"
+      data-duration="4"
+      data-track-index="2"
+    >
+      <svg viewBox="0 0 1190 340" xmlns="http://www.w3.org/2000/svg">
+        <!-- the climb: real pullbacks, it looks like it is working -->
+        <path
+          id="hk-rise"
+          class="hk-eq"
+          d="M 0 254 L 54 240 L 95 250 L 155 214 L 201 226 L 259 188 L 315 174 L 354 194 L 418 148 L 472 136 L 515 158 L 580 108 L 631 96 L 675 120 L 735 72 L 789 56 L 828 70 L 880 48"
+        />
+        <!-- the roll-over and the plunge into the floor at y = 300 -->
+        <path
+          id="hk-fall"
+          class="hk-eq"
+          d="M 880 48 L 915 92 L 944 76 L 983 140 L 1014 126 L 1053 194 L 1080 180 L 1115 250 L 1144 276 L 1190 300"
+        />
+      </svg>
+    </div>
+
+    <div
+      id="hk-type"
+      class="clip"
+      data-start="0"
+      data-duration="4"
+      data-track-index="3"
+    >
+      <div id="hk-l1" class="hk-line">you found out</div>
+      <div id="hk-l2" class="hk-line">after you paid.</div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      // One tempo grid drives the whole shot — geometry beats and type beats alike.
+      var PULSE = 0.175;
+      var T_RISE = 0; //  0.000  climb self-draws
+      var T_FLOOR = PULSE * 8; //  1.400  the floor hard-cuts on
+      var T_PLUNGE = PULSE * 9; //  1.575  the path rolls over
+      var T_DEAD = PULSE * 12; //  2.100  contact — stroke dies red
+      var T_L1 = PULSE * 14; //  2.450  "you found out"
+      var T_L2 = PULSE * 17; //  2.975  "after you paid."
+
+      var tl = gsap.timeline({ paused: true });
+
+      // Measured dash geometry — never a guessed length.
+      ["#hk-rise", "#hk-fall"].forEach(function (sel) {
+        var p = document.querySelector(sel);
+        if (!p) return;
+        // fallback guards the pathological 0-measure, which would otherwise
+        // render the whole curve solid from frame one.
+        var len = p.getTotalLength() || 1600;
+        p.style.strokeDasharray = String(len);
+        p.style.strokeDashoffset = String(len);
+        p.dataset.len = String(len);
+      });
+
+      // Scene 1 — the climb draws at constant speed, like a live tick.
+      tl.to(
+        "#hk-rise",
+        { strokeDashoffset: 0, duration: T_FLOOR - T_RISE, ease: "none" },
+        T_RISE,
+      );
+
+      // Scene 2 — the floor was always there; it just cuts on. No fade.
+      tl.fromTo(
+        "#hk-floor",
+        { opacity: 0 },
+        { opacity: 1, duration: 0.01, ease: "none" },
+        T_FLOOR,
+      );
+
+      // …the path keeps drawing and accelerates into it.
+      tl.to(
+        "#hk-fall",
+        { strokeDashoffset: 0, duration: T_DEAD - T_PLUNGE, ease: "power2.in" },
+        T_PLUNGE,
+      );
+
+      // Contact: the whole stroke turns red and the draw stops dead.
+      tl.to(
+        ".hk-eq",
+        { stroke: "#f2635f", duration: 0.09, ease: "none" },
+        T_DEAD,
+      );
+      tl.fromTo(
+        "#hk-tick",
+        { opacity: 0 },
+        { opacity: 1, duration: 0.01, ease: "none" },
+        T_DEAD,
+      );
+
+      // Scene 3 — two lines slam in, one per beat, distinct entrance each.
+      tl.fromTo(
+        "#hk-l1",
+        { scale: 1.5, filter: "blur(16px)", opacity: 0 },
+        {
+          scale: 1,
+          filter: "blur(0px)",
+          opacity: 1,
+          duration: 0.42,
+          ease: "power4.out",
+        },
+        T_L1,
+      );
+      tl.fromTo(
+        "#hk-l2",
+        { x: -320, opacity: 0 },
+        { x: 0, opacity: 1, duration: 0.4, ease: "expo.out" },
+        T_L2,
+      );
+
+      // …then it holds. The stillness is the point.
+      window.__timelines = window.__timelines || {};
+      window.__timelines["01-hook-found-out"] = tl;
+    })();
+  </script>
+</template>

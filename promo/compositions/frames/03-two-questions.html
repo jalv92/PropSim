@@ -1,0 +1,253 @@
+<template>
+  <div id="root" data-composition-id="03-two-questions">
+    <style>
+      #root {
+        position: absolute;
+        inset: 0;
+        width: 1920px;
+        height: 1080px;
+        container-type: size;
+        overflow: hidden;
+      }
+
+      /* ---- ground: the demoted probability cone (full-bleed, own clip layer) ---- */
+      #tq-ground {
+        position: absolute;
+        inset: 0;
+        background: #0b0b0d;
+      }
+      #tq-cone {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      #tq-cone-paths {
+        opacity: 0.16;
+      }
+
+      /* ---- content stack: wordmark + the two questions ---- */
+      #tq-stack {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 83%; /* caption keep-out: everything lands above y = 896px */
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+      }
+
+      #tq-wordmark {
+        font-family: system-ui;
+        font-size: 13cqw;
+        font-weight: 900;
+        line-height: 0.88;
+        letter-spacing: -0.04em;
+        color: #e7e9ea;
+        transform-origin: 50% 50%;
+        will-change: transform;
+      }
+
+      #tq-questions {
+        margin-top: 4.5cqw;
+        display: flex;
+        flex-direction: column;
+        gap: 1.4cqw;
+        width: fit-content;
+        text-align: left; /* both questions share one left edge — they read as a pair */
+      }
+
+      .tq-q {
+        font-family: system-ui;
+        font-size: 4cqw;
+        font-weight: 700;
+        line-height: 1.15;
+        letter-spacing: -0.02em;
+        color: #e7e9ea;
+      }
+
+      .tq-kw {
+        display: inline-block; /* required for transform on a span */
+        transform-origin: 50% 50%;
+        text-shadow: 0 0 0 rgba(52, 211, 153, 0);
+      }
+    </style>
+
+    <div
+      class="clip"
+      id="tq-ground"
+      data-start="0"
+      data-duration="4"
+      data-track-index="0"
+    >
+      <svg id="tq-cone" viewBox="0 0 1920 1080" preserveAspectRatio="none">
+        <g id="tq-cone-paths"></g>
+      </svg>
+    </div>
+
+    <div
+      class="clip"
+      id="tq-stack"
+      data-start="0"
+      data-duration="4"
+      data-track-index="1"
+    >
+      <div id="tq-wordmark">propsim</div>
+      <div id="tq-questions">
+        <div class="tq-q" id="tq-q1">
+          would it <span class="tq-kw" data-word="pass">pass</span>?
+        </div>
+        <div class="tq-q" id="tq-q2">
+          would it <span class="tq-kw" data-word="pay">pay</span>?
+        </div>
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        // ---- Scene 1 ground: the same cone as frame 02, already fully drawn at t=0.
+        // Deterministic index-derived pseudo-noise — never Math.random.
+        var ORIGIN_X = 250,
+          ORIGIN_Y = 545,
+          END_X = 1960,
+          STEPS = 24,
+          COUNT = 176;
+
+        function h(a, b) {
+          var x = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+          return x - Math.floor(x);
+        }
+
+        var host = document.getElementById("tq-cone-paths");
+        if (host && !host.childNodes.length) {
+          var NS = "http://www.w3.org/2000/svg";
+          for (var p = 0; p < COUNT; p++) {
+            var bias = (h(p, 3) - 0.5) * 2; // -1..1 directional drift
+            var vol = 0.55 + h(p, 7) * 0.9; // per-path volatility
+            var y = ORIGIN_Y;
+            var pts = ORIGIN_X + "," + ORIGIN_Y;
+            for (var s = 1; s <= STEPS; s++) {
+              var f = s / STEPS;
+              y +=
+                bias * 19 +
+                (h(p, s * 5 + 11) - 0.5) * 46 * vol * (0.35 + f);
+              pts +=
+                " " +
+                (ORIGIN_X + (END_X - ORIGIN_X) * f).toFixed(1) +
+                "," +
+                y.toFixed(1);
+            }
+            var line = document.createElementNS(NS, "polyline");
+            line.setAttribute("points", pts);
+            line.setAttribute("fill", "none");
+            line.setAttribute("stroke-width", "1");
+            // above the origin = a path that survived; below = a path that breached
+            line.setAttribute("stroke", y < ORIGIN_Y ? "#34d399" : "#f2635f");
+            line.setAttribute(
+              "stroke-opacity",
+              (0.55 + h(p, 23) * 0.45).toFixed(3),
+            );
+            host.appendChild(line);
+          }
+        }
+
+        // ---- Scene 4: asr-keyword-glow on "pass" and "pay".
+        // One linear driver sweeping scene time, looping all keywords.
+        var ATTACK = 0.14,
+          RELEASE = 0.28,
+          REST = 0.3,
+          MAX_BLUR = 22,
+          MAX_SCALE = 0.06;
+        var REST_RGB = { r: 231, g: 233, b: 234 }; // cream
+        var PEAK_RGB = { r: 52, g: 211, b: 153 }; // fire-orange (PropSim signal green)
+        var TIMINGS = {
+          pass: { start: 3.0, end: 3.2 },
+          pay: { start: 3.38, end: 3.58 },
+        };
+
+        function envelope(t, start, end) {
+          if (t < start) return 0;
+          if (t < end) return Math.min((t - start) / ATTACK, 1);
+          var releaseEnd = end + RELEASE;
+          if (t < releaseEnd) return 1 - ((t - end) / RELEASE) * (1 - REST);
+          return REST;
+        }
+
+        function ch(a, b, t) {
+          return Math.round(a + (b - a) * t);
+        }
+
+        var words = Array.prototype.slice.call(
+          document.querySelectorAll("#tq-stack .tq-kw"),
+        );
+
+        window.__timelines = window.__timelines || {};
+        var tl = gsap.timeline({ paused: true });
+        window.__timelines["03-two-questions"] = tl;
+
+        // Scene 2 + 3 land as hard cuts — state pinned at t=0 so seeks are exact.
+        tl.set(["#tq-q1", "#tq-q2"], { opacity: 0 }, 0);
+
+        // Scene 1 (0.0-0.9): the cone demotes to ground. Geometry never re-draws.
+        tl.fromTo(
+          "#tq-cone-paths",
+          { opacity: 0.3 },
+          { opacity: 0.16, duration: 0.6, ease: "power2.out" },
+          0,
+        );
+
+        // Scene 1: spring-pop-entrance — smooth long-tail settle, no overshoot.
+        tl.fromTo(
+          "#tq-wordmark",
+          { scale: 0, opacity: 0 },
+          { scale: 1, opacity: 1, duration: 0.55, ease: "power3.out" },
+          0.05,
+        );
+
+        // Scene 2 (0.9s): first question hard-cuts in. No fade.
+        tl.set("#tq-q1", { opacity: 1 }, 0.9);
+
+        // Scene 3 (2.0s): second question hard-cuts in directly below.
+        tl.set("#tq-q2", { opacity: 1 }, 2.0);
+
+        // Scene 4 (3.0-4.0s): attack-decay-rest on each keyword, then dead still.
+        var driver = { t: 0 };
+        tl.to(
+          driver,
+          {
+            t: 4,
+            duration: 4,
+            ease: "none", // linear — t maps 1:1 to scene time
+            onUpdate: function () {
+              for (var i = 0; i < words.length; i++) {
+                var el = words[i];
+                var timing = TIMINGS[el.getAttribute("data-word")];
+                if (!timing) continue;
+                var env = envelope(driver.t, timing.start, timing.end);
+                el.style.textShadow =
+                  "0 0 " +
+                  (MAX_BLUR * env).toFixed(2) +
+                  "px rgba(52, 211, 153, " +
+                  (env * 0.85).toFixed(3) +
+                  ")";
+                el.style.color =
+                  "rgb(" +
+                  ch(REST_RGB.r, PEAK_RGB.r, env) +
+                  ", " +
+                  ch(REST_RGB.g, PEAK_RGB.g, env) +
+                  ", " +
+                  ch(REST_RGB.b, PEAK_RGB.b, env) +
+                  ")";
+                el.style.transform = "scale(" + (1 + MAX_SCALE * env) + ")";
+              }
+            },
+          },
+          0,
+        );
+      })();
+    </script>
+  </div>
+</template>

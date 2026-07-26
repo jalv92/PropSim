@@ -2,6 +2,7 @@
 """Read the user's own trades straight out of NinjaTrader's database.
 
     python3 nttrades.py                       # summarise every account
+    python3 nttrades.py --strategies          # summarise every NinjaScript strategy
     python3 nttrades.py --account 9           # one account, trade by trade
 
 NinjaTrader keeps executions in `<NT8>/db/NinjaTrader.sqlite`. Reading them
@@ -16,6 +17,14 @@ live accounts, `Sim101`, and **Playback**, which is how order-flow strategies
 get evaluated correctly (NinjaTrader cannot backtest them in the Strategy
 Analyzer at all -- Tick Replay and High Order Fill Resolution are mutually
 exclusive, and those strategies need both).
+
+AND WHICH STRATEGY MADE EACH TRADE IS IN HERE TOO. `Strategy2Execution` joins an
+execution to a row in `Strategies`, which carries the NinjaScript `Classname` and
+an `IsReplay` flag. That turns "the trades on this account" into "the trades THIS
+strategy made", which is the only useful question on an account that also holds
+discretionary trades. Measured on this database: 386 executions, 56 attributed --
+all of them to ATM templates, because no NinjaScript strategy has completed a
+Playback session yet.
 
 TWO THINGS THAT WERE MEASURED, NOT ASSUMED, because both are silent killers:
 
@@ -65,6 +74,12 @@ class Trade:
     pnl: float                         # net of commission and fees, in currency
     mae: float                         # <= 0, currency, real intra-trade low
     mfe: float                         # >= 0, currency
+    # Which NinjaScript strategy produced this trade, when NinjaTrader recorded
+    # it (see `_strategies`). None for discretionary trades. Defaults last so the
+    # dataclass keeps working for every existing caller.
+    strategy: str | None = None
+    strategy_id: str | None = None
+    is_replay: bool = False
 
     @property
     def date(self) -> str:
@@ -101,6 +116,44 @@ def _accounts(con):
     return {r["Id"]: r["Name"] for r in con.execute("SELECT Id, Name FROM Accounts")}
 
 
+def _strategies(con):
+    """Execution id -> the strategy that produced it.
+
+    NinjaTrader keeps this in tables nothing else in this project used:
+    `Strategies` (Classname, Name, Template, IsReplay) joined to executions
+    through `Strategy2Execution`. It is the difference between "these are the
+    trades on this account" and "these are the trades THIS STRATEGY made", which
+    is the whole question when the account also holds discretionary trades.
+
+    `IsReplay` is what marks a Market Replay / Playback run, and that matters:
+    a Playback session is the only way an order-flow strategy can be evaluated
+    at all, because the Strategy Analyzer cannot feed it depth or tick data with
+    intrabar fills at the same time.
+    """
+    try:
+        strat = {r["Id"]: dict(
+            # Classname is the NinjaScript type, e.g.
+            # NinjaTrader.NinjaScript.Strategies.BigPrintsStrategy. The bare
+            # class name is what the user recognises.
+            classname=r["Classname"] or "",
+            name=(r["Classname"] or "").rsplit(".", 1)[-1] or (r["Name"] or "?"),
+            label=r["Name"] or "",
+            template=r["Template"] or "",
+            is_replay=bool(r["IsReplay"]))
+            for r in con.execute("SELECT Id, Classname, Name, Template, IsReplay "
+                                 "FROM Strategies")}
+        by_exec = {}
+        for r in con.execute("SELECT Execution, Strategy FROM Strategy2Execution"):
+            s = strat.get(r["Strategy"])
+            if s:
+                by_exec[r["Execution"]] = dict(s, id=str(r["Strategy"]))
+        return by_exec
+    except sqlite3.Error:
+        # An older NinjaTrader schema without these tables must not break the
+        # account-level reading that has always worked.
+        return {}
+
+
 def _check_pairing(entry_act, exit_act):
     """An exit must be the opposite side of its entry, or the pairing is wrong."""
     entry_buy = entry_act in BUY_SIDE
@@ -108,8 +161,12 @@ def _check_pairing(entry_act, exit_act):
     return entry_buy != exit_buy
 
 
-def read_trades(nt_root=None, account=None) -> list[Trade]:
-    """Reconstruct round-trip trades. `account` filters by name or id."""
+def read_trades(nt_root=None, account=None, strategy=None) -> list[Trade]:
+    """Reconstruct round-trip trades.
+
+    `account` filters by account name or id; `strategy` filters by the recorded
+    NinjaScript strategy (its id, or a substring of its class name).
+    """
     root = ntdata.resolve_root(nt_root)
     if root is None:
         raise SystemExit("No NinjaTrader 8 folder found — pass one explicitly.")
@@ -120,9 +177,10 @@ def read_trades(nt_root=None, account=None) -> list[Trade]:
     con = _open_readonly(db)
     instr = _instruments(con)
     accts = _accounts(con)
+    strat_of = _strategies(con)
 
     rows = con.execute("""
-        SELECT e.Account, e.Instrument, e.Time, e.Price, e.Quantity,
+        SELECT e.Id, e.Account, e.Instrument, e.Time, e.Price, e.Quantity,
                e.Commission, e.Fee, e.IsEntry, e.IsExit,
                e.MaxPrice, e.MinPrice, o.OrderAction
         FROM Executions e
@@ -165,12 +223,17 @@ def read_trades(nt_root=None, account=None) -> list[Trade]:
         else:
             mae, mfe = min(gross - comm, 0.0), max(gross - comm, 0.0)
 
+        # Attribution comes from the ENTRY: that is the execution that opened the
+        # position, and a protective exit is sometimes recorded without it.
+        s = strat_of.get(en["Id"]) or strat_of.get(r["Id"]) or {}
         trades.append(Trade(
             account=accts.get(r["Account"], str(r["Account"])), instrument=name,
             direction=direction, qty=qty,
             entry_time=_dt(en["Time"]), exit_time=_dt(r["Time"]),
             entry_price=en["Price"], exit_price=r["Price"], point_value=pv,
-            commission=comm, pnl=gross - comm, mae=mae, mfe=mfe))
+            commission=comm, pnl=gross - comm, mae=mae, mfe=mfe,
+            strategy=s.get("name"), strategy_id=s.get("id"),
+            is_replay=bool(s.get("is_replay"))))
 
     if mismatched:
         print(f"  warning: {mismatched} execution pair(s) had a same-side "
@@ -179,6 +242,11 @@ def read_trades(nt_root=None, account=None) -> list[Trade]:
         want = str(account)
         trades = [t for t in trades
                   if t.account == want or want in t.account]
+    if strategy is not None:
+        want = str(strategy)
+        trades = [t for t in trades
+                  if t.strategy_id == want
+                  or (t.strategy and want.lower() in t.strategy.lower())]
     return trades
 
 
@@ -278,6 +346,32 @@ def detect_firm(account_name: str):
                 note=best.get("note", ""), matched=best["prefix"])
 
 
+def detected_strategies(nt_root=None) -> list[dict]:
+    """Every NinjaScript strategy NinjaTrader has trades for, with its own stats.
+
+    This is what makes "evaluate the strategies I actually have" answerable from
+    the database alone, with no add-on: any strategy that has ever traded -- live,
+    on Sim101, or in a Playback session -- left attributed executions behind.
+
+    ATM template instances are excluded. NinjaTrader records each one as a
+    separate `Strategies` row named AtmStrategy, so they are discretionary trades
+    wearing a strategy's clothes: dozens of one-trade "strategies" that would
+    drown the real ones in the picker.
+    """
+    groups: dict[tuple, list[Trade]] = {}
+    for t in read_trades(nt_root):
+        if not t.strategy_id or t.strategy == "AtmStrategy":
+            continue
+        groups.setdefault((t.strategy_id, t.strategy, t.account, t.is_replay),
+                          []).append(t)
+    out = []
+    for (sid, name, acct, replay), tl in groups.items():
+        s = summarise(tl)
+        out.append(dict(strategy_id=sid, strategy=name, account=acct,
+                        is_replay=replay, **s))
+    return sorted(out, key=lambda d: -d["n"])
+
+
 def detected_accounts(nt_root=None) -> list[dict]:
     """Every account with trades, its summary, and any firm match."""
     out = []
@@ -293,7 +387,26 @@ def main():
     ap.add_argument("--root", help="NinjaTrader 8 folder")
     ap.add_argument("--account", help="account name or fragment")
     ap.add_argument("--list", action="store_true", help="per-account summary")
+    ap.add_argument("--strategies", action="store_true",
+                    help="per-NinjaScript-strategy summary")
     args = ap.parse_args()
+
+    if args.strategies:
+        rows = detected_strategies(args.root)
+        if not rows:
+            print("No NinjaScript strategy has recorded trades in this database.\n"
+                  "Run one in Market Replay / Playback (or live on Sim101) and its\n"
+                  "trades will appear here attributed to it -- NinjaTrader records\n"
+                  "the link in Strategy2Execution. Strategy Analyzer runs do NOT\n"
+                  "land here; those need the add-on in nt8/.")
+            return
+        print(f"{'strategy':<26}{'account':<22}{'where':<10}{'trades':>7}{'days':>6}"
+              f"{'P&L':>12}{'WR':>7}")
+        for d in rows:
+            print(f"{d['strategy'][:25]:<26}{d['account'][:21]:<22}"
+                  f"{('Playback' if d['is_replay'] else 'live/sim'):<10}"
+                  f"{d['n']:>7}{d['days']:>6}{d['pnl']:>12,.2f}{d['wr']:>7.1%}")
+        return
 
     if args.list or not args.account:
         print(f"{'account':<24}{'trades':>7}{'days':>6}{'P&L':>12}{'WR':>7}"
