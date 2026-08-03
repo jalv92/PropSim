@@ -71,6 +71,8 @@ class ClientGone(Exception):
     the page simply showed nothing. A silent failure is the worst kind: the
     user cannot tell a broken program from a slow one.
     """
+
+
 # The most recent backtest, so the Prop Firm tab can score it without re-running.
 LAST_BACKTEST: dict = {}
 
@@ -121,68 +123,6 @@ def prepare_stream(q, write):
                          ticks=len(tp.load_cache(contract)["ts"])))
 
 
-def backtest_stream(q, write):
-    """Run one backtest and keep the trades for the Prop Firm tab."""
-    contract = q.get("contract", [""])[0]
-    strategy = q.get("strategy", ["orb"])[0]
-    tf = int(q.get("tf", ["5"])[0])
-    start = q.get("start", [""])[0] or None
-    end = q.get("end", [""])[0] or None
-    slip = float(q.get("slippage", ["2"])[0])
-    comm = float(q.get("commission", ["5"])[0])
-    params = {}
-    S = engine.LIBRARY[strategy]
-    for k in S.params:
-        v = q.get("p_" + k, [None])[0]
-        if v not in (None, ""):
-            params[k] = float(v)
-
-    write("progress", dict(stage="loading the tape"))
-    costs = engine.Costs(commission=comm, slippage_ticks=slip)
-    trades, meta = engine.backtest(contract, strategy, tf, start, end,
-                                   params=params, costs=costs)
-    write("progress", dict(stage="scoring"))
-    summary = engine.summarise(trades, meta)
-
-    # RECORDED BEFORE THE RESULT IS RENDERED, on purpose. A ledger written after
-    # the chart appears is a ledger that loses every run the user abandons on
-    # first glance -- which are exactly the runs that make the twentieth t-stat
-    # meaningless.
-    ledger.append("backtest", strategy=strategy, contract=contract,
-                  # Same inputs, same number: an identical re-run is one look, not
-                  # two. Without this, clicking Run twice on the same settings
-                  # raised the user's own noise ceiling for nothing.
-                  fp=ledger.fingerprint(kind="backtest", strategy=strategy,
-                                        contract=contract, tf=tf,
-                                        start=meta["start"], end=meta["end"],
-                                        params=meta["params"],
-                                        slip=slip, comm=comm),
-                  timeframe=f"{tf}m", start=meta["start"], end=meta["end"],
-                  params=meta["params"], trades=len(trades),
-                  pnl=round(summary["pnl"], 2),
-                  t_daily=(None if summary["t_daily"] != summary["t_daily"]
-                           else round(summary["t_daily"], 3)),
-                  slippage_ticks=slip, commission=comm)
-
-    global LAST_BACKTEST
-    LAST_BACKTEST = dict(trades=trades, meta=meta, summary=summary)
-
-    equity, run = [], 0.0
-    for t in trades:
-        run += t.pnl
-        equity.append(round(run, 2))
-    write("result", dict(
-        summary={k: (None if isinstance(v, float) and v != v else v)
-                 for k, v in summary.items() if k != "params"},
-        ledger=ledger.stats(),
-        params=meta["params"], equity=equity,
-        trades=[dict(date=t.date, dir=t.direction,
-                     entry=round(t.entry_price, 2), exit=round(t.exit_price, 2),
-                     pnl=round(t.pnl, 2), mae=round(t.mae, 2), reason=t.reason)
-                for t in trades[:200]],
-        n_shown=min(len(trades), 200)))
-
-
 def _jsonable(v):
     """NaN and numpy scalars are not JSON. Nulls are, and render as an em dash."""
     if isinstance(v, dict):
@@ -225,10 +165,11 @@ def analyzer_stream(q, write):
     trades, meta = engine.backtest(contract, strategy, tf, start, end,
                                    params=params, costs=costs)
 
-    # BEFORE the report is built, exactly as backtest_stream does it, and as
-    # kind="backtest" so that a run here and a run on the old tab spend the same
-    # search budget. A separate kind would let the same look be laundered into a
-    # fresh trial count.
+    # BEFORE the report is built: a ledger written after the result is rendered
+    # loses exactly the runs a user abandons on first glance. `kind="backtest"`
+    # keeps this run in the same search budget as every earlier one, including
+    # the ones the retired Backtest tab recorded -- a separate kind would let
+    # the same look be laundered into a fresh trial count.
     write("progress", dict(stage="recording the trial"))
     summary = engine.summarise(trades, meta)
     ledger.append("backtest", strategy=strategy, contract=contract,
@@ -243,6 +184,12 @@ def analyzer_stream(q, write):
                   t_daily=(None if summary["t_daily"] != summary["t_daily"]
                            else round(summary["t_daily"], 3)),
                   slippage_ticks=slip, commission=comm)
+
+    # The Prop Firm tab's "__backtest" trade source reads this. It used to be
+    # filled by the old Backtest tab; that tab is gone, so the run that feeds it
+    # is this one.
+    global LAST_BACKTEST
+    LAST_BACKTEST = dict(trades=trades, meta=meta, summary=summary)
 
     write("progress", dict(stage="scoring against the account"))
     rep = report.build(trades, meta, rules, contracts=contracts, sims=20_000,
@@ -734,8 +681,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, body, "application/json")
         if u.path == "/api/tape/prepare":
             return self._sse(parse_qs(u.query), prepare_stream)
-        if u.path == "/api/backtest":
-            return self._sse(parse_qs(u.query), backtest_stream)
         if u.path == "/api/analyzer":
             return self._sse(parse_qs(u.query), analyzer_stream)
         if u.path == "/api/rules":

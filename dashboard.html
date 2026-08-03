@@ -50,7 +50,6 @@
      stretched by its 300x150 intrinsic ratio until the first paint sets a
      style height. Pinning them here removes that flash entirely. */
   #donut{height:330px} #spaghetti{height:430px} #hist{height:190px}
-  #bt_curve{height:240px}
   input[type=range]{width:100%;accent-color:#9aa0a6}
   .foot{color:var(--dimmer);font-size:11px;margin-top:14px;
         border-top:1px solid var(--line);padding-top:10px;white-space:pre-line}
@@ -133,10 +132,7 @@
   <div class="tabs">
     <div class="tab on"  data-p="analyzer">Backtesting</div>
     <div class="tab alt" data-p="prop">Prop Firm</div>
-    <div class="tab alt" data-p="verdict">Verdict</div>
-    <div class="tab alt off" title="disabled on purpose — see the Verdict tab">Regimes</div>
     <div class="tab alt" data-p="mc">Risk &amp; Monte Carlo</div>
-    <div class="tab alt" data-p="backtest">Backtest (legacy)</div>
     <div class="tab alt" data-p="optimize">Optimize</div>
     <div class="tab alt" data-p="ai">AI author</div>
     <div class="tab alt" data-p="imported">Imported</div>
@@ -191,95 +187,8 @@
     <div class="foot" id="foot">Ready.</div>
   </div>
 
-  <div id="pane-verdict" hidden>
-    <div class="panebody" id="verdictBody"></div>
-  </div>
-
   <div id="pane-mc" hidden>
     <div class="panebody" id="mcBody"></div>
-  </div>
-
-  <div id="pane-backtest" hidden>
-    <div class="panebody">
-      <p>Run a strategy over your own tick data, then score the result against a
-      prop firm. Three choices define the run and all three change the answer.</p>
-
-      <div class="warn"><b>These are PropSim's own strategies, not the ones in
-      your NinjaTrader.</b> They are written in Python and run here, on your tick
-      tape — useful for testing an idea, and for the order-flow class NinjaTrader
-      cannot backtest at all. <b>Your NinjaScript (<code>.cs</code>) strategies
-      cannot run here</b>: they are C# and they execute inside NinjaTrader. They
-      reach PropSim by two other doors — a Strategy Analyzer run captured by the
-      add-on appears under <b>Imported</b>, and a Market Replay / Playback session
-      appears directly in the trade-source picker on the <b>Prop Firm</b> tab.
-      See <code>docs/connect-your-strategies.md</code>.</div>
-
-      <div class="row">
-        <label>1. Market data
-          <select id="bt_contract"></select>
-          <span class="hint" id="bt_range">—</span>
-        </label>
-        <button id="bt_prepare" class="primary" hidden>Prepare this contract</button>
-      </div>
-      <div id="bt_prep" class="hint"></div>
-
-      <div class="row">
-        <label>2. Dates
-          <input type="date" id="bt_start"> <span class="hint">to</span>
-          <input type="date" id="bt_end">
-          <button id="bt_all" class="mini">all</button>
-        </label>
-      </div>
-
-      <div id="bt_plugins"></div>
-      <div class="row">
-        <label>3. Strategy <span class="hint">(PropSim's own, in Python)</span>
-          <select id="bt_strategy"></select>
-        </label>
-        <label>Timeframe
-          <select id="bt_tf">
-            <option>1</option><option>3</option><option selected>5</option>
-            <option>15</option><option>30</option><option>60</option>
-          </select><span class="hint">minute bars</span>
-        </label>
-      </div>
-
-      <div id="bt_params" class="params"></div>
-
-      <div class="row">
-        <label>Slippage <input type="number" id="bt_slip" value="2" step="0.5"
-               min="0" max="20" style="width:70px"><span class="hint">ticks each way</span></label>
-        <label>Commission <input type="number" id="bt_comm" value="5" step="0.5"
-               min="0" style="width:70px"><span class="hint">$ per round trip</span></label>
-        <button id="bt_measure" class="mini">measure from my tape</button>
-      </div>
-      <div id="bt_slipnote" class="hint"></div>
-      <p class="hint" style="margin:-4px 0 12px">Fills are pessimistic on purpose:
-      you pay slippage both ways, and when a stop and a target fall in the same
-      moment the stop wins. Measured on real trades, this setting alone can move
-      a result from convincing to worthless — so it is a dial, never a hidden
-      constant.</p>
-
-      <button id="bt_run" class="primary big">Run backtest</button>
-      <button id="bt_reload" class="mini">reload my strategies</button>
-      <span id="bt_status" class="hint"></span>
-
-      <div id="bt_out" hidden>
-        <div class="kpis" id="bt_kpis" style="margin-top:18px"></div>
-        <div class="sec">
-          <h3>Equity curve</h3>
-          <div class="meta" id="bt_meta">—</div>
-          <canvas id="bt_curve" height="240"></canvas>
-        </div>
-        <div class="sec">
-          <div style="display:flex;justify-content:space-between;align-items:baseline">
-            <h3>Trades</h3>
-            <button id="bt_score" class="primary">Score this against a prop firm →</button>
-          </div>
-          <div id="bt_trades" style="max-height:320px;overflow:auto"></div>
-        </div>
-      </div>
-    </div>
   </div>
 
   <div id="pane-analyzer">
@@ -298,6 +207,7 @@
           <select id="an_bttype" disabled title="parameter sweeps live on the Optimize tab">
             <option>Backtest</option></select></label>
         <label>Strategy <select id="an_strategy"></select></label>
+        <div id="an_plugins"></div>
         <div id="an_params" class="params"></div>
 
         <h4>Prop firm account</h4>
@@ -326,8 +236,15 @@
                min="0" step="0.5"></label>
         <label>Slippage <input type="number" id="an_slip" value="2"
                min="0" max="20" step="0.5"></label>
+        <div class="row" style="justify-content:flex-end">
+          <button id="an_measure" class="mini">measure from my tape</button>
+        </div>
+        <div id="an_slipnote" class="hint"></div>
 
         <div class="row" style="justify-content:flex-end;margin-top:12px">
+          <button id="an_score" class="mini" disabled
+                  title="send this run to the Prop Firm tab as its trade source"
+                  >Send to Prop Firm</button>
           <button id="an_run" class="primary">Run</button>
         </div>
       </div>
@@ -802,7 +719,6 @@ function run(){
     RES=JSON.parse(ev.data);
     render();
     $("#run").disabled=false; ES.close(); ES=null;
-    renderVerdict();
   });
   ES.addEventListener("error", ev=>{
     let m="stream error";
@@ -875,15 +791,38 @@ function render(){
   $("#medLabel").textContent=v.medLabel;
 }
 
+/* ---------- shared library: the strategy list and the tape ---------- */
+// `STRATS`, `PLUGINS` and `TAPE` are read by the Backtesting, Optimize and AI
+// author tabs. They used to be filled as a side effect of opening the old
+// Backtest tab, which meant deleting that tab silently emptied the other two.
+// One loader owns them now, and it touches no tab's DOM.
+let TAPE = [], STRATS = [], PLUGINS = [];
+let LIBRARY_LOADED = null;
+
+function loadLibrary(force){
+  if(force){ LIBRARY_LOADED = null; STRATS = []; TAPE = []; }
+  if(LIBRARY_LOADED) return LIBRARY_LOADED;
+  LIBRARY_LOADED = Promise.all([
+    fetch("/api/strategies").then(r=>r.json()),
+    fetch("/api/tape").then(r=>r.json()),
+  ]).then(([st, tp])=>{
+    STRATS = st.strategies || [];
+    PLUGINS = st.plugins || [];
+    TAPE = tp.contracts || [];
+    return {dir: st.dir};
+  }).catch(e=>{ LIBRARY_LOADED = null; throw e; });
+  return LIBRARY_LOADED;
+}
+
 /* ---------- analyzer tab (Backtesting) ---------- */
 let AN = {combos:[], rules:null, ready:false, view:"raw"};
 
 async function anInit(){
   if(AN.ready) return; AN.ready = true;
-  const tape = await (await fetch("/api/tape")).json();
+  const lib = await loadLibrary();
   // Only contracts whose tick cache exists can be backtested. Offering the rest
   // would put a Run button in front of data that is not there yet.
-  AN.tape = (tape.contracts || []).filter(c => c.ready);
+  AN.tape = TAPE.filter(c => c.ready);
   const sel = $("#an_contract"); sel.innerHTML = "";
   for(const c of AN.tape){
     const o = document.createElement("option");
@@ -894,15 +833,15 @@ async function anInit(){
       + 'yet. Build one on the Data tab, then come back.</div>';
   sel.onchange = anContract; anContract();
 
-  const st = await (await fetch("/api/strategies")).json();
   AN.strategies = {};
   const s = $("#an_strategy"); s.innerHTML = "";
-  for(const S of (st.strategies || [])){
+  for(const S of STRATS){
     AN.strategies[S.name] = S;
     const o = document.createElement("option");
     o.value = S.name; o.textContent = S.label || S.name; s.appendChild(o);
   }
   s.onchange = anParams; anParams();
+  anPluginNote(lib.dir);
 
   const r = await (await fetch("/api/rules")).json();
   const f = $("#an_firm"); f.innerHTML = "";
@@ -918,6 +857,19 @@ async function anInit(){
   $("#an_phase").onchange = anSizes;
   $("#an_size").onchange = anRules;
   await anFirm();
+}
+
+function anPluginNote(dir){
+  const bad = (PLUGINS||[]).filter(p=>!p.ok);
+  const ok = (PLUGINS||[]).filter(p=>p.ok);
+  let html = "";
+  if(ok.length) html += `<div class="hint"><b>${ok.length}</b> strategy file(s)
+    loaded from <code>${dir||""}</code>.</div>`;
+  // A rejected file is reported, never silently skipped: a strategy that quietly
+  // does not exist looks exactly like one that finds no trades.
+  for(const p of bad) html += `<div class="warn bad" style="margin-top:8px">
+    <b>${p.file} was rejected.</b> ${p.error}</div>`;
+  $("#an_plugins").innerHTML = html;
 }
 
 function anParams(){
@@ -1013,7 +965,9 @@ async function anRun(){
       '<p class="hint">'+JSON.parse(e.data).stage+'…</p>'; });
   es.addEventListener("result", e=>{
     AN.report = JSON.parse(e.data); es.close();
-    $("#an_run").disabled = false; anRender(); });
+    $("#an_run").disabled = false;
+    $("#an_score").disabled = !AN.report.has_trades;
+    anRender(); });
   es.addEventListener("error", e=>{
     es.close(); $("#an_run").disabled = false;
     $("#an_report").innerHTML =
@@ -1158,197 +1112,21 @@ function anProp(R){
 }
 
 $("#an_run") && ($("#an_run").onclick = anRun);
+// The bridge that used to live on the old Backtest tab: this run becomes the
+// Prop Firm tab's trade source. Without it that source has no way to appear.
+$("#an_score") && ($("#an_score").onclick = ()=>{
+  if(!AN.report) return;
+  let o=[...$("#account").options].find(x=>x.value==="__backtest");
+  if(!o){ o=document.createElement("option"); o.value="__backtest";
+          $("#account").insertBefore(o, $("#account").firstChild); }
+  const m=AN.report.meta||{};
+  o.textContent = `backtest — ${m.label||m.strategy}, ${AN.report.grid.all.trades} trades`;
+  $("#account").value="__backtest";
+  document.querySelector('.tab[data-p="prop"]').click();
+  $("#run").click();
+});
 $("#an_raw") && ($("#an_raw").onclick = ()=>{AN.view="raw"; anRender();});
 $("#an_prop") && ($("#an_prop").onclick = ()=>{AN.view="prop"; anRender();});
-
-/* ---------- backtest tab ---------- */
-let TAPE=[], STRATS=[], PLUGINS=[], BT=null;
-
-function btInit(){
-  if(STRATS.length) return;
-  // Nothing is clickable until the lists are in. A user who clicks Run during
-  // the first fetch would otherwise hit an undefined strategy and see nothing
-  // happen at all, which is the worst possible failure: silent.
-  $("#bt_run").disabled = true;
-  $("#bt_status").textContent = "Loading…";
-  fetch("/api/strategies").then(r=>r.json()).then(d=>{
-    STRATS=d.strategies;
-    // Grouped and labelled, because a bare list under a heading that says
-    // "Strategy" reads as "my strategies" — and the one thing this tab cannot do
-    // is run the user's NinjaScript.
-    const opt = s =>
-      `<option value="${s.name}">${s.label}${s.uses_ticks?" · reads the tape":""}</option>`;
-    const built = STRATS.filter(s=>!s.mine), mine = STRATS.filter(s=>s.mine);
-    $("#bt_strategy").innerHTML =
-      (mine.length ? `<optgroup label="Yours — from ~/.prop-sim/strategies/">`
-        + mine.map(opt).join("") + `</optgroup>` : "")
-      + `<optgroup label="PropSim engine — built in">`
-      + built.map(opt).join("") + `</optgroup>`;
-    if(d.plugins) PLUGINS = d.plugins;
-    btPluginNote(d.dir);
-    btParams();
-    btTape();                       // btContract() decides if Run may enable
-  }).catch(()=>{ $("#bt_status").textContent =
-      "Could not load the strategy list — is the program still running?"; });
-}
-
-function btPluginNote(dir){
-  const bad = (PLUGINS||[]).filter(p=>!p.ok);
-  const ok = (PLUGINS||[]).filter(p=>p.ok);
-  let html = "";
-  if(ok.length) html += `<div class="hint"><b>${ok.length}</b> strategy file(s)
-    loaded from <code>${dir||""}</code>.</div>`;
-  // A rejected file is reported, never silently skipped: a strategy that quietly
-  // does not exist looks exactly like one that finds no trades.
-  for(const p of bad) html += `<div class="warn bad" style="margin-top:8px">
-    <b>${p.file} was rejected.</b> ${p.error}</div>`;
-  $("#bt_plugins").innerHTML = html;
-}
-
-function btTape(){
-  return fetch("/api/tape").then(r=>r.json()).then(d=>{
-    TAPE=d.contracts;
-    // Ready contracts first, and open on one of them. Landing a new user on a
-    // contract whose Run button is disabled reads as a broken program.
-    const sorted = TAPE.slice().sort((a,b)=> (b.ready?1:0)-(a.ready?1:0)
-                                          || a.contract.localeCompare(b.contract));
-    $("#bt_contract").innerHTML = sorted.map(c=>
-      `<option value="${c.contract}">${c.contract}${c.ready?"":"  (needs preparing)"}</option>`).join("");
-    const first = sorted.find(c=>c.ready) || sorted[0];
-    if(first) $("#bt_contract").value = first.contract;
-    btContract();
-  });
-}
-
-function btContract(){
-  const c = TAPE.find(x=>x.contract===$("#bt_contract").value);
-  if(!c) return;
-  $("#bt_range").textContent = `${c.days} trading days available, ${c.first} to ${c.last}`;
-  $("#bt_prepare").hidden = c.ready;
-  // Bound the date inputs to what exists. A user cannot ask for data they do
-  // not have, so the question never arises.
-  for(const id of ["#bt_start","#bt_end"]){ $(id).min=c.first; $(id).max=c.last; }
-  $("#bt_start").value=c.first; $("#bt_end").value=c.last;
-  $("#bt_run").disabled = !c.ready || !STRATS.length;
-  $("#bt_status").textContent = !STRATS.length ? "Loading…"
-    : (c.ready ? "" : "Prepare this contract once before running.");
-}
-
-function btParams(){
-  const s = STRATS.find(x=>x.name===$("#bt_strategy").value);
-  if(!s) return;
-  $("#bt_params").innerHTML = s.params.map(p=>
-    `<label>${p.key.replace(/_/g," ")}
-       <input type="number" id="bt_p_${p.key}" value="${p.default}"
-              min="${p.lo}" max="${p.hi}"
-              step="${(p.default % 1 || p.lo % 1) ? 0.1 : 1}">
-       <span class="d">${p.desc}</span></label>`).join("");
-}
-
-function btPrepare(){
-  const c = $("#bt_contract").value;
-  $("#bt_prepare").disabled=true;
-  const es = new EventSource("/api/tape/prepare?contract="+encodeURIComponent(c));
-  es.addEventListener("progress", e=>{ const p=JSON.parse(e.data);
-    $("#bt_prep").textContent =
-      `Reading ${c}: ${p.pct}% (${p.ticks.toLocaleString()} ticks so far). `
-      + `This happens once per contract.`; });
-  es.addEventListener("result", e=>{ const r=JSON.parse(e.data);
-    $("#bt_prep").textContent =
-      `Ready: ${r.ticks.toLocaleString()} ticks over ${r.days} days.`;
-    $("#bt_prepare").disabled=false; es.close(); btTape(); });
-  es.addEventListener("error", e=>{ let m="could not read this contract";
-    try{ m=JSON.parse(e.data).message; }catch(_){}
-    $("#bt_prep").textContent = m; $("#bt_prepare").disabled=false; es.close(); });
-}
-
-function btRun(){
-  const s = STRATS.find(x=>x.name===$("#bt_strategy").value);
-  if(!s){ $("#bt_status").textContent="Still loading — try again in a second."; return; }
-  const q = new URLSearchParams({contract:$("#bt_contract").value,
-    strategy:s.name, tf:$("#bt_tf").value,
-    start:$("#bt_start").value, end:$("#bt_end").value,
-    slippage:$("#bt_slip").value, commission:$("#bt_comm").value});
-  for(const p of s.params) q.set("p_"+p.key, $("#bt_p_"+p.key).value);
-  $("#bt_run").disabled=true; $("#bt_status").textContent="Running…";
-  const es = new EventSource("/api/backtest?"+q);
-  es.addEventListener("progress", e=>{
-    $("#bt_status").textContent = (JSON.parse(e.data).stage||"working")+"…"; });
-  es.addEventListener("result", e=>{
-    BT=JSON.parse(e.data); btRender();
-    $("#bt_run").disabled=false; $("#bt_status").textContent=""; es.close(); });
-  es.addEventListener("error", e=>{ let m="the run failed";
-    try{ m=JSON.parse(e.data).message; }catch(_){}
-    $("#bt_status").textContent=m; $("#bt_run").disabled=false; es.close(); });
-}
-
-function btRender(){
-  const s=BT.summary;
-  $("#bt_out").hidden=false;
-  const tiles=[
-    ["Trades", s.trades, ""],
-    ["Net P&L", fmt$(s.pnl), s.pnl>=0?"g":"r"],
-    ["Win rate", (s.wr*100).toFixed(1)+"%", ""],
-    ["Per trading day", s.per_day.toFixed(1), ""],
-    ["Average trade", fmt$(s.mean||0), (s.mean||0)>=0?"g":"r"],
-    ["t-stat (daily)", s.t_daily==null?"—":s.t_daily.toFixed(2),
-     s.t_daily!=null && s.t_daily>=2 ? "g" : ""],
-    // The count belongs NEXT TO the statistic. A t of 2.1 on trial 40 is a
-    // different claim from a t of 2.1 on trial 1, and separating the two numbers
-    // by a tab click is how the denominator gets forgotten.
-    ["trial #", BT.ledger ? BT.ledger.trials : "—", ""],
-    ["noise reaches", BT.ledger ? BT.ledger.expected_max_t.toFixed(2) : "—",
-     (BT.ledger && s.t_daily!=null && s.t_daily > BT.ledger.expected_max_t) ? "" : "r"],
-  ];
-  $("#bt_kpis").innerHTML = tiles.map(([l,v,c])=>
-    `<div class="kpi"><div class="lab">${l}</div><div class="val ${c}">${v}</div></div>`).join("");
-  $("#bt_meta").innerHTML =
-    `<b>${s.label}</b> · ${s.contract} · <b>${s.timeframe}-minute bars</b> · `
-    + `${s.start} to ${s.end} (${s.days} days) · ${s.signals} signals, ${s.trades} taken · `
-    + `slippage ${s.slippage_ticks} ticks/side`
-    // Missing data is not a footnote: bars spanning a hole are fiction, and a
-    // P&L built on them is too. One hole on this contract is 59 minutes long.
-    + (s.data_holes ? `<div class="warn" style="margin-top:8px">
-        <b>${s.data_holes} hole(s) in the tape inside a session</b>
-        (${(s.hole_days||[]).join(", ")}). Hourly tick files are missing there, so
-        any bar spanning one is fiction and a stop resolved across one would book a
-        fill the market never printed. Positions are closed at the last real tick
-        instead — ${s.gap_exits} trade(s) exited that way. Consider excluding those
-        dates, or re-downloading the data in NinjaTrader.</div>` : "");
-  drawCurve();
-  const rows = BT.trades.map(t=>
-    `<tr><td>${t.date}</td><td>${t.dir>0?"long":"short"}</td><td>${t.entry}</td>
-     <td>${t.exit}</td><td class="${t.pnl>=0?'g':'r'}">${fmt$(t.pnl)}</td>
-     <td>${fmt$(t.mae)}</td><td>${t.reason}</td></tr>`).join("");
-  $("#bt_trades").innerHTML =
-    `<table class="tr"><tr><th>date</th><th>side</th><th>entry</th><th>exit</th>
-     <th>P&L</th><th>worst</th><th>exit by</th></tr>${rows}</table>`
-    + (BT.n_shown < s.trades ? `<p class="hint">showing the first ${BT.n_shown}</p>` : "");
-}
-
-function drawCurve(){
-  if(!BT) return;
-  const [x,w,h]=ctxOf($("#bt_curve"));
-  const e=BT.equity; if(!e.length) return;
-  const lo=Math.min(0,...e), hi=Math.max(0,...e), pad=(hi-lo)*0.08||1;
-  const L=62,R=14,T=12,B=22;
-  const X=i=>L+i*(w-L-R)/Math.max(e.length-1,1);
-  const Y=v=>T+(hi+pad-v)*(h-T-B)/((hi-lo)+2*pad);
-  x.strokeStyle="#1a1c20"; x.fillStyle="#5f646b";
-  x.font="10px ui-monospace,monospace"; x.textAlign="right";
-  for(let g=0;g<=4;g++){ const v=lo-pad+((hi-lo)+2*pad)*g/4, y=Y(v);
-    x.beginPath(); x.moveTo(L,y); x.lineTo(w-R,y); x.stroke();
-    x.fillText(fmtK(v), L-6, y+3); }
-  x.save(); x.setLineDash([4,4]); x.strokeStyle="#3a3f46";
-  x.beginPath(); x.moveTo(L,Y(0)); x.lineTo(w-R,Y(0)); x.stroke(); x.restore();
-  x.beginPath(); x.strokeStyle = e[e.length-1]>=0 ? "#34d399" : "#f2635f";
-  x.lineWidth=1.6;
-  e.forEach((v,i)=> i?x.lineTo(X(i),Y(v)):x.moveTo(X(i),Y(v)));
-  x.stroke();
-  x.fillStyle="#5f646b"; x.textAlign="center";
-  x.fillText("trade 1", L+18, h-6);
-  x.fillText("trade "+e.length, w-R-24, h-6);
-}
 
 /* ---------- optimize tab ---------- */
 let OP=null;
@@ -1360,7 +1138,7 @@ function opInit(){
   // permanently showing "prepare a contract first" while a prepared contract sat
   // right there.
   if(!STRATS.length || !TAPE.length){
-    btInit();
+    loadLibrary();
     if(opTries++ < 25) setTimeout(opInit, 400);
     else $("#op_status").textContent = "Could not load the contract list.";
     return;
@@ -1490,7 +1268,7 @@ let AI={}, aiTries=0;
 
 function aiInit(){
   if(!STRATS.length || !TAPE.length){
-    btInit();
+    loadLibrary();
     if(aiTries++ < 25) setTimeout(aiInit, 400);
     else $("#ai_status").textContent = "Could not load the strategy list.";
     return;
@@ -1587,9 +1365,9 @@ function aiWrite(){
     // from page load. Without this the strategy is installed and invisible until a
     // manual reload — which reads as "it did not work".
     if(d.installed){
-      STRATS=[]; $("#bt_strategy").innerHTML=""; $("#op_strategy").innerHTML="";
-      $("#ai_tstrategy").innerHTML="";
-      btInit(); setTimeout(aiInit, 600);
+      $("#op_strategy").innerHTML=""; $("#ai_tstrategy").innerHTML="";
+      loadLibrary(true).then(()=>{ AN.ready=false; anInit(); });
+      setTimeout(aiInit, 600);
     }
     $("#ai_wverdict").innerHTML = `
       <div class="meta"><b class="g">Passed</b> on attempt ${d.attempts} ·
@@ -1773,60 +1551,6 @@ function loadTrials(){
   }).catch(()=>{ $("#trialsBody").innerHTML="<p class='r'>Could not read the ledger.</p>"; });
 }
 
-/* ---------- verdict tab ---------- */
-function renderVerdict(){
-  const a=currentAccount()||{};
-  const rows=[
-    ["Rules retrieved", a.retrieved||"—"],
-    ["Fully verified", a.verified?"yes":"<b class='r'>no</b>"],
-    ["Drawdown ratchet", a.hwm_basis],
-    ["Breach tested on", a.breach_basis||"<b class='r'>UNVERIFIED</b>"],
-    ["Floor locks at", a.dd_lock!=null?fmt$(a.dd_lock):"never"],
-    ["Consistency", a.consistency_pct?a.consistency_pct+"% — "+(a.consistency_effect||"mechanic UNVERIFIED"):"none"],
-  ];
-  $("#verdictBody").innerHTML = `
-    <p><b>This tab is the honest one.</b> The Prop Firm tab answers
-    “what are the odds”; this one answers “should you believe them”.</p>
-    <table class="kv">${rows.map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</table>
-    ${(a.unmodeled&&a.unmodeled.length)?`<p style="margin-top:14px">
-      <b>${a.unmodeled.length} rule(s) this simulator does not model:</b></p>
-      <ul>${a.unmodeled.map(u=>`<li>${u}</li>`).join("")}</ul>`:""}
-    <p style="margin-top:16px"><b>How many times have you looked?</b> Every run is
-    recorded in an append-only ledger before its result is drawn, and the
-    <b>Trials</b> tab shows the count next to the best t-statistic and next to the
-    value noise alone would reach at that count. A P(pass) figure is a pricing
-    estimate for an <i>already-validated</i> edge — never a reason to believe an
-    edge exists. Optimising a strategy against it is the documented failure mode,
-    not a feature.</p>`;
-}
-
-$("#mcBody").innerHTML = `
-  <p>With no trade source selected, the Monte Carlo resamples a <b>parametric</b>
-  trade profile (win rate, reward:risk, risk per contract, trades per day,
-  friction). 10,000 draws of the same estimated parameters are not 10,000 pieces
-  of evidence — the uncertainty in P(pass) is inherited entirely from the
-  uncertainty in those parameters and then passed through a steep non-linear
-  map.</p>
-  <p><b>Known modelling gaps, stated rather than hidden:</b></p>
-  <ul>
-    <li>The two phases are <b>chained</b>: each path carries its own pass day into
-    the funded phase, so it gets the remaining planning horizon rather than a
-    fresh one, and days-to-first-payout is measured from the day the evaluation
-    was bought. What is <i>not</i> carried over is the balance — every firm here
-    starts a funded account at its own nominal figure.</li>
-    <li>Intra-trade excursion is <b>modelled, not simulated</b>: a Bernoulli trade
-    has no price path, so a winner's worst excursion is assumed to be half its
-    stop distance (<code>MAE_FRAC_WIN = 0.5</code>). This is the largest single
-    assumption in the engine and it only bites when the breach basis is intraday.</li>
-    <li>All of the above applies <b>only to the parametric profiles</b>. Pick a
-    real trade source — an account, a backtest, an imported NinjaTrader run — and
-    the bootstrap resamples whole trading days with their real per-trade
-    excursions, which removes the assumption above entirely.</li>
-  </ul>
-  <p><b>Regimes is disabled on purpose.</b> Slicing results by market regime after
-  the fact is p-hacking with a chart attached. If it is ever added it must
-  increment the trial counter.</p>`;
-
 /* ---------- boot ---------- */
 function loadAccounts(){
   return Promise.all([
@@ -1889,53 +1613,27 @@ fetch("/api/config").then(r=>r.json()).then(c=>{
   fill($("#profile"), Object.keys(c.profiles), "modest edge 1:1");
   fill($("#policy"), c.policies, "fixed-3");
   syncPickers("rapid");
-  renderVerdict();
   loadAccounts();
   $("#foot").textContent="Ready — pick an account and run.";
 });
 anInit();
-$("#firm").onchange=()=>{syncPickers();renderVerdict();};
-$("#variant").onchange=()=>{syncPickers($("#variant").value);renderVerdict();};
-$("#size").onchange=()=>{showWarnings();renderVerdict();};
+$("#firm").onchange=()=>{syncPickers();};
+$("#variant").onchange=()=>{syncPickers($("#variant").value);};
+$("#size").onchange=()=>{showWarnings();};
 document.querySelectorAll("#phase div").forEach(el=>el.onclick=()=>{
   document.querySelectorAll("#phase div").forEach(x=>x.classList.remove("on"));
   el.classList.add("on"); PHASE = el.dataset.v; render();
 });
-$("#bt_contract").onchange=btContract;
-$("#bt_strategy").onchange=btParams;
-$("#bt_prepare").onclick=btPrepare;
-$("#bt_run").onclick=btRun;
-$("#bt_reload").onclick=()=>{
-  $("#bt_status").textContent="Re-scanning…";
-  fetch("/api/plugins/reload").then(r=>r.json()).then(d=>{
-    PLUGINS = d.plugins||[]; STRATS=[];        // force btInit to refetch the list
-    $("#bt_strategy").innerHTML=""; $("#op_strategy").innerHTML="";
-    btInit(); $("#bt_status").textContent="";
-  }).catch(()=>{ $("#bt_status").textContent="Could not re-scan the folder."; });
-};
-$("#bt_all").onclick=()=>{ const c=TAPE.find(x=>x.contract===$("#bt_contract").value);
-  if(c){ $("#bt_start").value=c.first; $("#bt_end").value=c.last; } };
-$("#bt_score").onclick=()=>{
-  // hand the backtest to the Prop Firm tab as its trade source
-  let o=[...$("#account").options].find(x=>x.value==="__backtest");
-  if(!o){ o=document.createElement("option"); o.value="__backtest";
-          $("#account").insertBefore(o, $("#account").firstChild); }
-  o.textContent = `backtest — ${BT.summary.label}, ${BT.summary.trades} trades`;
-  $("#account").value="__backtest";
-  document.querySelector('.tab[data-p="prop"]').click();
-  $("#run").click();
-};
 $("#account").onchange=applyAccount;
 $("#run").onclick=run;
 $("#scrub").oninput=e=>drawPaths(+e.target.value);
 document.querySelectorAll(".tab[data-p]").forEach(t=>t.onclick=()=>{
   document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
   t.classList.add("on");
-  for(const p of ["analyzer","prop","verdict","mc","data","backtest","optimize","ai","imported","trials"])
+  for(const p of ["analyzer","prop","mc","data","optimize","ai","imported","trials"])
     $("#pane-"+p).hidden = (p!==t.dataset.p);
   if(t.dataset.p==="analyzer") anInit();
   if(t.dataset.p==="data") loadData();
-  if(t.dataset.p==="backtest") btInit();
   if(t.dataset.p==="optimize") opInit();
   if(t.dataset.p==="ai") aiInit();
   if(t.dataset.p==="imported") loadImports();
@@ -1996,33 +1694,33 @@ $("#op_score").onclick=()=>{
   // source. The sweep never touches the prop-firm numbers itself.
   if(!OP||!OP.rows.length) return;
   const best=OP.rows[0];
-  document.querySelector('.tab[data-p="backtest"]').click();
-  $("#bt_contract").value=OP.contract; btContract();
-  $("#bt_strategy").value=OP.strategy; btParams();
-  $("#bt_tf").value=String(OP.timeframe);
+  document.querySelector('.tab[data-p="analyzer"]').click();
+  $("#an_contract").value=OP.contract; anContract();
+  $("#an_strategy").value=OP.strategy; anParams();
+  $("#an_tf").value=String(OP.timeframe);
   for(const [k,v] of Object.entries(best.params)){
-    const el=$("#bt_p_"+k); if(el) el.value=v;
+    const el=$("#an_p_"+k); if(el) el.value=v;
   }
-  $("#bt_slip").value=OP.slippage_ticks; $("#bt_comm").value=OP.commission;
-  $("#bt_run").click();
+  $("#an_slip").value=OP.slippage_ticks; $("#an_comm").value=OP.commission;
+  $("#an_run").click();
 };
-$("#bt_measure").onclick=()=>{
-  const c=$("#bt_contract").value;
-  $("#bt_measure").disabled=true;
-  $("#bt_slipnote").textContent="Measuring the spread you actually faced…";
+$("#an_measure").onclick=()=>{
+  const c=$("#an_contract").value;
+  $("#an_measure").disabled=true;
+  $("#an_slipnote").textContent="Measuring the spread you actually faced…";
   fetch("/api/slippage?contract="+encodeURIComponent(c)).then(r=>r.json()).then(d=>{
-    $("#bt_measure").disabled=false;
-    if(d.error){ $("#bt_slipnote").textContent=d.error; return; }
+    $("#an_measure").disabled=false;
+    if(d.error){ $("#an_slipnote").textContent=d.error; return; }
     // The floor is filled in, never the stress value: a tool that quietly picks
     // the friendlier number for you is not measuring anything.
-    $("#bt_slip").value=d.floor_ticks;
-    $("#bt_slipnote").innerHTML = `Spread median <b>${d.spread_p50}</b> / p90
+    $("#an_slip").value=d.floor_ticks;
+    $("#an_slipnote").innerHTML = `Spread median <b>${d.spread_p50}</b> / p90
       <b>${d.spread_p90}</b> ticks, tick-gap p90 <b>${d.gap_p90}</b>, over
       ${d.ticks.toLocaleString()} of your own ticks (${d.session}). Floor
       <b>${d.floor_ticks}</b> ticks/side has been filled in above; the stress
       assumption is <b>${d.stress_ticks}</b> — run both.`;
-  }).catch(()=>{ $("#bt_measure").disabled=false;
-    $("#bt_slipnote").textContent="Could not measure this contract."; });
+  }).catch(()=>{ $("#an_measure").disabled=false;
+    $("#an_slipnote").textContent="Could not measure this contract."; });
 };
 
 function loadData(root, force){
