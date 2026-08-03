@@ -758,7 +758,14 @@ class Handler(BaseHTTPRequestHandler):
                     combos=[dict(variant=v, phase=ph, size=s)
                             for v, ph, s in combos])).encode(),
                     "application/json")
-            rs = pr.select(firm, variant, phase, int(size))
+            try:
+                rs = pr.select(firm, variant, phase, int(size))
+            except (KeyError, ValueError) as exc:
+                return self._send(200, json.dumps(dict(
+                    firms=pr.firms(),
+                    combos=[dict(variant=v, phase=ph, size=s)
+                            for v, ph, s in combos],
+                    error=str(exc))).encode(), "application/json")
             body = json.dumps(dict(
                 firms=pr.firms(),
                 combos=[dict(variant=v, phase=ph, size=s)
