@@ -12,7 +12,7 @@ Everything runs on your machine. There is no account, no upload, and no network
 call except an optional check for a newer rule file.
 
 ```
-Prop Firm   Verdict   Risk & Monte Carlo   Backtest   Optimize   AI author   Imported   Trials   Data
+Backtesting   Prop Firm   Verdict   Risk & Monte Carlo   Backtest (legacy)   Optimize   AI author   Imported   Trials   Data
 ```
 
 ---
@@ -61,6 +61,23 @@ the NinjaScript Editor — full instructions and the one-click archive are in
 ---
 
 ## Use
+
+### Backtesting
+
+NinjaTrader's Strategy Analyzer layout with the prop-firm rules built in. Pick a
+firm and an account variant and its drawdown basis comes with it — real-time
+trailing or end-of-day — then read the same run two ways: the raw report, and
+what the account actually did under those rules.
+
+Only PropSim's own Python strategies run here. They are the only source with a
+tick-measured intra-trade path, which is what makes the real-time drawdown
+verdict exact rather than an upper bound. Runs imported from NinjaTrader keep
+their own tab for that reason.
+
+One run writes one trial to the ledger, and the noise ceiling is shown next to
+the t-statistic rather than on another screen.
+
+The older **Backtest (legacy)** tab still works and is on its way out.
 
 ### 1. Data — point it at NinjaTrader once
 

@@ -88,6 +88,23 @@
   #gate{position:fixed;inset:0;background:#000c;z-index:50;
         display:flex;align-items:center;justify-content:center;padding:20px}
   #gate[hidden]{display:none}
+  .an-wrap{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+  .an-settings{position:sticky;top:8px;max-height:calc(100vh - 90px);overflow:auto;
+    border:1px solid var(--line,#333);border-radius:6px;padding:10px}
+  .an-settings h4{margin:12px 0 6px;font-size:12px;text-transform:uppercase;
+    letter-spacing:.05em;opacity:.7}
+  .an-settings > label{display:flex;justify-content:space-between;align-items:center;
+    gap:8px;margin:4px 0;font-size:13px}
+  .an-settings > label input,.an-settings > label select{width:170px}
+  .an-derived{border-top:1px solid var(--line,#333);margin-top:8px;padding-top:8px;
+    font-size:12px}
+  .an-derived div{display:flex;justify-content:space-between;margin:2px 0}
+  .an-report table{width:100%;border-collapse:collapse;font-size:13px}
+  .an-report td{padding:2px 6px}
+  .an-report td:not(:first-child){text-align:right;font-variant-numeric:tabular-nums}
+  .an-report tr.sep td{border-top:1px solid var(--line,#333);height:10px}
+  @media(max-width:900px){.an-wrap{grid-template-columns:1fr}
+    .an-settings{position:static;max-height:none}}
 </style>
 
 <div id="gate" hidden>
@@ -114,11 +131,12 @@
 
 <div class="wrap">
   <div class="tabs">
-    <div class="tab on"  data-p="prop">Prop Firm</div>
+    <div class="tab on"  data-p="analyzer">Backtesting</div>
+    <div class="tab alt" data-p="prop">Prop Firm</div>
     <div class="tab alt" data-p="verdict">Verdict</div>
     <div class="tab alt off" title="disabled on purpose — see the Verdict tab">Regimes</div>
     <div class="tab alt" data-p="mc">Risk &amp; Monte Carlo</div>
-    <div class="tab alt" data-p="backtest">Backtest</div>
+    <div class="tab alt" data-p="backtest">Backtest (legacy)</div>
     <div class="tab alt" data-p="optimize">Optimize</div>
     <div class="tab alt" data-p="ai">AI author</div>
     <div class="tab alt" data-p="imported">Imported</div>
@@ -126,7 +144,7 @@
     <div class="tab alt" data-p="data">Data</div>
   </div>
 
-  <div id="pane-prop">
+  <div id="pane-prop" hidden>
     <div class="bar">
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <select id="firm"></select>
@@ -259,6 +277,58 @@
             <button id="bt_score" class="primary">Score this against a prop firm →</button>
           </div>
           <div id="bt_trades" style="max-height:320px;overflow:auto"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pane-analyzer">
+    <div class="panebody an-wrap">
+      <div class="an-report">
+        <div class="row">
+          <button id="an_raw" class="mini primary">Raw backtest</button>
+          <button id="an_prop" class="mini">Prop-firm reality</button>
+        </div>
+        <div id="an_report"><p class="hint">Choose an account and press Run.</p></div>
+      </div>
+
+      <div class="an-settings">
+        <h4>General</h4>
+        <label>Backtest type
+          <select id="an_bttype" disabled title="parameter sweeps live on the Optimize tab">
+            <option>Backtest</option></select></label>
+        <label>Strategy <select id="an_strategy"></select></label>
+        <div id="an_params" class="params"></div>
+
+        <h4>Prop firm account</h4>
+        <label>Firm <select id="an_firm"></select></label>
+        <label>Variant <select id="an_variant"></select></label>
+        <label>Phase <select id="an_phase"></select></label>
+        <label>Size <select id="an_size"></select></label>
+        <div id="an_rules" class="an-derived"></div>
+
+        <h4>Data series</h4>
+        <label>Instrument <select id="an_contract"></select></label>
+        <span class="hint" id="an_range">—</span>
+        <label>Type <input id="an_bartype" value="Minute" disabled></label>
+        <label>Value <select id="an_tf">
+          <option>1</option><option>3</option><option selected>5</option>
+          <option>15</option><option>30</option><option>60</option></select></label>
+
+        <h4>Time frame</h4>
+        <label>Start date <input type="date" id="an_start"></label>
+        <label>End date <input type="date" id="an_end"></label>
+
+        <h4>Setup</h4>
+        <label>Contracts <input type="number" id="an_contracts" value="1"
+               min="1" max="50" step="1"></label>
+        <label>Commission <input type="number" id="an_comm" value="5"
+               min="0" step="0.5"></label>
+        <label>Slippage <input type="number" id="an_slip" value="2"
+               min="0" max="20" step="0.5"></label>
+
+        <div class="row" style="justify-content:flex-end;margin-top:12px">
+          <button id="an_run" class="primary">Run</button>
         </div>
       </div>
     </div>
@@ -804,6 +874,292 @@ function render(){
   $("#loseLabel").textContent=v.loseLabel;
   $("#medLabel").textContent=v.medLabel;
 }
+
+/* ---------- analyzer tab (Backtesting) ---------- */
+let AN = {combos:[], rules:null, ready:false, view:"raw"};
+
+async function anInit(){
+  if(AN.ready) return; AN.ready = true;
+  const tape = await (await fetch("/api/tape")).json();
+  // Only contracts whose tick cache exists can be backtested. Offering the rest
+  // would put a Run button in front of data that is not there yet.
+  AN.tape = (tape.contracts || []).filter(c => c.ready);
+  const sel = $("#an_contract"); sel.innerHTML = "";
+  for(const c of AN.tape){
+    const o = document.createElement("option");
+    o.value = o.textContent = c.contract; sel.appendChild(o);
+  }
+  if(!AN.tape.length)
+    $("#an_report").innerHTML = '<div class="warn">No contract has a tick cache '
+      + 'yet. Build one on the Data tab, then come back.</div>';
+  sel.onchange = anContract; anContract();
+
+  const st = await (await fetch("/api/strategies")).json();
+  AN.strategies = {};
+  const s = $("#an_strategy"); s.innerHTML = "";
+  for(const S of (st.strategies || [])){
+    AN.strategies[S.name] = S;
+    const o = document.createElement("option");
+    o.value = S.name; o.textContent = S.label || S.name; s.appendChild(o);
+  }
+  s.onchange = anParams; anParams();
+
+  const r = await (await fetch("/api/rules")).json();
+  const f = $("#an_firm"); f.innerHTML = "";
+  for(const name of r.firms){
+    const o = document.createElement("option");
+    o.value = o.textContent = name; f.appendChild(o);
+  }
+  f.onchange = anFirm;
+  // Each level rebuilds the ones below it; only Size, the leaf, goes straight
+  // to the rules. Binding all three to anRules re-fetched rules for a
+  // combination whose Phase and Size lists had not been rebuilt yet.
+  $("#an_variant").onchange = anPhases;
+  $("#an_phase").onchange = anSizes;
+  $("#an_size").onchange = anRules;
+  await anFirm();
+}
+
+function anParams(){
+  const S = AN.strategies[$("#an_strategy").value] || {params:[]};
+  $("#an_params").innerHTML = (S.params||[]).map(p=>
+    `<label>${p.key}<input type="number" id="an_p_${p.key}" value="${p.default}"
+      min="${p.lo}" max="${p.hi}" step="any" title="${p.desc||""}"></label>`).join("");
+}
+
+function anContract(){
+  const c = (AN.tape||[]).find(x=>x.contract===$("#an_contract").value);
+  $("#an_range").textContent = c && c.first ? `${c.first} .. ${c.last}` : "—";
+}
+
+async function anFirm(){
+  const r = await (await fetch("/api/rules?firm="+
+    encodeURIComponent($("#an_firm").value))).json();
+  AN.combos = r.combos || [];
+  // Cascading, not a cross product: only combinations that exist are offered.
+  const vs = [...new Set(AN.combos.map(c=>c.variant))];
+  $("#an_variant").innerHTML = vs.map(v=>`<option>${v}</option>`).join("");
+  anPhases();
+}
+
+function anPhases(){
+  const v = $("#an_variant").value;
+  const ps = [...new Set(AN.combos.filter(c=>c.variant===v).map(c=>c.phase))];
+  $("#an_phase").innerHTML = ps.map(p=>`<option>${p}</option>`).join("");
+  anSizes();
+}
+
+function anSizes(){
+  const v = $("#an_variant").value, p = $("#an_phase").value;
+  const ss = [...new Set(AN.combos.filter(c=>c.variant===v&&c.phase===p)
+                                  .map(c=>c.size))].sort((a,b)=>a-b);
+  $("#an_size").innerHTML = ss.map(s=>
+    `<option value="${s}">$${s.toLocaleString()}</option>`).join("");
+  anRules();
+}
+
+async function anRules(){
+  const q = new URLSearchParams({firm:$("#an_firm").value,
+    variant:$("#an_variant").value, phase:$("#an_phase").value,
+    size:$("#an_size").value});
+  const r = await (await fetch("/api/rules?"+q)).json();
+  AN.rules = r.rules;
+  if(!r.rules){
+    $("#an_rules").innerHTML =
+      '<div class="warn">' + (r.error || "these rules could not be loaded")
+      + '</div>';
+    return;
+  }
+  const R = r.rules, money = v => v==null ? "—" : "$"+v.toLocaleString();
+  const ratchet = {none:"none (static floor)", eod_close:"END OF DAY",
+                   intraday_equity:"INTRADAY (unrealized equity)"}[R.hwm_basis]
+                  || R.hwm_basis;
+  const breach = R.breach_basis === null ? "UNVERIFIED"
+    : (R.breach_basis === "intraday_equity"
+       ? "real time, includes unrealized" : "realized only, at the close");
+  $("#an_rules").innerHTML =
+    [["Drawdown", money(R.max_dd)], ["Ratchet", ratchet], ["Breach", breach],
+     ["Floor lock", money(R.dd_floor_lock)],
+     ["Profit target", money(R.profit_target)],
+     ["Daily loss limit", money(R.daily_loss_limit)],
+     ["Max contracts", R.max_contracts ?? "—"]]
+    .map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join("")
+    + (R.warnings||[]).map(w=>`<div class="warn">${w}</div>`).join("");
+}
+
+const anMoney = v => v==null ? "—"
+  : (v<0?"-":"+")+"$"+Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,
+                                                            maximumFractionDigits:2});
+const anNum = (v,d=2) => v==null ? "—"
+  : (v===Infinity ? "∞" : v.toFixed(d));
+const anPct = v => v==null ? "—" : (100*v).toFixed(1)+"%";
+
+async function anRun(){
+  const q = new URLSearchParams({contract:$("#an_contract").value,
+    strategy:$("#an_strategy").value, tf:$("#an_tf").value,
+    start:$("#an_start").value||"", end:$("#an_end").value||"",
+    contracts:$("#an_contracts").value, commission:$("#an_comm").value,
+    slippage:$("#an_slip").value, firm:$("#an_firm").value,
+    variant:$("#an_variant").value, phase:$("#an_phase").value,
+    size:$("#an_size").value});
+  for(const p of ((AN.strategies[$("#an_strategy").value]||{}).params||[]))
+    q.set("p_"+p.key, $("#an_p_"+p.key).value);
+
+  $("#an_run").disabled = true;
+  $("#an_report").innerHTML = '<p class="hint">running…</p>';
+  const es = new EventSource("/api/analyzer?"+q);
+  es.addEventListener("progress", e=>{
+    $("#an_report").innerHTML =
+      '<p class="hint">'+JSON.parse(e.data).stage+'…</p>'; });
+  es.addEventListener("result", e=>{
+    AN.report = JSON.parse(e.data); es.close();
+    $("#an_run").disabled = false; anRender(); });
+  es.addEventListener("error", e=>{
+    es.close(); $("#an_run").disabled = false;
+    $("#an_report").innerHTML =
+      '<div class="warn">'+((e.data&&JSON.parse(e.data).message)||
+      "the run stopped before it finished")+'</div>'; });
+}
+
+function anRender(){
+  const R = AN.report; if(!R) return;
+  $("#an_raw").classList.toggle("primary", AN.view!=="prop");
+  $("#an_prop").classList.toggle("primary", AN.view==="prop");
+  if(!R.has_trades){
+    $("#an_report").innerHTML =
+      '<div class="warn">No trades in this range. There is nothing to judge, '
+      + 'so no account verdict is given.</div>';
+    return;
+  }
+  $("#an_report").innerHTML = AN.view==="prop" ? anProp(R) : anGrid(R);
+}
+
+function anGrid(R){
+  const g = R.grid, row = (label, f, fmt=anMoney) =>
+    `<tr><td>${label}</td><td>${fmt(g.all[f])}</td>`
+    + `<td>${fmt(g.long[f])}</td><td>${fmt(g.short[f])}</td></tr>`;
+  // Some cells need the whole column, not one field: profit factor has to tell
+  // "no gross loss" apart from "not computable", and both arrive as null.
+  const colrow = (label, f) =>
+    `<tr><td>${label}</td><td>${f(g.all)}</td>`
+    + `<td>${f(g.long)}</td><td>${f(g.short)}</td></tr>`;
+  // "no GROSS loss", not "no losing trades": profit factor is built from the
+  // gross partition, while the "# of losing trades" row below counts on the
+  // net one. A trade that lost less than its commission is a gross winner and
+  // a net loser, so the two rows can honestly disagree -- and did, reading
+  // "∞ (no losing trades)" directly above "# of losing trades  3".
+  const pf = c => c.trades===0 ? "—"
+    : (c.no_losses ? "∞ (no gross loss)" : anNum(c.profit_factor));
+  const one = (label, v) => `<tr><td>${label}</td><td>${v}</td><td></td><td></td></tr>`;
+  const n = R.noise, t = R.t_daily;
+  return `<table>
+    <tr><td><b>Performance</b></td><td><b>All trades</b></td>
+        <td><b>Long</b></td><td><b>Short</b></td></tr>
+    ${row("Total net profit","net_profit")}
+    ${row("Gross profit","gross_profit")}
+    ${row("Gross loss","gross_loss")}
+    ${row("Commission","commission",v=>anMoney(-v))}
+    ${colrow("Profit factor",pf)}
+    ${row("Max. drawdown (equity curve)","max_drawdown")}
+    <tr class="sep"><td colspan="4"></td></tr>
+    ${row("Total # of trades","trades",v=>String(v))}
+    ${row("Percent profitable","pct_profitable",anPct)}
+    ${row("# of winning trades","wins",v=>String(v))}
+    ${row("# of losing trades","losses",v=>String(v))}
+    ${row("# of even trades","evens",v=>String(v))}
+    <tr class="sep"><td colspan="4"></td></tr>
+    ${row("Avg. trade","avg_trade")}
+    ${row("Avg. winning trade","avg_win")}
+    ${row("Avg. losing trade","avg_loss")}
+    ${row("Ratio avg win / avg loss","win_loss_ratio",v=>anNum(v))}
+    ${row("Max consec. winners","max_consec_wins",v=>String(v))}
+    ${row("Max consec. losers","max_consec_losses",v=>String(v))}
+    ${row("Largest winning trade","largest_win")}
+    ${row("Largest losing trade","largest_loss")}
+    ${row("Avg. # of trades per day","per_day",v=>anNum(v))}
+    <tr class="sep"><td colspan="4"></td></tr>
+    ${one("Start date / End date", R.meta.start+" .. "+R.meta.end)}
+    ${row("Avg. MAE","avg_mae")}
+    ${row("Avg. MFE","avg_mfe")}
+    ${row("Avg. intra-trade fall","avg_fall")}
+    ${row("Max. intra-trade fall","max_fall")}
+    <tr class="sep"><td colspan="4"></td></tr>
+    ${one("t-stat (daily)", anNum(t))}
+  </table>
+  <p class="hint">trial #${n.trials} · noise ceiling at ${n.trials}
+   trials: ${anNum(n.expected_max_t)}</p>
+  ${t==null
+    ? '<div class="hint">Not enough distinct days for a t-statistic, so this '
+      + 'run cannot be measured against the noise ceiling.</div>'
+    : (t<=n.expected_max_t
+       ? '<div class="warn">This t does NOT clear the noise of '+n.trials
+         +' searches. The best of that many null trials is expected to reach '
+         + anNum(n.expected_max_t)+'.</div>'
+       : "")}
+  <p class="hint">"Max. drawdown" above is the equity-curve drawdown over closed
+   trades, NinjaTrader's metric. It is a different number from the prop firm's
+   drawdown, which is on the other view.</p>`;
+}
+
+function anProp(R){
+  const p = R.prop, r = p.run, j = p.projection;
+  if(!p.applicable) return `<div class="warn">This firm's breach basis was never
+    verified against a primary source, so no drawdown verdict is given. Guessing
+    it from what the other firms do would be inventing a rule.</div>`;
+  const verdict = {busted:"BROKE THE ACCOUNT", passed:"PASSED",
+                   open:"STILL OPEN"}[r.outcome];
+  // An account that busted and one that passed both ENDED, and the trades after
+  // that point are fiction either way -- but only one of them died. An account
+  // still open has no such boundary, so it gets no split rather than death
+  // prose over numbers that are simply the whole run.
+  const split = r.outcome==="busted"
+    ? ["P&amp;L until death", "P&amp;L afterwards",
+       "← fiction: the account no longer existed"]
+    : r.outcome==="passed"
+    ? ["P&amp;L to the target", "P&amp;L afterwards",
+       "← fiction: the evaluation had already ended"]
+    : null;
+  return `<h3>${verdict}</h3>
+  <p class="hint">${r.account}</p>
+  <table>
+    ${r.reason ? `<tr><td>Rule</td><td>${r.reason}</td></tr>` : ""}
+    ${r.date ? `<tr><td>When</td><td>${r.date} · day ${r.day}`
+      + (r.trade_of_day ? ` · trade ${r.trade_of_day} of that day` : "")
+      + `</td></tr>` : ""}
+    <tr><td>Deepest intra-trade fall</td><td>${anMoney(r.deepest_fall)}${
+      /* Comparable to the allowance only when the account died on the floor.
+         On a static floor with a cushion the two are unrelated, and the
+         parenthetical would read as a breach on a surviving account. */
+      r.allowed_fall!=null ? ` (allowed ${anMoney(r.allowed_fall)})` : ""
+      }</td></tr>
+    <tr><td>Tightest margin to the floor</td><td>${anMoney(r.margin)}</td></tr>
+    <tr><td>Lowest equity</td><td>${anMoney(r.low_water)}</td></tr>
+    ${split ? `<tr><td>${split[0]}</td><td>${anMoney(r.pnl_until)}</td></tr>
+    <tr><td>${split[1]}</td><td>${anMoney(r.pnl_after)}
+      ${split[2]}</td></tr>` : ""}
+  </table>
+  ${R.over_cap ? '<div class="warn">This run uses more contracts than the '
+    + 'account allows, so it no longer describes that account.</div>' : ""}
+  ${p.fidelity==="bounded" ? '<div class="warn">At least one trade had no '
+    + 'recorded intra-trade path, so its fall was taken at its upper bound. '
+    + 'At size that is not a near miss.</div>' : ""}
+  <h4>Projection — ${j.sims.toLocaleString()} resampled futures</h4>
+  <table>
+    <tr><td>P(pass)</td><td>${anNum(j.p_pass,3)}</td></tr>
+    <tr><td>P(bust)</td><td>${anNum(j.p_bust,3)}</td></tr>
+    <tr><td>P(timeout)</td><td>${anNum(j.p_timeout,3)}</td></tr>
+    <tr><td>Mean days to pass</td><td>${anNum(j.days_to_pass,1)}</td></tr>
+  </table>
+  <p class="hint">Day-block bootstrap over ${j.pool_days} days
+   (${j.distinct_days} distinct daily totals). The verdict above is a fact about
+   this one sequence; these are a projection. Path fidelity:
+   ${p.fidelity.toUpperCase()}.</p>
+  ${(r.warnings||[]).map(w=>`<div class="warn">${w}</div>`).join("")}`;
+}
+
+$("#an_run") && ($("#an_run").onclick = anRun);
+$("#an_raw") && ($("#an_raw").onclick = ()=>{AN.view="raw"; anRender();});
+$("#an_prop") && ($("#an_prop").onclick = ()=>{AN.view="prop"; anRender();});
 
 /* ---------- backtest tab ---------- */
 let TAPE=[], STRATS=[], PLUGINS=[], BT=null;
@@ -1537,6 +1893,7 @@ fetch("/api/config").then(r=>r.json()).then(c=>{
   loadAccounts();
   $("#foot").textContent="Ready — pick an account and run.";
 });
+anInit();
 $("#firm").onchange=()=>{syncPickers();renderVerdict();};
 $("#variant").onchange=()=>{syncPickers($("#variant").value);renderVerdict();};
 $("#size").onchange=()=>{showWarnings();renderVerdict();};
@@ -1574,8 +1931,9 @@ $("#scrub").oninput=e=>drawPaths(+e.target.value);
 document.querySelectorAll(".tab[data-p]").forEach(t=>t.onclick=()=>{
   document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
   t.classList.add("on");
-  for(const p of ["prop","verdict","mc","data","backtest","optimize","ai","imported","trials"])
+  for(const p of ["analyzer","prop","verdict","mc","data","backtest","optimize","ai","imported","trials"])
     $("#pane-"+p).hidden = (p!==t.dataset.p);
+  if(t.dataset.p==="analyzer") anInit();
   if(t.dataset.p==="data") loadData();
   if(t.dataset.p==="backtest") btInit();
   if(t.dataset.p==="optimize") opInit();
