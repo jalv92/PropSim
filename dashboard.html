@@ -93,9 +93,9 @@
     border:1px solid var(--line,#333);border-radius:6px;padding:10px}
   .an-settings h4{margin:12px 0 6px;font-size:12px;text-transform:uppercase;
     letter-spacing:.05em;opacity:.7}
-  .an-settings label{display:flex;justify-content:space-between;align-items:center;
+  .an-settings > label{display:flex;justify-content:space-between;align-items:center;
     gap:8px;margin:4px 0;font-size:13px}
-  .an-settings input,.an-settings select{width:170px}
+  .an-settings > label input,.an-settings > label select{width:170px}
   .an-derived{border-top:1px solid var(--line,#333);margin-top:8px;padding-top:8px;
     font-size:12px}
   .an-derived div{display:flex;justify-content:space-between;margin:2px 0}
@@ -963,7 +963,13 @@ async function anRules(){
     variant:$("#an_variant").value, phase:$("#an_phase").value,
     size:$("#an_size").value});
   const r = await (await fetch("/api/rules?"+q)).json();
-  AN.rules = r.rules; if(!r.rules) return;
+  AN.rules = r.rules;
+  if(!r.rules){
+    $("#an_rules").innerHTML =
+      '<div class="warn">' + (r.error || "these rules could not be loaded")
+      + '</div>';
+    return;
+  }
   const R = r.rules, money = v => v==null ? "—" : "$"+v.toLocaleString();
   const ratchet = {none:"none (static floor)", eod_close:"END OF DAY",
                    intraday_equity:"INTRADAY (unrealized equity)"}[R.hwm_basis]
