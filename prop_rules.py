@@ -620,14 +620,35 @@ def selfcheck():
     assert apex.automation_allowed is False
     assert any("PROHIBITS AUTOMATED" in w for w in apex.warnings())
 
-    # Lucid breach_basis is UNVERIFIED and must NOT have been defaulted to the
-    # majority value; it must also mark itself unverified
+    # Lucid's breach basis is UNVERIFIED wherever its documentation says
+    # "balance" and never "equity", and must NOT be defaulted to the majority
+    # value. ONE product states it outright: LucidDaily's intraday-drawdown
+    # configurations, whose customization article says the drawdown "is
+    # monitored continuously throughout the trading session; unrealized profits
+    # and losses are included in the calculation". Those may carry it and
+    # nothing else may -- which is what these two asserts pin down. Widening
+    # this to "all Lucid rows may have a breach basis" would re-open exactly the
+    # assumption the original assert existed to block.
     luc = [r for r in rows if r.firm == "lucid_trading"]
     assert luc, "lucid rows missing"
-    assert all(r.breach_basis is None for r in luc), \
-        "Lucid breach_basis was defaulted -- the source never states it"
-    assert all(not r.verified for r in luc)
-    assert any("breach_basis UNVERIFIED" in w for w in luc[0].warnings())
+    stated = [r for r in luc if r.breach_basis is not None]
+    assert all(r.variant.startswith("luciddaily_") for r in stated), \
+        "a Lucid product other than LucidDaily grew a breach basis its source never states"
+    assert all(r.hwm_basis == INTRA for r in stated), \
+        "LucidDaily's breach basis is stated only for its INTRADAY drawdown"
+    assert any(r.breach_basis is None for r in luc), \
+        "Lucid's unverified rows vanished -- the majority assumption crept in"
+    # `verified` is derived as "we know what this account breaches on", so the
+    # LucidDaily intraday rows are legitimately verified now. What must stay
+    # true is the converse: a Lucid row whose basis is NOT stated may never be
+    # presented as verified, and must still carry the warning that says so.
+    unstated = [r for r in luc if r.breach_basis is None]
+    assert unstated, "Lucid's unverified products vanished"
+    assert all(not r.verified for r in unstated), \
+        "a Lucid row with no stated breach basis is marked verified"
+    assert all(any("breach_basis UNVERIFIED" in w for w in r.warnings())
+               for r in unstated), \
+        "an unverified Lucid account stopped warning that its breach basis is a guess"
 
     # every row that trails must say what it breaches on, or be flagged
     for r in rows:
