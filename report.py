@@ -28,15 +28,21 @@ def _column(trades, commission, days, contracts):
 
     `pnl` on a trade is ALREADY net of commission (engine.py books it as
     `gross - costs.commission`), so the gross figures are reconstructed by adding
-    the commission back on. Winners and losers are partitioned on the NET number
-    because that is the one the trader keeps, and the identity
+    the commission back on. The identity
     `gross_profit + gross_loss - commission == net_profit` holds for any
     partition that covers every trade.
+
+    TWO PARTITIONS, ON PURPOSE. The gross rows split on `gross > 0`, because a
+    trade that lost less than the commission is a gross winner and summing it
+    into gross loss makes a POSITIVE gross loss and an inflated profit factor.
+    The net rows -- avg win/loss, win-loss ratio, consecutives, largest, percent
+    profitable -- split on `net`, because that is the money the trader kept.
     """
     n = len(trades)
     if not n:
         return dict(net_profit=0.0, gross_profit=0.0, gross_loss=0.0,
-                    commission=0.0, profit_factor=None, max_drawdown=0.0,
+                    commission=0.0, profit_factor=None, no_losses=False,
+                    max_drawdown=0.0,
                     trades=0, pct_profitable=None, wins=0, losses=0, evens=0,
                     avg_trade=None, avg_win=None, avg_loss=None,
                     win_loss_ratio=None, max_consec_wins=0, max_consec_losses=0,
@@ -49,6 +55,8 @@ def _column(trades, commission, days, contracts):
     gross = net + commission * k                  # per trade, before commission
     wins = net > 0
     losses = net < 0
+    gross_profit = float(gross[gross > 0].sum())
+    gross_loss = float(gross[gross <= 0].sum())
 
     run = peak = mdd = 0.0
     for v in net:                                  # equity curve of THIS subset
@@ -68,12 +76,17 @@ def _column(trades, commission, days, contracts):
 
     return dict(
         net_profit=float(net.sum()),
-        gross_profit=float(gross[wins].sum()),
-        gross_loss=float(gross[~wins].sum()),
+        gross_profit=gross_profit,
+        gross_loss=gross_loss,
         commission=comm,
-        profit_factor=(None if not len(net) else
-                       (float("inf") if gross[~wins].sum() == 0 else
-                        abs(float(gross[wins].sum() / gross[~wins].sum())))),
+        profit_factor=(None if gross_profit == 0 and gross_loss == 0 else
+                       (float("inf") if gross_loss == 0 else
+                        abs(gross_profit / gross_loss))),
+        # Infinity does not survive JSON (`dashboard._jsonable` nulls it), and a
+        # null renders as an em dash -- the same thing "not computable" renders
+        # as. A run with no losing trade is a real, reachable result and has to
+        # be told apart from one the report could not measure.
+        no_losses=bool(gross_loss == 0),
         max_drawdown=mdd,
         trades=n,
         pct_profitable=float(wins.mean()),
@@ -128,21 +141,35 @@ def prop(trades, rules, contracts=1, sims=20_000, rng=None):
 
     rep = sim.replay(ordered, rules, contracts=contracts)
     after = 0.0
-    if rep["outcome"] == "busted" and rep["date"] is not None:
+    lived = len(ordered)          # trades that were actually taken
+    if rep["outcome"] in ("busted", "passed") and rep["date"] is not None:
         # Walk to the trade the replay named and sum from there. Deriving this
         # from the trade list rather than from `total - rep["profit"]` is the
         # point: the two only agree if the replay's indices are right.
-        same_day = [t for t in ordered if t.date == rep["date"]]
-        killer = same_day[rep["trade_of_day"] - 1]
-        idx = ordered.index(killer)
-        # WHY the account died decides whether the killing trade ever booked.
-        # `sim.replay` breaches inside a trade BEFORE `bal += pnl` -- the trade
-        # never finished, so its P&L is fiction. The close test and the daily
-        # loss limit both fire AFTER it: that money really moved, and calling it
-        # fiction tells the trader the opposite of what happened.
-        if rep["reason"] != "drawdown floor, inside the trade":
-            idx += 1
+        on_day = [i for i, t in enumerate(ordered) if t.date == rep["date"]]
+        if rep["outcome"] == "passed":
+            # A PASS IS DETECTED AT THE END OF A DAY, so `trade_of_day` is None
+            # and every trade on that date really happened. The evaluation ended
+            # there: the next day's trades are as fictional as post-bust ones.
+            idx = lived = on_day[-1] + 1
+        else:
+            idx = lived = on_day[rep["trade_of_day"] - 1] + 1
+            # WHY the account died decides whether the killing trade ever
+            # booked. `sim.replay` breaches inside a trade BEFORE `bal += pnl`
+            # -- the trade never finished, so its P&L is fiction. The close test
+            # and the daily loss limit both fire AFTER it: that money really
+            # moved, and calling it fiction tells the trader the opposite of
+            # what happened. Its FALL is real either way -- an intra-trade
+            # breach IS that fall -- so `lived` includes it regardless.
+            if rep["reason"] == "drawdown floor, inside the trade":
+                idx -= 1
         after = sum(t.pnl for t in ordered[idx:]) * contracts
+
+    # A per-trade excursion is comparable to `max_dd` only when the floor is
+    # what the trade was measured against -- i.e. when the account died on it.
+    # On a static floor with a cushion the two are unrelated, and a bare
+    # "(allowed $2,000)" next to $2,700 reads as a breach on a healthy account.
+    floor_breach = (rep["reason"] or "").startswith("drawdown floor")
 
     pool = nttrades.to_pool(ordered)
     prof = dict(p=0.5, rr=1.0, risk=200.0, tpd=pool["width"],
@@ -165,9 +192,13 @@ def prop(trades, rules, contracts=1, sims=20_000, rng=None):
             outcome=rep["outcome"], reason=rep["reason"],
             date=rep["date"], day=rep["day"],
             trade_of_day=rep["trade_of_day"],
-            deepest_fall=(max(t.intra_mdd for t in ordered) * contracts
+            # Over the trades that HAPPENED only. On a busted account the
+            # deepest fall of the whole list can come from a trade after the
+            # breach -- printed one row above the split whose entire job is
+            # keeping those two worlds apart.
+            deepest_fall=(max(t.intra_mdd for t in ordered[:lived]) * contracts
                           if ordered else 0.0),
-            allowed_fall=rules.max_dd,
+            allowed_fall=rules.max_dd if floor_breach else None,
             margin=rep["margin"], low_water=rep["low_water"],
             best_day=rep["best_day"], days=rep["days"],
             pnl_until=total - after, pnl_after=after,
@@ -226,6 +257,21 @@ def selfcheck():
     for k in ("net_profit", "gross_profit", "gross_loss", "trades", "commission"):
         assert abs(g["long"][k] + g["short"][k] - g["all"][k]) < 0.01, (k, g)
 
+    # A TRADE THAT LOST LESS THAN THE COMMISSION IS A GROSS WINNER. Splitting
+    # the gross rows on the net sign sums it into gross loss -- which makes a
+    # POSITIVE gross loss and a profit factor biased upward, every time. The
+    # identity above cannot see it: it holds for any partition.
+    scalp = grid([_t(1, i, -2.0, -20.0, 5.0, 22.0) for i in (1, 2, 3)]
+                 + [_t(2, 1, 40.0, -10.0, 60.0, 12.0)], meta)["all"]
+    assert scalp["gross_profit"] == 54.0 and scalp["gross_loss"] == 0.0, scalp
+    assert abs(scalp["gross_profit"] + scalp["gross_loss"]
+               - scalp["commission"] - scalp["net_profit"]) < 0.01, scalp
+    # ...and "no losing trades" is a reachable answer, not the em dash that
+    # "not computable" renders as, so it gets its own flag rather than an
+    # infinity JSON cannot carry.
+    assert scalp["no_losses"] is True and scalp["profit_factor"] == float("inf")
+    assert scalp["losses"] == 3, scalp   # the NET rows still say what was kept
+
     # ---- the prop-firm block ------------------------------------------------
     rules = RuleSet(
         firm="test", variant="test", phase="evaluation", size=50_000,
@@ -245,11 +291,19 @@ def selfcheck():
     fatal = [_t(1, 1, 300.0, -100.0, 400.0, 100.0),
              _t(2, 1, 200.0, -100.0, 300.0, 100.0),
              _t(2, 2, -900.0, -2600.0, 100.0, 2700.0),
-             _t(3, 1, 5000.0, -50.0, 5200.0, 50.0)]
+             _t(3, 1, 5000.0, -50.0, 5200.0, 9000.0)]
     p = prop(fatal, rules, contracts=1, sims=500,
              rng=np.random.default_rng(4))
     assert p["run"]["outcome"] == "busted", p
     assert (p["run"]["day"], p["run"]["trade_of_day"]) == (2, 2), p
+
+    # The deepest fall must come from the trades that HAPPENED. Day 3 falls
+    # $9,000 on an account that died on day 2, and printing that as this run's
+    # deepest fall contradicts the split two rows below it.
+    assert p["run"]["deepest_fall"] == 2700.0, p
+    # The account died ON the floor, so the allowance is the number it was
+    # measured against and the comparison is honest.
+    assert p["run"]["allowed_fall"] == 2000.0, p
 
     # THE SPLIT MUST ADD UP. `until` comes from the replay's balance and `after`
     # from walking the trade list to the trade the replay named, so the two are
@@ -276,6 +330,42 @@ def selfcheck():
     assert d["run"]["reason"] == "daily loss limit", d
     assert d["run"]["pnl_until"] == -1200.0, d
     assert d["run"]["pnl_after"] == 5000.0, d
+    # A daily loss limit is not a drawdown floor, so there is nothing to compare
+    # the fall against and the allowance is withheld rather than printed beside
+    # an unrelated number.
+    assert d["run"]["allowed_fall"] is None, d
+
+    # A PASSED ACCOUNT ALSO ENDS. The evaluation stops the day the target is
+    # met, so the days after it are exactly as fictional as post-bust trades.
+    # The pass is detected at the END of the day, so every trade on that date is
+    # real. The sum identity cannot catch a wrong boundary here -- it holds
+    # wherever the boundary is put -- so both halves are named.
+    won = [_t(1, 1, 3000.0, -100.0, 3100.0, 100.0),
+           _t(2, 1, 900.0, -50.0, 1000.0, 5000.0),
+           _t(3, 1, 900.0, -50.0, 1000.0, 60.0),
+           _t(4, 1, 900.0, -50.0, 1000.0, 60.0),
+           _t(5, 1, 900.0, -50.0, 1000.0, 60.0)]
+    w = prop(won, rules, contracts=1, sims=200, rng=np.random.default_rng(4))
+    assert w["run"]["outcome"] == "passed", w
+    assert w["run"]["trade_of_day"] is None, w
+    assert w["run"]["pnl_until"] == 3000.0, w
+    assert w["run"]["pnl_after"] == 3600.0, w
+    assert w["run"]["deepest_fall"] == 100.0, w      # not day 2's $5,000
+    assert w["run"]["allowed_fall"] is None, w
+
+    # ---- report composes sim, it does not re-derive it ----------------------
+    # THE ONE PROPERTY THIS MODULE EXISTS TO PRESERVE. Asserted against `sim`
+    # directly so that inlining a drawdown comparison here fails loudly instead
+    # of quietly becoming a third definition of the rule.
+    pool = nttrades.to_pool(fatal)
+    prof = dict(p=0.5, rr=1.0, risk=200.0, tpd=pool["width"],
+                friction=0.0, pool=pool)
+    mc = sim.sim_eval(prof, sim.policy_fixed(1), 500,
+                      np.random.default_rng(4), rules)
+    assert abs(p["projection"]["p_bust"] - float(mc["p_bust"])) < 1e-12, (p, mc)
+    rep = sim.replay(fatal, rules, contracts=1)
+    assert (p["run"]["outcome"], p["run"]["reason"], p["run"]["day"]) == (
+        rep["outcome"], rep["reason"], rep["day"]), (p, rep)
 
     # ---- build --------------------------------------------------------------
     b = build(fatal, dict(meta, days=3), rules, contracts=1, sims=200,
@@ -313,6 +403,16 @@ def selfcheck():
           f"; a daily loss limit still credits its booked loss to the real "
           f"half ({d['run']['pnl_until']:+,.0f} real {d['run']['pnl_after']:+,.0f} "
           f"fiction)"
+          f"; a PASSED account splits at the end of its target day "
+          f"({w['run']['pnl_until']:+,.0f} real {w['run']['pnl_after']:+,.0f} "
+          f"fiction) and its deepest fall "
+          f"({w['run']['deepest_fall']:,.0f}) ignores the days that never "
+          f"happened; the allowance is shown only on a floor breach"
+          f"; gross rows split on gross, so a sub-commission loser is a gross "
+          f"winner (PF {scalp['profit_factor']}, no_losses "
+          f"{scalp['no_losses']})"
+          f"; p_bust equals sim.sim_eval ({mc['p_bust']:.4f}) and the verdict "
+          f"equals sim.replay ({rep['outcome']}/{rep['reason']})"
           f"; an empty range returns zeros instead of raising, and an emptied "
           f"column keeps every key")
 

@@ -32,10 +32,19 @@ way the Backtest tab does. `build()` returns one dict — `grid`, `prop`, `noise
 `meta`, `has_trades` — and the page reads exactly that, twice: **Raw backtest**
 renders `grid` (NinjaTrader's All/Long/Short table, plus PropSim's own
 intra-trade fall rows), **Prop-firm reality** renders `prop` (what this run did
-against the rules picked above — verdict, day, trade, deepest fall vs. allowed,
-the P&L-until-death / fiction-afterwards split — then the same Monte Carlo
-projection the Prop Firm tab shows). Switching between the two is a local
-re-render; it costs no request and no trial.
+against the rules picked above — verdict, day, trade, deepest fall, and the
+real / fiction split of the P&L — then the same Monte Carlo projection the Prop
+Firm tab shows). Switching between the two is a local re-render; it costs no
+request and no trial.
+
+The split exists because **an evaluation ends on a pass as well as on a bust**:
+in both cases the trades after that point never happened, and they are labelled
+accordingly rather than credited to the run. An account still open has no such
+boundary and is shown without a split. The deepest intra-trade fall is taken
+over the trades that happened, and it is compared to the allowance **only when
+the account died on the drawdown floor** — against a static floor with a cushion
+the two numbers are unrelated, and the comparison would read as a breach on a
+surviving account.
 
 **Only PropSim's own strategies run here** — the strategy picker is
 `/api/strategies`, the same list the Backtest tab offers, with no import source
@@ -43,9 +52,11 @@ alongside it. That restriction is what makes the drawdown verdict exact rather
 than an upper bound: these are the only runs with a tick-measured intra-trade
 path (`intra_mdd` on every trade), so a real-time trailing floor can be tested
 against the actual worst equity moment inside a trade, not just its close.
-Runs captured from NinjaTrader (the Imported tab) carry no such path — NinjaTrader
-never records one — so they are read against the end-of-day rules only, on their
-own tab.
+Runs captured from NinjaTrader (the Imported tab) carry no such path —
+NinjaTrader never records one. They are still read against the intraday rules on
+their own tab, but with `mfe - mae` substituted for the missing fall
+(`sim.trade_path`), which is its upper bound: those verdicts are pessimistic
+rather than exact, and the tab says so.
 
 One **Run** writes one trial to the ledger, same as the Backtest tab; an
 identical re-run collapses to the same fingerprint and is not charged twice.

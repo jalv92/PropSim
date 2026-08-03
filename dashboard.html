@@ -876,7 +876,7 @@ function render(){
 }
 
 /* ---------- analyzer tab (Backtesting) ---------- */
-let AN = {combos:[], rules:null, ready:false};
+let AN = {combos:[], rules:null, ready:false, view:"raw"};
 
 async function anInit(){
   if(AN.ready) return; AN.ready = true;
@@ -1038,6 +1038,13 @@ function anGrid(R){
   const g = R.grid, row = (label, f, fmt=anMoney) =>
     `<tr><td>${label}</td><td>${fmt(g.all[f])}</td>`
     + `<td>${fmt(g.long[f])}</td><td>${fmt(g.short[f])}</td></tr>`;
+  // Some cells need the whole column, not one field: profit factor has to tell
+  // "no losing trades" apart from "not computable", and both arrive as null.
+  const colrow = (label, f) =>
+    `<tr><td>${label}</td><td>${f(g.all)}</td>`
+    + `<td>${f(g.long)}</td><td>${f(g.short)}</td></tr>`;
+  const pf = c => c.trades===0 ? "—"
+    : (c.no_losses ? "∞ (no losing trades)" : anNum(c.profit_factor));
   const one = (label, v) => `<tr><td>${label}</td><td>${v}</td><td></td><td></td></tr>`;
   const n = R.noise, t = R.t_daily;
   return `<table>
@@ -1046,8 +1053,8 @@ function anGrid(R){
     ${row("Total net profit","net_profit")}
     ${row("Gross profit","gross_profit")}
     ${row("Gross loss","gross_loss")}
-    ${row("Commission","commission")}
-    ${row("Profit factor","profit_factor",v=>anNum(v))}
+    ${row("Commission","commission",v=>anMoney(-v))}
+    ${colrow("Profit factor",pf)}
     ${row("Max. drawdown (equity curve)","max_drawdown")}
     <tr class="sep"><td colspan="4"></td></tr>
     ${row("Total # of trades","trades",v=>String(v))}
@@ -1096,6 +1103,17 @@ function anProp(R){
     it from what the other firms do would be inventing a rule.</div>`;
   const verdict = {busted:"BROKE THE ACCOUNT", passed:"PASSED",
                    open:"STILL OPEN"}[r.outcome];
+  // An account that busted and one that passed both ENDED, and the trades after
+  // that point are fiction either way -- but only one of them died. An account
+  // still open has no such boundary, so it gets no split rather than death
+  // prose over numbers that are simply the whole run.
+  const split = r.outcome==="busted"
+    ? ["P&amp;L until death", "P&amp;L afterwards",
+       "← fiction: the account no longer existed"]
+    : r.outcome==="passed"
+    ? ["P&amp;L to the target", "P&amp;L afterwards",
+       "← fiction: the evaluation had already ended"]
+    : null;
   return `<h3>${verdict}</h3>
   <p class="hint">${r.account}</p>
   <table>
@@ -1103,13 +1121,17 @@ function anProp(R){
     ${r.date ? `<tr><td>When</td><td>${r.date} · day ${r.day}`
       + (r.trade_of_day ? ` · trade ${r.trade_of_day} of that day` : "")
       + `</td></tr>` : ""}
-    <tr><td>Deepest intra-trade fall</td><td>${anMoney(r.deepest_fall)}
-      (allowed ${anMoney(r.allowed_fall)})</td></tr>
+    <tr><td>Deepest intra-trade fall</td><td>${anMoney(r.deepest_fall)}${
+      /* Comparable to the allowance only when the account died on the floor.
+         On a static floor with a cushion the two are unrelated, and the
+         parenthetical would read as a breach on a surviving account. */
+      r.allowed_fall!=null ? ` (allowed ${anMoney(r.allowed_fall)})` : ""
+      }</td></tr>
     <tr><td>Tightest margin to the floor</td><td>${anMoney(r.margin)}</td></tr>
     <tr><td>Lowest equity</td><td>${anMoney(r.low_water)}</td></tr>
-    <tr><td>P&amp;L until death</td><td>${anMoney(r.pnl_until)}</td></tr>
-    <tr><td>P&amp;L afterwards</td><td>${anMoney(r.pnl_after)}
-      ← fiction: the account no longer existed</td></tr>
+    ${split ? `<tr><td>${split[0]}</td><td>${anMoney(r.pnl_until)}</td></tr>
+    <tr><td>${split[1]}</td><td>${anMoney(r.pnl_after)}
+      ${split[2]}</td></tr>` : ""}
   </table>
   ${R.over_cap ? '<div class="warn">This run uses more contracts than the '
     + 'account allows, so it no longer describes that account.</div>' : ""}
