@@ -134,6 +134,13 @@ def prop(trades, rules, contracts=1, sims=20_000, rng=None):
         same_day = [t for t in ordered if t.date == rep["date"]]
         killer = same_day[rep["trade_of_day"] - 1]
         idx = ordered.index(killer)
+        # WHY the account died decides whether the killing trade ever booked.
+        # `sim.replay` breaches inside a trade BEFORE `bal += pnl` -- the trade
+        # never finished, so its P&L is fiction. The close test and the daily
+        # loss limit both fire AFTER it: that money really moved, and calling it
+        # fiction tells the trader the opposite of what happened.
+        if rep["reason"] != "drawdown floor, inside the trade":
+            idx += 1
         after = sum(t.pnl for t in ordered[idx:]) * contracts
 
     pool = nttrades.to_pool(ordered)
@@ -239,6 +246,18 @@ def selfcheck():
     assert prop(fatal, unver, sims=200,
                 rng=np.random.default_rng(4))["applicable"] is False
 
+    # A daily loss limit fires AFTER the trade booked its loss, unlike an
+    # intra-trade breach: that money really moved. The split adding up does NOT
+    # catch a misattribution here, so the assert names the two halves rather
+    # than their sum.
+    dll_rules = RuleSet(**dict(rules.__dict__, daily_loss_limit=1000.0))
+    hit = [_t(1, 1, -1200.0, -1300.0, 50.0, 1350.0),
+           _t(2, 1, 5000.0, -50.0, 5200.0, 50.0)]
+    d = prop(hit, dll_rules, contracts=1, sims=200, rng=np.random.default_rng(4))
+    assert d["run"]["reason"] == "daily loss limit", d
+    assert d["run"]["pnl_until"] == -1200.0, d
+    assert d["run"]["pnl_after"] == 5000.0, d
+
     print(f"selfcheck OK: grid identity holds on {g['all']['trades']} trades "
           f"(net {g['all']['net_profit']:+,.2f} = gross "
           f"{g['all']['gross_profit']:,.2f} {g['all']['gross_loss']:+,.2f} "
@@ -247,7 +266,10 @@ def selfcheck():
           f"; the account dies on day {p['run']['day']} trade "
           f"{p['run']['trade_of_day']} and the split adds up "
           f"({p['run']['pnl_until']:+,.0f} real {p['run']['pnl_after']:+,.0f} "
-          f"fiction); an unverified breach basis disables the verdict")
+          f"fiction); an unverified breach basis disables the verdict"
+          f"; a daily loss limit still credits its booked loss to the real "
+          f"half ({d['run']['pnl_until']:+,.0f} real {d['run']['pnl_after']:+,.0f} "
+          f"fiction)")
 
 
 def main():
