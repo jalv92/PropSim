@@ -43,6 +43,7 @@ import plugins
 import slippage
 import tape as tp
 import engine
+import report
 
 HERE = Path(__file__).resolve().parent
 PAGE = pr._res("dashboard.html")
@@ -180,6 +181,79 @@ def backtest_stream(q, write):
                      pnl=round(t.pnl, 2), mae=round(t.mae, 2), reason=t.reason)
                 for t in trades[:200]],
         n_shown=min(len(trades), 200)))
+
+
+def _jsonable(v):
+    """NaN and numpy scalars are not JSON. Nulls are, and render as an em dash."""
+    if isinstance(v, dict):
+        return {k: _jsonable(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_jsonable(x) for x in v]
+    if isinstance(v, (np.floating, np.integer)):
+        v = v.item()
+    if isinstance(v, float) and (v != v or v in (float("inf"), float("-inf"))):
+        return None
+    return v
+
+
+def analyzer_stream(q, write):
+    """One run, scored against one prop-firm account, both readings in one payload.
+
+    The toggle in the browser does not re-run anything: re-running on a toggle
+    would charge the ledger twice for one search and could hand back two
+    different numbers for the same question.
+    """
+    contract = q.get("contract", [""])[0]
+    strategy = q.get("strategy", ["orb"])[0]
+    tf = int(q.get("tf", ["5"])[0])
+    start = q.get("start", [""])[0] or None
+    end = q.get("end", [""])[0] or None
+    slip = float(q.get("slippage", ["2"])[0])
+    comm = float(q.get("commission", ["5"])[0])
+    contracts = max(1, int(float(q.get("contracts", ["1"])[0])))
+    rules = pr.select(q.get("firm", [""])[0], q.get("variant", [""])[0],
+                      q.get("phase", [""])[0], int(q.get("size", ["50000"])[0]))
+    params = {}
+    S = engine.LIBRARY[strategy]
+    for k in S.params:
+        v = q.get("p_" + k, [None])[0]
+        if v not in (None, ""):
+            params[k] = float(v)
+
+    write("progress", dict(stage="loading the tape"))
+    costs = engine.Costs(commission=comm, slippage_ticks=slip)
+    trades, meta = engine.backtest(contract, strategy, tf, start, end,
+                                   params=params, costs=costs)
+
+    # BEFORE the report is built, exactly as backtest_stream does it, and as
+    # kind="backtest" so that a run here and a run on the old tab spend the same
+    # search budget. A separate kind would let the same look be laundered into a
+    # fresh trial count.
+    write("progress", dict(stage="recording the trial"))
+    summary = engine.summarise(trades, meta)
+    ledger.append("backtest", strategy=strategy, contract=contract,
+                  fp=ledger.fingerprint(kind="backtest", strategy=strategy,
+                                        contract=contract, tf=tf,
+                                        start=meta["start"], end=meta["end"],
+                                        params=meta["params"],
+                                        slip=slip, comm=comm),
+                  timeframe=f"{tf}m", start=meta["start"], end=meta["end"],
+                  params=meta["params"], trades=len(trades),
+                  pnl=round(summary["pnl"], 2),
+                  t_daily=(None if summary["t_daily"] != summary["t_daily"]
+                           else round(summary["t_daily"], 3)),
+                  slippage_ticks=slip, commission=comm)
+
+    write("progress", dict(stage="scoring against the account"))
+    rep = report.build(trades, meta, rules, contracts=contracts, sims=20_000,
+                       rng=np.random.default_rng(7))
+    rep["t_daily"] = (None if summary["t_daily"] != summary["t_daily"]
+                      else round(summary["t_daily"], 3))
+    # Reported, not enforced: sizing past the account's cap is the user's call,
+    # but the report has to say the run no longer describes that account.
+    rep["over_cap"] = bool(rules.max_contracts
+                           and contracts > rules.max_contracts)
+    write("result", _jsonable(rep))
 
 
 def _reload_plugins():
@@ -662,6 +736,45 @@ class Handler(BaseHTTPRequestHandler):
             return self._sse(parse_qs(u.query), prepare_stream)
         if u.path == "/api/backtest":
             return self._sse(parse_qs(u.query), backtest_stream)
+        if u.path == "/api/analyzer":
+            return self._sse(parse_qs(u.query), analyzer_stream)
+        if u.path == "/api/rules":
+            q = parse_qs(u.query)
+            firm = q.get("firm", [""])[0]
+            if not firm:
+                return self._send(200, json.dumps(dict(
+                    firms=pr.firms())).encode(), "application/json")
+            variant = q.get("variant", [""])[0]
+            phase = q.get("phase", [""])[0]
+            size = q.get("size", [""])[0]
+            combos = pr.variants(firm)
+            if not (variant and phase and size):
+                # The dropdowns cascade from what EXISTS. LucidDirect has no
+                # evaluation phase and LucidMaxx has no funded-sim one, so
+                # offering the cross product would let the user build a request
+                # that cannot be answered.
+                return self._send(200, json.dumps(dict(
+                    firms=pr.firms(),
+                    combos=[dict(variant=v, phase=ph, size=s)
+                            for v, ph, s in combos])).encode(),
+                    "application/json")
+            rs = pr.select(firm, variant, phase, int(size))
+            body = json.dumps(dict(
+                firms=pr.firms(),
+                combos=[dict(variant=v, phase=ph, size=s)
+                        for v, ph, s in combos],
+                rules=dict(
+                    firm=rs.firm, variant=rs.variant, phase=rs.phase,
+                    size=rs.size, start_balance=rs.start_balance,
+                    max_dd=rs.max_dd, hwm_basis=rs.hwm_basis,
+                    breach_basis=rs.breach_basis,
+                    dd_floor_lock=rs.dd_floor_lock,
+                    profit_target=rs.profit_target,
+                    daily_loss_limit=rs.daily_loss_limit,
+                    max_contracts=rs.max_contracts,
+                    automation_allowed=rs.automation_allowed,
+                    warnings=rs.warnings()))).encode()
+            return self._send(200, body, "application/json")
         if u.path == "/api/optimize":
             return self._sse(parse_qs(u.query), optimize_stream)
         if u.path == "/api/startup":
