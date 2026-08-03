@@ -3,12 +3,19 @@
 <title>Prop-firm Monte Carlo</title>
 <style>
   :root{
-    --bg:#0b0b0d; --panel:#121316; --line:#232529; --txt:#e7e9ea; --dim:#8b9096;
-    --dimmer:#5f646b; --green:#34d399; --red:#f2635f; --amber:#f0b429;
-    --blue:#5aa9e6; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    /* Off pure black on purpose. The page used to sit at #000 with its card at
+       #0b0b0d -- 1.07:1 apart, so the card had no surface and the whole thing
+       read as one void. And white-on-black ran 16:1, which is past the point
+       where text starts to smear; body text is ~14.6:1 here, which measures
+       lower and reads easier. --dimmer was 3.30:1, below the 4.5:1 minimum for
+       body text; it is 5.11:1 now. */
+    --bg:#0e1013; --panel:#171a1f; --card2:#1d2128; --line:#2b3038;
+    --txt:#e8ebef; --dim:#a3acb7; --dimmer:#828c98;
+    --green:#4ade80; --red:#ff7b76; --amber:#f5c451;
+    --blue:#6fb6ee; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   }
   *{box-sizing:border-box}
-  body{margin:0;background:#000;color:var(--txt);
+  body{margin:0;background:#0a0c0e;color:var(--txt);
        font:13px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
   .wrap{max-width:1360px;margin:18px auto;background:var(--bg);
         border:1px solid var(--line);border-radius:14px;padding:18px 20px 22px}
@@ -104,6 +111,9 @@
   .an-derived{border-top:1px solid var(--line,#333);margin-top:8px;padding-top:8px;
     font-size:12px}
   .an-derived div{display:flex;justify-content:space-between;margin:2px 0}
+  .eq{width:100%;height:auto;display:block;background:var(--panel);
+    border:1px solid var(--line);border-radius:10px;margin:10px 0 16px}
+  .ax{font-size:10.5px;font-family:var(--mono)}
   .an-report table{width:100%;border-collapse:collapse;font-size:13px}
   .an-report td{padding:2px 6px}
   .an-report td:not(:first-child){text-align:right;font-variant-numeric:tabular-nums}
@@ -1147,6 +1157,57 @@ function anGrid(R){
    drawdown, which is on the other view.</p>`;
 }
 
+function anEquity(ch, died){
+  // Two lines and the gap between them. The balance is what you made; the floor
+  // is what the firm will not let you fall below, and on a trailing account it
+  // RISES under you -- which is the number a fixed max-drawdown line cannot
+  // show. The shaded band is what is actually left. Past the day the account
+  // ended, the line goes dotted: the backtest kept printing, the account did not.
+  const L=ch.lived||[], A=ch.after||[];
+  if(L.length<2) return "";
+  const all=[...L.map(p=>p.balance), ...A.map(p=>p.balance), ...L.map(p=>p.floor)];
+  if(ch.target) all.push(ch.target);
+  const W=880,H=250,P={l:74,r:18,t:18,b:30};
+  const pad=(Math.max(...all)-Math.min(...all))*0.08 || 200;
+  const lo=Math.min(...all)-pad, hi=Math.max(...all)+pad;
+  const n=L.length+Math.max(A.length-1,0);
+  const X=i=>P.l+i*(W-P.l-P.r)/Math.max(n-1,1);
+  const Y=v=>P.t+(hi-v)*(H-P.t-P.b)/(hi-lo);
+  const money=v=>"$"+Math.round(v).toLocaleString();
+  const real=L.map((p,i)=>`${X(i).toFixed(1)},${Y(p.balance).toFixed(1)}`).join(" ");
+  const fict=A.map((p,i)=>`${X(L.length-1+i).toFixed(1)},${Y(p.balance).toFixed(1)}`).join(" ");
+  // The floor ratchets at a close, so it is a STAIRCASE. Drawing it as a slope
+  // would show it rising through the session, which is not what it does.
+  const fl=[];
+  L.forEach((p,i)=>{ fl.push(`${X(i).toFixed(1)},${Y(p.floor).toFixed(1)}`);
+    if(i+1<L.length) fl.push(`${X(i+1).toFixed(1)},${Y(p.floor).toFixed(1)}`); });
+  const band=real+" "+fl.slice().reverse().join(" ");
+  const climb=L[L.length-1].floor-L[0].floor;
+  const ex=X(L.length-1), ey=Y(L[L.length-1].balance);
+  return `<svg viewBox="0 0 ${W} ${H}" class="eq" role="img"
+    aria-label="Account balance against the drawdown floor over ${L.length} trading days">
+   <polygon points="${band}" fill="var(--${died?'red':'green'})" opacity=".09"/>
+   ${ch.target ? `<line x1="${P.l}" y1="${Y(ch.target).toFixed(1)}" x2="${W-P.r}"
+      y2="${Y(ch.target).toFixed(1)}" stroke="var(--green)" stroke-dasharray="5 4"
+      stroke-width="1.2"/><text x="${P.l+5}" y="${(Y(ch.target)-6).toFixed(1)}"
+      class="ax" fill="var(--green)">profit target ${money(ch.target)}</text>` : ""}
+   <polyline points="${fl.join(" ")}" fill="none" stroke="var(--red)" stroke-width="1.8"/>
+   <text x="${P.l+5}" y="${(Y(L[0].floor)+14).toFixed(1)}" class="ax" fill="var(--red)">
+     drawdown floor${climb>1 ? ` — it climbs ${money(climb)} under you` : ""}</text>
+   ${fict ? `<polyline points="${fict}" fill="none" stroke="var(--dimmer)"
+      stroke-width="1.5" stroke-dasharray="3 4"/>` : ""}
+   <polyline points="${real}" fill="none" stroke="var(--txt)" stroke-width="2.3"/>
+   <circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="4.5"
+     fill="var(--${died?'red':'green'})"/>
+   ${A.length>1 ? `<text x="${(ex+9).toFixed(1)}" y="${(ey+15).toFixed(1)}" class="ax"
+      fill="var(--dimmer)">${A.length-1} day(s) the account was not there for</text>` : ""}
+   <text x="8" y="${(Y(hi-pad)+4).toFixed(1)}" class="ax" fill="var(--dimmer)">${money(hi-pad)}</text>
+   <text x="8" y="${(Y(lo+pad)+4).toFixed(1)}" class="ax" fill="var(--dimmer)">${money(lo+pad)}</text>
+   <text x="${P.l}" y="${H-9}" class="ax" fill="var(--dimmer)">${L[0].date}</text>
+   <text x="${W-P.r-64}" y="${H-9}" class="ax" fill="var(--dimmer)">${(A[A.length-1]||L[L.length-1]).date}</text>
+  </svg>`;
+}
+
 function anProp(R){
   const p = R.prop, r = p.run, j = p.projection;
   if(!p.applicable) return `<div class="warn">This firm's breach basis was never
@@ -1167,6 +1228,7 @@ function anProp(R){
     : null;
   return `<h3>${verdict}</h3>
   <p class="hint">${r.account}</p>
+  ${p.chart ? anEquity(p.chart, r.outcome==="busted") : ""}
   <table>
     ${r.reason ? `<tr><td>Rule</td><td>${r.reason}</td></tr>` : ""}
     ${r.date ? `<tr><td>When</td><td>${r.date} · day ${r.day}`

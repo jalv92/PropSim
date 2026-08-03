@@ -722,7 +722,11 @@ def replay(trades, rules: RuleSet | None = None, friction=0.0, contracts=1):
                 when, which = (date, day_no), (k, t)
                 break
 
-        curve.append((date, float(bal[0])))
+        # The floor rides along with the balance. It is emitted HERE, from the
+        # same `_floor` the breach test uses, because a caller that wants to
+        # draw the floor would otherwise recompute it -- a second definition of
+        # the rule, which is the bug this file has already grown once.
+        curve.append((date, float(bal[0]), float(_floor(hwm, rules)[0])))
         if busted[0]:
             break
         if rules.hwm_basis == EOD:
@@ -909,6 +913,14 @@ def selfcheck(rng):
     rep_ok = replay(quiet, static)
     assert rep_ok["outcome"] == "passed" and rep_ok["day"] == 3, rep_ok
     assert rep_ok["profit"] == 3000.0 and rep_ok["margin"] > 0, rep_ok
+    # The curve carries the floor the breach test used, not a copy of it: three
+    # values a day. On a STATIC account the high-water mark never moves, so every
+    # day's floor must be exactly start - max_dd. A caller that drew its own
+    # floor would be defining the rule a second time, which is how this file
+    # grew a bug once already.
+    assert all(len(pt) == 3 for pt in rep_ok["curve"]), rep_ok["curve"][:2]
+    assert all(f == static.start_balance - static.max_dd
+               for _d, _b, f in rep_ok["curve"]), rep_ok["curve"][:3]
 
     # The verdict has to NAME the trade. A report that says "you busted" without
     # saying where is not actionable, and an off-by-one in the day or the trade

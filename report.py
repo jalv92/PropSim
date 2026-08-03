@@ -178,7 +178,29 @@ def prop(trades, rules, contracts=1, sims=20_000, rng=None):
                       rng if rng is not None else np.random.default_rng(7),
                       rules)
 
+    # ---- the chart -----------------------------------------------------------
+    # Daily closing balance for EVERY day the strategy traded, split at the same
+    # boundary the P&L split uses. `lived` carries the floor straight from
+    # `sim.replay`; `after` is the tail that never happened and is drawn as
+    # such. Summing P&L by day is arithmetic, not a rule, so it is done here --
+    # but the FLOOR is never recomputed, only passed through.
+    by_day: dict[str, float] = {}
+    for t in ordered:
+        by_day[t.date] = by_day.get(t.date, 0.0) + t.pnl * contracts
+    running, full = rules.start_balance, []
+    for d, p in by_day.items():
+        running += p
+        full.append(dict(date=d, balance=round(running, 2)))
+    real_days = [dict(date=d, balance=round(b, 2), floor=round(f, 2))
+                 for d, b, f in rep["curve"]]
+    fiction_days = full[len(real_days) - 1:] if real_days else full
+
     return dict(
+        chart=dict(lived=real_days, after=fiction_days,
+                   start=rules.start_balance,
+                   target=(rules.start_balance + rules.profit_target
+                           if rules.profit_target else None),
+                   ended=rep["outcome"] != "open"),
         # A firm whose breach basis was never verified against a primary source
         # gets no verdict. Defaulting it to what the other four do would be
         # inventing a rule and printing it as a measurement.
@@ -366,6 +388,17 @@ def selfcheck():
     assert tw["run"]["pnl_until"] == -900.0, tw
     assert tw["run"]["pnl_after"] == -900.0, tw
 
+    # The chart splits at the SAME boundary as the P&L, and its floor comes from
+    # the replay rather than a second calculation. A chart drawn from its own
+    # floor would be the third definition of the rule this module exists to
+    # avoid, and it would drift silently -- the picture and the verdict beside
+    # it would stop agreeing.
+    ch = p["chart"]
+    assert len(ch["lived"]) == p["run"]["days"], (len(ch["lived"]), p["run"]["days"])
+    assert all(set(pt) == {"date", "balance", "floor"} for pt in ch["lived"]), ch["lived"][:1]
+    assert ch["after"][0]["date"] == ch["lived"][-1]["date"], (ch["after"][0], ch["lived"][-1])
+    assert ch["ended"] is True, ch
+
     # ---- report composes sim, it does not re-derive it ----------------------
     # THE ONE PROPERTY THIS MODULE EXISTS TO PRESERVE. Asserted against `sim`
     # directly so that inlining a drawdown comparison here fails loudly instead
@@ -429,6 +462,9 @@ def selfcheck():
           f"; a value-identical pair breaches on its SECOND trade "
           f"({tw['run']['pnl_until']:+,.0f} real {tw['run']['pnl_after']:+,.0f} "
           f"fiction), so the boundary is positional"
+          f"; the chart splits where the P&L does ({len(p['chart']['lived'])} real "
+          f"day(s), {len(p['chart']['after'])} drawn as fiction) and takes its "
+          f"floor from the replay"
           f"; an empty range returns zeros instead of raising, and an emptied "
           f"column keeps every key")
 
