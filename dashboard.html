@@ -911,8 +911,12 @@ async function anInit(){
     o.value = o.textContent = name; f.appendChild(o);
   }
   f.onchange = anFirm;
-  for(const id of ["an_variant","an_phase","an_size"])
-    $("#"+id).onchange = anRules;
+  // Each level rebuilds the ones below it; only Size, the leaf, goes straight
+  // to the rules. Binding all three to anRules re-fetched rules for a
+  // combination whose Phase and Size lists had not been rebuilt yet.
+  $("#an_variant").onchange = anPhases;
+  $("#an_phase").onchange = anSizes;
+  $("#an_size").onchange = anRules;
   await anFirm();
 }
 
@@ -976,8 +980,6 @@ async function anRules(){
     .map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join("")
     + (R.warnings||[]).map(w=>`<div class="warn">${w}</div>`).join("");
 }
-$("#an_variant") && ($("#an_variant").onchange = anPhases);
-$("#an_phase") && ($("#an_phase").onchange = anSizes);
 
 /* ---------- backtest tab ---------- */
 let TAPE=[], STRATS=[], PLUGINS=[], BT=null;
