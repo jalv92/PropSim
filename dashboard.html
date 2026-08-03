@@ -1039,12 +1039,17 @@ function anGrid(R){
     `<tr><td>${label}</td><td>${fmt(g.all[f])}</td>`
     + `<td>${fmt(g.long[f])}</td><td>${fmt(g.short[f])}</td></tr>`;
   // Some cells need the whole column, not one field: profit factor has to tell
-  // "no losing trades" apart from "not computable", and both arrive as null.
+  // "no gross loss" apart from "not computable", and both arrive as null.
   const colrow = (label, f) =>
     `<tr><td>${label}</td><td>${f(g.all)}</td>`
     + `<td>${f(g.long)}</td><td>${f(g.short)}</td></tr>`;
+  // "no GROSS loss", not "no losing trades": profit factor is built from the
+  // gross partition, while the "# of losing trades" row below counts on the
+  // net one. A trade that lost less than its commission is a gross winner and
+  // a net loser, so the two rows can honestly disagree -- and did, reading
+  // "∞ (no losing trades)" directly above "# of losing trades  3".
   const pf = c => c.trades===0 ? "—"
-    : (c.no_losses ? "∞ (no losing trades)" : anNum(c.profit_factor));
+    : (c.no_losses ? "∞ (no gross loss)" : anNum(c.profit_factor));
   const one = (label, v) => `<tr><td>${label}</td><td>${v}</td><td></td><td></td></tr>`;
   const n = R.noise, t = R.t_daily;
   return `<table>

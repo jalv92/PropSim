@@ -353,6 +353,19 @@ def selfcheck():
     assert w["run"]["deepest_fall"] == 100.0, w      # not day 2's $5,000
     assert w["run"]["allowed_fall"] is None, w
 
+    # TWO TRADES THAT COMPARE EQUAL. `engine.Trade` is a plain dataclass, so
+    # `list.index()` matches by VALUE and hands back the FIRST of an identical
+    # pair -- putting the boundary a trade early whenever the SECOND one is what
+    # breached, and moving real money into the fiction half. The lookup is
+    # positional for exactly that reason; this is what holds it there. Value
+    # matching would report 0 banked and -1,800 fictional.
+    twin = [_t(1, 1, -900.0, -1100.0, 50.0, 1150.0),
+            _t(1, 1, -900.0, -1100.0, 50.0, 1150.0)]
+    tw = prop(twin, rules, contracts=1, sims=200, rng=np.random.default_rng(4))
+    assert tw["run"]["trade_of_day"] == 2, tw
+    assert tw["run"]["pnl_until"] == -900.0, tw
+    assert tw["run"]["pnl_after"] == -900.0, tw
+
     # ---- report composes sim, it does not re-derive it ----------------------
     # THE ONE PROPERTY THIS MODULE EXISTS TO PRESERVE. Asserted against `sim`
     # directly so that inlining a drawdown comparison here fails loudly instead
@@ -413,6 +426,9 @@ def selfcheck():
           f"{scalp['no_losses']})"
           f"; p_bust equals sim.sim_eval ({mc['p_bust']:.4f}) and the verdict "
           f"equals sim.replay ({rep['outcome']}/{rep['reason']})"
+          f"; a value-identical pair breaches on its SECOND trade "
+          f"({tw['run']['pnl_until']:+,.0f} real {tw['run']['pnl_after']:+,.0f} "
+          f"fiction), so the boundary is positional"
           f"; an empty range returns zeros instead of raising, and an emptied "
           f"column keeps every key")
 
