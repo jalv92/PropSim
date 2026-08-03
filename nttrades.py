@@ -52,6 +52,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import ntdata
+import sim            # for `trade_path` only; sim never imports this module
 
 NET_EPOCH = datetime(1, 1, 1)
 SENTINEL = 1.7976931348623157e308      # NT8 writes ±double.Max for "not set"
@@ -80,12 +81,12 @@ class Trade:
     strategy: str | None = None
     strategy_id: str | None = None
     is_replay: bool = False
-    # Always None from this reader: NinjaTrader stores MinPrice/MaxPrice as two
-    # magnitudes and never when either was touched, so the ORDER of the two
-    # excursions is not recoverable here. Left unknown on purpose -- the
-    # simulator then assumes the pessimistic order rather than inventing one.
-    # See `engine.Trade.mae_first`.
-    mae_first: bool | None = None
+    # Always None from this reader: NinjaTrader stores MinPrice/MaxPrice and
+    # nothing about the path between them, so the fall from the running peak is
+    # not recoverable here. Left unknown on purpose -- the simulator substitutes
+    # its upper bound `mfe - mae` rather than inventing a shallower one.
+    # See `engine.Trade.intra_mdd`.
+    intra_mdd: float | None = None
 
     @property
     def date(self) -> str:
@@ -286,26 +287,15 @@ def to_pool(trades: list[Trade], friction: float = 0.0) -> dict:
     pnl = np.zeros((len(days), width))
     mae = np.zeros((len(days), width))
     mfe = np.zeros((len(days), width))
-    mae_first = np.zeros((len(days), width), bool)
+    mdd = np.zeros((len(days), width))
     mask = np.zeros((len(days), width), bool)
-    known_order = True
+    known_path = True
     for i, day in enumerate(days):
         for j, t in enumerate(day):
-            pnl[i, j] = t.pnl - friction
-            mae[i, j] = t.mae - friction
-            # Friction is NOT taken off the peak. It makes the low worse (more
-            # strict) and would make the peak smaller, which ratchets a trailing
-            # floor LESS and flatters the account. Both directions here are the
-            # pessimistic one.
-            mfe[i, j] = t.mfe
-            # Unknown ordering resolves to False = the peak came first, which
-            # ratchets an intraday floor up before the drawdown is tested. That
-            # is the worst of the two orders, so a source that cannot time its
-            # excursions is punished rather than believed.
-            first = getattr(t, "mae_first", None)
-            if first is None:
-                known_order = False
-            mae_first[i, j] = bool(first)
+            # One shared definition with `sim.replay` -- see `sim.trade_path`.
+            pnl[i, j], mae[i, j], mfe[i, j], mdd[i, j] = sim.trade_path(t, friction)
+            if getattr(t, "intra_mdd", None) is None:
+                known_path = False
             mask[i, j] = True
     # How many DISTINCT daily totals the bootstrap can draw from. This, not the
     # number of days, is what decides whether the simulated equity paths look
@@ -315,10 +305,10 @@ def to_pool(trades: list[Trade], friction: float = 0.0) -> dict:
     # trajectories. The chart is honest; without this number it reads as broken.
     daily = (pnl * mask).sum(axis=1)
     distinct = int(len(np.unique(np.round(daily, 2))))
-    return dict(pnl=pnl, mae=mae, mfe=mfe, mae_first=mae_first, mask=mask,
+    return dict(pnl=pnl, mae=mae, mfe=mfe, intra_mdd=mdd, mask=mask,
                 n_days=len(days), width=width,
                 n_trades=int(mask.sum()), have_mae=True,
-                have_order=known_order,
+                have_path=known_path,
                 distinct_days=distinct,
                 trades_per_day=float(mask.sum(axis=1).mean()),
                 mean=float(pnl[mask].mean()), source="NinjaTrader.sqlite")
@@ -423,6 +413,14 @@ def main():
     ap.add_argument("--list", action="store_true", help="per-account summary")
     ap.add_argument("--strategies", action="store_true",
                     help="per-NinjaScript-strategy summary")
+    ap.add_argument("--replay", action="store_true",
+                    help="walk these trades in their real order against a "
+                         "firm's rules and report whether they broke the account")
+    ap.add_argument("--firm", default="my_funded_futures")
+    ap.add_argument("--variant", default="rapid")
+    ap.add_argument("--phase", default="evaluation")
+    ap.add_argument("--size", type=int, default=50_000)
+    ap.add_argument("--strategy", help="restrict to one NinjaScript strategy")
     args = ap.parse_args()
 
     if args.strategies:
@@ -455,10 +453,44 @@ def main():
                   f"{d['wr']:>7.1%}   {tag}")
         return
 
-    trades = read_trades(args.root, args.account)
+    trades = read_trades(args.root, args.account, strategy=args.strategy)
     s = summarise(trades)
     if not s["n"]:
         raise SystemExit(f"no trades for account matching {args.account!r}")
+
+    if args.replay:
+        from prop_rules import select
+        r = sim.replay(trades, select(args.firm, args.variant,
+                                      args.phase, args.size))
+        verdict = {"busted": "BROKE THE ACCOUNT", "passed": "PASSED",
+                   "open": "still open"}[r["outcome"]]
+        print(f"{s['n']} trades, {s['days']} days ({s['first']} .. {s['last']}) "
+              f"vs {r['account']}\n")
+        print(f"  {verdict}" + (f" -- {r['reason']}" if r["reason"] else ""))
+        if r["date"]:
+            where = f"  on {r['date']} (day {r['day']}"
+            if r["trade_of_day"]:
+                where += f", trade {r['trade_of_day']} of that day"
+            print(where + ")")
+        print(f"  P&L {r['profit']:+,.2f}   lowest equity {r['low_water']:,.2f}"
+              f"   best day {r['best_day']:+,.2f}")
+        if r["margin"] is not None:
+            print(f"  closest approach to the drawdown floor: "
+                  f"${r['margin']:,.2f}")
+        # The excursions decide an intraday floor, and NinjaTrader's database
+        # does not record the path between them. Saying so is the difference
+        # between a verdict and a guess dressed as one.
+        pool = to_pool(trades)
+        if not pool["have_path"]:
+            print("\n  note: this database stores each trade's best and worst "
+                  "price but not\n  the path between them, so the deepest fall "
+                  "is taken at its upper bound.\n  A verdict of BROKE THE "
+                  "ACCOUNT on a trailing-intraday firm may be the\n  bound, not "
+                  "the trade. Re-run it from Playback through the add-on for\n"
+                  "  a measured path.")
+        for w in r["warnings"]:
+            print(f"  !! {w}")
+        return
     print(f"{s['n']} trades over {s['days']} days ({s['first']} .. {s['last']})  "
           f"P&L {s['pnl']:+,.2f}  WR {s['wr']:.1%}  "
           f"{s['longs']} long / {s['shorts']} short")

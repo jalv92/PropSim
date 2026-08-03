@@ -409,15 +409,25 @@ class Trade:
     mae: float
     mfe: float
     reason: str
-    # Did the ADVERSE extreme arrive before the favourable one? Two scalars
-    # cannot say this, and for a firm whose floor trails on intraday equity it
-    # decides the outcome: peak-then-dip ratchets the floor UP and then drops
-    # the account against it, while dip-then-peak tests the low against a floor
-    # that has not moved yet. Measured here from the tick indices. `None` means
-    # UNKNOWN -- a source that reports excursions as two magnitudes with no
-    # timing (the NinjaTrader database, the add-on export) must leave it None
-    # rather than guess, and the simulator then assumes the pessimistic order.
-    mae_first: bool | None = None
+    # Worst fall from the RUNNING peak inside this trade, currency, >= 0. This
+    # is what an intraday trailing floor actually tests, and neither excursion
+    # nor both together can stand in for it: a trade that ran +1500, fell to
+    # -600, then ran +1800 has MAE -600 and MFE +1800 with the low arriving
+    # FIRST, so any model built on the two extremes and their order says the
+    # floor had not ratcheted yet and the account lived. It did not -- the peak
+    # at +1500 had already moved the floor and the fall to -600 is 2100 deep.
+    #
+    # With this, the breach test inside a trade is exact for ANY path shape:
+    #
+    #     breach  <=>  max(hwm - balance - mae, intra_mdd) >= max_dd
+    #
+    # (the first term is the fall from a peak the ACCOUNT already held, the
+    # second the fall from a peak set inside this trade). `None` means UNKNOWN
+    # -- a source reporting two magnitudes and no path, i.e. the NinjaTrader
+    # database and the add-on export -- and the simulator then substitutes
+    # `mfe - mae`, its upper bound, rather than believing a number nobody
+    # measured.
+    intra_mdd: float | None = None
 
     @property
     def date(self):
@@ -483,7 +493,7 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
         stop_end = min(int(np.searchsorted(ts, ts[i0] + horizon, "right")),
                        session_end)
         lo = hi = fill
-        lo_i = hi_i = i0            # WHEN each extreme happened, not just what
+        mdd = 0.0                   # running fall from the running peak
         exit_i, exit_px, why = None, None, ("close" if stop_end == session_end
                                             else "timeout")
         for i in range(i0 + 1, min(stop_end, n)):
@@ -498,8 +508,13 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
                 exit_i, exit_px, why = i - 1, float(px[i - 1]), "gap"
                 break
             p = float(px[i])
-            if p < lo: lo, lo_i = p, i
-            if p > hi: hi, hi_i = p, i
+            if p < lo: lo = p
+            if p > hi: hi = p
+            # Measured against the RUNNING peak, so it is taken before the exit
+            # tests below -- a stop-out's own breaching tick is part of the fall
+            # that an intraday floor would have been tested against.
+            drop = (hi - p) if d > 0 else (p - lo)
+            if drop > mdd: mdd = drop
             hit_stop = (p <= st) if d > 0 else (p >= st)
             hit_targ = (p >= tg) if d > 0 else (p <= tg)
             if hit_stop:                          # stop wins a tie, on purpose
@@ -521,15 +536,13 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
         gross = (exit_px - fill) * d * costs.point_value
         adverse = (lo if d > 0 else hi)
         favorable = (hi if d > 0 else lo)
-        adverse_i = (lo_i if d > 0 else hi_i)
-        favorable_i = (hi_i if d > 0 else lo_i)
         out.append(Trade(
             entry_time=tp.to_datetime(ts[i0]), exit_time=tp.to_datetime(ts[exit_i]),
             direction=d, entry_price=fill, exit_price=exit_px,
             pnl=gross - costs.commission,
             mae=min((adverse - fill) * d * costs.point_value, 0.0),
             mfe=max((favorable - fill) * d * costs.point_value, 0.0),
-            reason=why, mae_first=bool(adverse_i <= favorable_i)))
+            reason=why, intra_mdd=mdd * costs.point_value))
         free_at = ts[exit_i] + cool
     return out
 
@@ -691,23 +704,32 @@ def selfcheck():
                     f"{name}: stop paid {t.pnl:.2f}, excursion implies {want:.2f}")
             elif t.reason == "target":
                 assert t.pnl > 0, f"{name}: losing target exit {t.pnl:+.0f}"
-        # 8b. THE ORDER OF THE EXCURSIONS IS STRUCTURAL, NOT INCIDENTAL, and an
-        #     intraday trailing floor is decided by it. A stop-out ends AT its
-        #     worst price -- nothing worse came earlier or it would have
-        #     triggered first -- so any favourable excursion is behind it and
-        #     the peak ratchets the floor BEFORE the drawdown is tested. A
-        #     target exit is the mirror image. If these two ever disagree with
-        #     the tick indices, `mae_first` is being read off the wrong extreme
-        #     and every Apex-style pass rate built on it is wrong.
+        # 8b. THE FALL FROM THE RUNNING PEAK is what an intraday trailing floor
+        #     tests, and it is bounded on both sides by the two excursions.
+        #     Below |MAE| would mean the trade never fell as far as its own low
+        #     (the peak is at worst the entry, which is where the fall is
+        #     measured from). Above MFE-MAE would mean it fell further than the
+        #     distance between its best and worst prices. A violation of either
+        #     bound means the running peak is being read from the wrong side of
+        #     the trade, and every Apex-style pass rate built on it is wrong.
         for t in trades:
-            if t.reason == "stop":
-                assert t.mae_first is False, (
-                    f"{name}: stop-out claims the low came first ({t.entry_time})")
-            elif t.reason == "target":
-                assert t.mae_first is True, (
-                    f"{name}: target exit claims the peak came first ({t.entry_time})")
+            assert -t.mae <= t.intra_mdd + 0.01, (
+                f"{name}: fall {t.intra_mdd:.2f} shallower than its low {-t.mae:.2f}")
+            assert t.intra_mdd <= t.mfe - t.mae + 0.01, (
+                f"{name}: fall {t.intra_mdd:.2f} exceeds peak-to-trough "
+                f"{t.mfe - t.mae:.2f}")
             assert t.mfe >= t.pnl - 0.01, (
                 f"{name}: peak {t.mfe:.2f} below realised {t.pnl:.2f}")
+            # And for a stop-out the upper bound is TIGHT. A stop ends AT its
+            # worst price -- anything worse earlier would have triggered first
+            # -- so every peak the trade ever made is behind the low, and the
+            # fall from the running peak is exactly peak-to-trough. This is the
+            # one exit whose path shape is known without looking, which makes it
+            # the check that catches an off-by-one in the running maximum.
+            if t.reason == "stop":
+                assert abs(t.intra_mdd - (t.mfe - t.mae)) < 0.01, (
+                    f"{name}: stop-out fell {t.intra_mdd:.2f}, peak-to-trough "
+                    f"is {t.mfe - t.mae:.2f}")
         # 8. A stop cannot lose an unbounded amount. Slipping through its level is
         #    real: measured on this tape the median gap-through is 0-3 ticks and
         #    p90 is 3-8, with a tail to 62 ticks for the strategies that enter in
