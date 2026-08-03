@@ -987,6 +987,149 @@ async function anRules(){
     + (R.warnings||[]).map(w=>`<div class="warn">${w}</div>`).join("");
 }
 
+const anMoney = v => v==null ? "—"
+  : (v<0?"-":"+")+"$"+Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,
+                                                            maximumFractionDigits:2});
+const anNum = (v,d=2) => v==null ? "—"
+  : (v===Infinity ? "∞" : v.toFixed(d));
+const anPct = v => v==null ? "—" : (100*v).toFixed(1)+"%";
+
+async function anRun(){
+  const q = new URLSearchParams({contract:$("#an_contract").value,
+    strategy:$("#an_strategy").value, tf:$("#an_tf").value,
+    start:$("#an_start").value||"", end:$("#an_end").value||"",
+    contracts:$("#an_contracts").value, commission:$("#an_comm").value,
+    slippage:$("#an_slip").value, firm:$("#an_firm").value,
+    variant:$("#an_variant").value, phase:$("#an_phase").value,
+    size:$("#an_size").value});
+  for(const p of ((AN.strategies[$("#an_strategy").value]||{}).params||[]))
+    q.set("p_"+p.key, $("#an_p_"+p.key).value);
+
+  $("#an_run").disabled = true;
+  $("#an_report").innerHTML = '<p class="hint">running…</p>';
+  const es = new EventSource("/api/analyzer?"+q);
+  es.addEventListener("progress", e=>{
+    $("#an_report").innerHTML =
+      '<p class="hint">'+JSON.parse(e.data).stage+'…</p>'; });
+  es.addEventListener("result", e=>{
+    AN.report = JSON.parse(e.data); es.close();
+    $("#an_run").disabled = false; anRender(); });
+  es.addEventListener("error", e=>{
+    es.close(); $("#an_run").disabled = false;
+    $("#an_report").innerHTML =
+      '<div class="warn">'+((e.data&&JSON.parse(e.data).message)||
+      "the run stopped before it finished")+'</div>'; });
+}
+
+function anRender(){
+  const R = AN.report; if(!R) return;
+  $("#an_raw").classList.toggle("primary", AN.view!=="prop");
+  $("#an_prop").classList.toggle("primary", AN.view==="prop");
+  if(!R.has_trades){
+    $("#an_report").innerHTML =
+      '<div class="warn">No trades in this range. There is nothing to judge, '
+      + 'so no account verdict is given.</div>';
+    return;
+  }
+  $("#an_report").innerHTML = AN.view==="prop" ? anProp(R) : anGrid(R);
+}
+
+function anGrid(R){
+  const g = R.grid, row = (label, f, fmt=anMoney) =>
+    `<tr><td>${label}</td><td>${fmt(g.all[f])}</td>`
+    + `<td>${fmt(g.long[f])}</td><td>${fmt(g.short[f])}</td></tr>`;
+  const one = (label, v) => `<tr><td>${label}</td><td>${v}</td><td></td><td></td></tr>`;
+  const n = R.noise, t = R.t_daily;
+  return `<table>
+    <tr><td><b>Performance</b></td><td><b>All trades</b></td>
+        <td><b>Long</b></td><td><b>Short</b></td></tr>
+    ${row("Total net profit","net_profit")}
+    ${row("Gross profit","gross_profit")}
+    ${row("Gross loss","gross_loss")}
+    ${row("Commission","commission")}
+    ${row("Profit factor","profit_factor",v=>anNum(v))}
+    ${row("Max. drawdown (equity curve)","max_drawdown")}
+    <tr class="sep"><td colspan="4"></td></tr>
+    ${row("Total # of trades","trades",v=>String(v))}
+    ${row("Percent profitable","pct_profitable",anPct)}
+    ${row("# of winning trades","wins",v=>String(v))}
+    ${row("# of losing trades","losses",v=>String(v))}
+    ${row("# of even trades","evens",v=>String(v))}
+    <tr class="sep"><td colspan="4"></td></tr>
+    ${row("Avg. trade","avg_trade")}
+    ${row("Avg. winning trade","avg_win")}
+    ${row("Avg. losing trade","avg_loss")}
+    ${row("Ratio avg win / avg loss","win_loss_ratio",v=>anNum(v))}
+    ${row("Max consec. winners","max_consec_wins",v=>String(v))}
+    ${row("Max consec. losers","max_consec_losses",v=>String(v))}
+    ${row("Largest winning trade","largest_win")}
+    ${row("Largest losing trade","largest_loss")}
+    ${row("Avg. # of trades per day","per_day",v=>anNum(v))}
+    <tr class="sep"><td colspan="4"></td></tr>
+    ${one("Start date / End date", R.meta.start+" .. "+R.meta.end)}
+    ${row("Avg. MAE","avg_mae")}
+    ${row("Avg. MFE","avg_mfe")}
+    ${row("Avg. intra-trade fall","avg_fall")}
+    ${row("Max. intra-trade fall","max_fall")}
+    <tr class="sep"><td colspan="4"></td></tr>
+    ${one("t-stat (daily)", anNum(t))}
+  </table>
+  <p class="hint">trial #${n.trials} · noise ceiling at ${n.trials}
+   trials: ${anNum(n.expected_max_t)}</p>
+  ${(t!=null && n.expected_max_t!=null && t<=n.expected_max_t)
+    ? '<div class="warn">This t does NOT clear the noise of '+n.trials
+      +' searches. The best of that many null trials is expected to reach '
+      + anNum(n.expected_max_t)+'.</div>' : ""}
+  <p class="hint">"Max. drawdown" above is the equity-curve drawdown over closed
+   trades, NinjaTrader's metric. It is a different number from the prop firm's
+   drawdown, which is on the other view.</p>`;
+}
+
+function anProp(R){
+  const p = R.prop, r = p.run, j = p.projection;
+  if(!p.applicable) return `<div class="warn">This firm's breach basis was never
+    verified against a primary source, so no drawdown verdict is given. Guessing
+    it from what the other firms do would be inventing a rule.</div>`;
+  const verdict = {busted:"BROKE THE ACCOUNT", passed:"PASSED",
+                   open:"STILL OPEN"}[r.outcome];
+  return `<h3>${verdict}</h3>
+  <p class="hint">${r.account}</p>
+  <table>
+    ${r.reason ? `<tr><td>Rule</td><td>${r.reason}</td></tr>` : ""}
+    ${r.date ? `<tr><td>When</td><td>${r.date} · day ${r.day}`
+      + (r.trade_of_day ? ` · trade ${r.trade_of_day} of that day` : "")
+      + `</td></tr>` : ""}
+    <tr><td>Deepest intra-trade fall</td><td>${anMoney(r.deepest_fall)}
+      (allowed ${anMoney(r.allowed_fall)})</td></tr>
+    <tr><td>Tightest margin to the floor</td><td>${anMoney(r.margin)}</td></tr>
+    <tr><td>Lowest equity</td><td>${anMoney(r.low_water)}</td></tr>
+    <tr><td>P&amp;L until death</td><td>${anMoney(r.pnl_until)}</td></tr>
+    <tr><td>P&amp;L afterwards</td><td>${anMoney(r.pnl_after)}
+      ← fiction: the account no longer existed</td></tr>
+  </table>
+  ${R.over_cap ? '<div class="warn">This run uses more contracts than the '
+    + 'account allows, so it no longer describes that account.</div>' : ""}
+  ${p.fidelity==="bounded" ? '<div class="warn">At least one trade had no '
+    + 'recorded intra-trade path, so its fall was taken at its upper bound. '
+    + 'At size that is not a near miss.</div>' : ""}
+  <h4>Projection — ${j.sims.toLocaleString()} resampled futures</h4>
+  <table>
+    <tr><td>P(pass)</td><td>${anNum(j.p_pass,3)}</td></tr>
+    <tr><td>P(bust)</td><td>${anNum(j.p_bust,3)}</td></tr>
+    <tr><td>P(timeout)</td><td>${anNum(j.p_timeout,3)}</td></tr>
+    <tr><td>Mean days to pass</td><td>${anNum(j.days_to_pass,1)}</td></tr>
+  </table>
+  <p class="hint">Day-block bootstrap over ${j.pool_days} days
+   (${j.distinct_days} distinct daily totals). The verdict above is a fact about
+   this one sequence; these are a projection. Path fidelity:
+   ${p.fidelity.toUpperCase()}.</p>
+  ${(r.warnings||[]).map(w=>`<div class="warn">${w}</div>`).join("")}`;
+}
+
+$("#an_run") && ($("#an_run").onclick = anRun);
+$("#an_raw") && ($("#an_raw").onclick = ()=>{AN.view="raw"; anRender();});
+$("#an_prop") && ($("#an_prop").onclick = ()=>{AN.view="prop"; anRender();});
+
 /* ---------- backtest tab ---------- */
 let TAPE=[], STRATS=[], PLUGINS=[], BT=null;
 
