@@ -1076,10 +1076,14 @@ function anGrid(R){
   </table>
   <p class="hint">trial #${n.trials} · noise ceiling at ${n.trials}
    trials: ${anNum(n.expected_max_t)}</p>
-  ${(t!=null && n.expected_max_t!=null && t<=n.expected_max_t)
-    ? '<div class="warn">This t does NOT clear the noise of '+n.trials
-      +' searches. The best of that many null trials is expected to reach '
-      + anNum(n.expected_max_t)+'.</div>' : ""}
+  ${t==null
+    ? '<div class="hint">Not enough distinct days for a t-statistic, so this '
+      + 'run cannot be measured against the noise ceiling.</div>'
+    : (t<=n.expected_max_t
+       ? '<div class="warn">This t does NOT clear the noise of '+n.trials
+         +' searches. The best of that many null trials is expected to reach '
+         + anNum(n.expected_max_t)+'.</div>'
+       : "")}
   <p class="hint">"Max. drawdown" above is the equity-curve drawdown over closed
    trades, NinjaTrader's metric. It is a different number from the prop firm's
    drawdown, which is on the other view.</p>`;
