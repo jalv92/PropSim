@@ -31,7 +31,19 @@ both of which made every previous pass-rate figure optimistic:
    peak balance, which includes both realized and unrealized gains." So the
    floor ratcheted up more slowly in the sim than in reality.
 
-Both are now driven by `rules.hwm_basis` / `rules.breach_basis`.
+3. THE RATCHET USED THE CLOSED P&L, NOT THE UNREALIZED PEAK -- fix 2 only half
+   done. `hwm_basis == INTRA` ratcheted on `max(pnl, 0)`, so a trade that ran
+   +$800 in the money and closed at +$200 raised the floor by $200 in the sim
+   and by $800 in reality. The MFE was measured by the backtest engine and
+   thrown away here. Worse, two scalars have no order: peak-then-dip ratchets
+   the floor UP and then drops the account against it, while dip-then-peak
+   tests the low against a floor that has not moved. Trades now carry
+   `mae_first`, measured from the tick indices where the engine produced them
+   and assumed pessimistically (peak first) where the source cannot time them.
+   This only ever LOWERS survival on an intraday-trailing account, which is the
+   hardest rule any of these firms sell.
+
+All three are now driven by `rules.hwm_basis` / `rules.breach_basis`.
 
 A strategy is modeled as a per-trade Bernoulli: win prob `p`, win pays
 `rr * risk` per contract, loss costs `risk` per contract, and every contract
@@ -57,6 +69,13 @@ FUNDED_HORIZON_DAYS = 250
 # breach_basis is intraday_equity, and it is the single largest modeling
 # assumption in this file. Feed real per-trade MAE from a backtest to remove it.
 MAE_FRAC_WIN = 0.5
+
+# The mirror of the above for the favourable side. A WINNER's peak is exact, not
+# assumed: it exits AT its target, so the peak is the full `rr * risk`. A LOSER
+# never reached the target, so its MFE lies in [0, rr*risk); this is where in
+# that range we put it. Same status as MAE_FRAC_WIN -- a midpoint, not a
+# measurement -- and it only bites when hwm_basis is intraday_equity.
+MFE_FRAC_LOSS = 0.5
 
 # Defaults for callers that pass no rule set -- notably the frozen round*.py
 # research scripts, which reach this module through the `mff_sim` shim left in
@@ -117,14 +136,20 @@ def _cap(rules: RuleSet) -> int:
 
 
 def _trade_pnl(rng, prof, n, sims):
-    """Returns (realized_pnl, intra_trade_low) per contract-scaled trade."""
+    """Returns (realized_pnl, intra_trade_low, intra_trade_high, mae_first)."""
     win = rng.random(sims) < prof["p"]
     pnl = np.where(win,
                    prof["rr"] * prof["risk"] - prof["friction"],
                    -prof["risk"] - prof["friction"]) * n
-    # worst equity excursion reached *during* the trade
+    # worst and best equity excursions reached *during* the trade
     mae = np.where(win, -prof["risk"] * MAE_FRAC_WIN, -prof["risk"]) * n
-    return pnl, np.minimum(mae, pnl)
+    target = prof["rr"] * prof["risk"]
+    mfe = np.where(win, target, target * MFE_FRAC_LOSS) * n
+    # Not an assumption, a consequence of the model: a Bernoulli winner exits at
+    # its target, so its peak is the LAST thing that happened and the dip came
+    # first. A loser exits at its stop, so its low is last. Same structure the
+    # tick engine measures, which is why its self-check asserts exactly this.
+    return pnl, np.minimum(mae, pnl), np.maximum(mfe, pnl), win
 
 
 def load_trades(path, friction=0.0):
@@ -157,6 +182,7 @@ def load_trades(path, friction=0.0):
         raise SystemExit(f"{path}: no profit column in {list(cols)}")
     dcol = pick("date", "time", "entry")
     mcol = pick("mae", "adverse", "drawdown")
+    fcol = pick("mfe", "favorable", "favourable", "runup", "run-up")
 
     def num(v):
         v = str(v).replace("$", "").replace(",", "").replace("(", "-").replace(")", "")
@@ -171,11 +197,13 @@ def load_trades(path, friction=0.0):
         if v is None:
             continue
         m = num(r[mcol]) if mcol else None
+        f = num(r[fcol]) if fcol else None
         k = str(r[dcol])[:10] if dcol else None
         if dcol and k != key and cur:
             days.append(cur); cur = []
         key = k
-        cur.append((v - friction, -abs(m) if m is not None else None))
+        cur.append((v - friction, -abs(m) if m is not None else None,
+                    abs(f) if f is not None else None))
     if cur:
         days.append(cur)
     if not dcol:                      # no date column -> one trade per "day"
@@ -184,15 +212,22 @@ def load_trades(path, friction=0.0):
     width = max(len(d) for d in days)
     pnl = np.zeros((len(days), width))
     mae = np.zeros((len(days), width))
+    mfe = np.zeros((len(days), width))
     mask = np.zeros((len(days), width), bool)
     have_mae = mcol is not None
     for i, d in enumerate(days):
-        for j, (v, m) in enumerate(d):
+        for j, (v, m, f) in enumerate(d):
             pnl[i, j] = v
             mae[i, j] = m if m is not None else min(v, 0.0)
+            mfe[i, j] = f if f is not None else max(v, 0.0)
             mask[i, j] = True
-    return dict(pnl=pnl, mae=mae, mask=mask, n_days=len(days), width=width,
-                n_trades=int(mask.sum()), have_mae=have_mae,
+    # A CSV carries two magnitudes and no timing, so the order is unknown and
+    # resolves to the pessimistic one: the peak ratchets an intraday floor up
+    # before the low is tested against it. All-False, not a guess per row.
+    return dict(pnl=pnl, mae=mae, mfe=mfe, mask=mask,
+                mae_first=np.zeros((len(days), width), bool),
+                n_days=len(days), width=width,
+                n_trades=int(mask.sum()), have_mae=have_mae, have_order=False,
                 mean=float(pnl[mask].mean()), source=str(path))
 
 
@@ -210,11 +245,43 @@ def _day_draw(rng, prof, sims):
 
 
 def _slot_pnl(rng, prof, pool, pick, slot, n, sims):
-    """P&L and intra-trade low for one trade slot, pooled or parametric."""
+    """P&L, both intra-trade extremes and their order, for one trade slot."""
     if pool is None:
         return _trade_pnl(rng, prof, n, sims)
     pnl = pool["pnl"][pick, slot] * n
-    return pnl, np.minimum(pool["mae"][pick, slot] * n, pnl)
+    return (pnl,
+            np.minimum(pool["mae"][pick, slot] * n, pnl),
+            np.maximum(pool["mfe"][pick, slot] * n, pnl),
+            pool["mae_first"][pick, slot])
+
+
+def _walk_trade(hwm, bal, busted, active, low, high, mae_first, rules):
+    """Breach test and high-water ratchet for ONE trade, walked IN ORDER.
+
+    Returns the updated (hwm, busted). Split out of the two simulation loops
+    because they had already drifted apart once (see `_day_draw`), and this is
+    the block where a divergence is worth real money.
+
+    The order only matters when the floor moves during the trade -- an intraday
+    trailing account. There, a peak that arrives FIRST ratchets the floor up and
+    the account then falls the full peak-to-trough distance against it, while a
+    peak that arrives LAST is tested against a floor that has not moved yet.
+    Same two numbers, different outcome.
+    """
+    if rules.hwm_basis != INTRA:
+        # Static or end-of-day floor: it cannot move mid-trade, so the sequence
+        # inside the trade is unobservable and only the low is tested.
+        if rules.breach_basis == INTRA:
+            busted = busted | (active & (bal + low <= _floor(hwm, rules)))
+        return hwm, busted
+
+    up = np.maximum(hwm, bal + high)          # the unrealized peak, not max(pnl,0)
+    if rules.breach_basis != INTRA:
+        return np.where(active & ~busted, up, hwm), busted
+
+    floor_at_low = np.where(mae_first, _floor(hwm, rules), _floor(up, rules))
+    busted = busted | (active & (bal + low <= floor_at_low))
+    return np.where(active & ~busted, up, hwm), busted
 
 
 def _floor(hwm, rules: RuleSet):
@@ -293,15 +360,14 @@ def sim_eval(prof, policy, sims, rng, rules: RuleSet | None = None,
             floor = _floor(hwm, rules)
             n = policy(bal - floor,
                        np.maximum(start + target - bal, 0.0), prof, rules)
-            pnl, low = _slot_pnl(rng, prof, pool, pick, slot, n, sims)
+            pnl, low, high, mae_first = _slot_pnl(
+                rng, prof, pool, pick, slot, n, sims)
 
-            # BUG FIX 1: breach on the intra-trade low, not just the close
-            if rules.breach_basis == INTRA:
-                busted |= trade & (bal + low <= floor)
-            # BUG FIX 2: ratchet on unrealized peaks when the firm says so
-            if rules.hwm_basis == INTRA:
-                peak = bal + np.maximum(pnl, 0.0)
-                hwm = np.where(trade & ~busted, np.maximum(hwm, peak), hwm)
+            # BUG FIXES 1-3: breach on the intra-trade low rather than the
+            # close, ratchet on the unrealized PEAK rather than the closed P&L,
+            # and do both in the order the price path actually walked.
+            hwm, busted = _walk_trade(hwm, bal, busted, trade,
+                                      low, high, mae_first, rules)
 
             bal = np.where(trade & ~busted, bal + pnl, bal)
             day_pnl = np.where(trade & ~busted, day_pnl + pnl, day_pnl)
@@ -420,17 +486,16 @@ def sim_funded(prof, policy, sims, rng, rules: RuleSet | None = None,
             n = policy(bal - floor,
                        np.maximum(buffer_req + min_payout - bal, min_payout),
                        prof, rules)
-            pnl, low = _slot_pnl(rng, prof, pool, pick, slot, n, sims)
+            pnl, low, high, mae_first = _slot_pnl(
+                rng, prof, pool, pick, slot, n, sims)
             if pool is not None:                 # sims whose day has no trade here
                 traded = pool["mask"][pick, slot]
                 pnl = np.where(traded, pnl, 0.0)
                 low = np.where(traded, low, 0.0)
+                high = np.where(traded, high, 0.0)
 
-            if rules.breach_basis == INTRA:
-                busted |= active & (bal + low <= floor)
-            if rules.hwm_basis == INTRA:
-                peak = bal + np.maximum(pnl, 0.0)
-                hwm = np.where(active & ~busted, np.maximum(hwm, peak), hwm)
+            hwm, busted = _walk_trade(hwm, bal, busted, active,
+                                      low, high, mae_first, rules)
 
             bal = np.where(active & ~busted, bal + pnl, bal)
             if rules.hwm_basis == INTRA:
@@ -583,6 +648,56 @@ def selfcheck(rng):
     c = sim_eval(prof, policy_fixed(3), 20_000, rng, intra)
     assert c["p_pass"] <= a["p_pass"] + 0.005, (c, a)
 
+    # BUG FIX 3 regression, in two parts. A pool lets the excursions be stated
+    # exactly instead of drawn, so the two effects can be isolated from each
+    # other and from the noise of a Bernoulli.
+    def _pool(pnl_row, mae_row, mfe_row, first):
+        arr = np.array(pnl_row, float).reshape(-1, 1)
+        n = len(pnl_row)
+        return dict(pnl=arr, mae=np.array(mae_row, float).reshape(-1, 1),
+                    mfe=np.array(mfe_row, float).reshape(-1, 1),
+                    mae_first=np.full((n, 1), first),
+                    mask=np.ones((n, 1), bool), n_days=n, width=1, n_trades=n,
+                    have_mae=True, have_order=True,
+                    mean=float(arr.mean()), source="selfcheck")
+
+    def _with(pool):
+        return dict(p=0.5, rr=1.0, risk=200.0, tpd=1, friction=0.0, pool=pool)
+
+    # One trade a day: +$600 booked, a $400 dip, and a peak that varies by day.
+    # Sized so the account NEVER falls $2,000 below a floor that has not already
+    # ratcheted -- which leaves the order of the two excursions as the only
+    # thing that can kill it.
+    pl, ma = [600.0] * 6, [-400.0] * 6
+    mf = [1200.0, 1400.0, 1600.0, 1800.0, 2000.0, 2100.0]
+    peak_first = sim_eval(_with(_pool(pl, ma, mf, False)), policy_fixed(1),
+                          5_000, np.random.default_rng(3), intra)
+    dip_first = sim_eval(_with(_pool(pl, ma, mf, True)), policy_fixed(1),
+                         5_000, np.random.default_rng(3), intra)
+    assert peak_first["p_pass"] < dip_first["p_pass"] - 0.20, (peak_first, dip_first)
+
+    # ...and the peak has to be READ. Collapsing it to the closed P&L -- the bug
+    # -- ratchets the floor by $600 instead of up to $2,100 and the same account
+    # sails through. This is the assertion that fails if `mfe` is ever dropped
+    # from the pool contract again.
+    flat = sim_eval(_with(_pool(pl, ma, [max(v, 0.0) for v in pl], False)),
+                    policy_fixed(1), 5_000, np.random.default_rng(3), intra)
+    assert peak_first["p_pass"] < flat["p_pass"] - 0.20, (peak_first, flat)
+
+    # Behind a floor that cannot move mid-trade there is nothing for the order
+    # to change. Asserting EXACT equality on the same seed -- not "close" -- is
+    # what proves the ordering branch is never consulted there.
+    mixed = ([600.0, 600.0, -800.0, 600.0, -800.0, 600.0],
+             [-400.0, -400.0, -900.0, -400.0, -900.0, -400.0],
+             [1200.0, 900.0, 300.0, 1500.0, 200.0, 1100.0])
+    eod_rules = _synthetic(hwm_basis=EOD, breach_basis=INTRA)
+    ord_a = sim_eval(_with(_pool(*mixed, False)), policy_fixed(1), 5_000,
+                     np.random.default_rng(5), eod_rules)
+    ord_b = sim_eval(_with(_pool(*mixed, True)), policy_fixed(1), 5_000,
+                     np.random.default_rng(5), eod_rules)
+    assert (ord_a["p_pass"], ord_a["p_bust"]) == (ord_b["p_pass"], ord_b["p_bust"]), \
+        (ord_a, ord_b)
+
     # consistency that only blocks payouts must not constrain the eval at all
     payout_only = _synthetic(consistency_pct=50, consistency_effect="blocks_payout")
     none_ = _synthetic(consistency_pct=None)
@@ -622,6 +737,11 @@ def selfcheck(rng):
     print(f"selfcheck OK: gambler's ruin {r['p_pass']:.3f} ~ 0.400; "
           f"intraday breach {a['p_pass']:.3f} <= close-only {b['p_pass']:.3f}; "
           f"unrealized ratchet {c['p_pass']:.3f} <= realized {a['p_pass']:.3f}; "
+          f"peak-first {peak_first['p_pass']:.3f} < dip-first "
+          f"{dip_first['p_pass']:.3f} and < closed-P&L ratchet "
+          f"{flat['p_pass']:.3f}; order is a no-op behind an EOD floor "
+          f"({ord_a['p_pass']:.3f} == {ord_b['p_pass']:.3f}, "
+          f"bust {ord_a['p_bust']:.3f}); "
           f"chained E[net] {ch['net_mean']:,.0f} <= independent "
           f"{ind['net_mean']:,.0f} and first payout day "
           f"{ch['days_to_first_payout']:.0f} >= {ind['days_to_first_payout']:.0f}")

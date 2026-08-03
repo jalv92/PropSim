@@ -409,6 +409,15 @@ class Trade:
     mae: float
     mfe: float
     reason: str
+    # Did the ADVERSE extreme arrive before the favourable one? Two scalars
+    # cannot say this, and for a firm whose floor trails on intraday equity it
+    # decides the outcome: peak-then-dip ratchets the floor UP and then drops
+    # the account against it, while dip-then-peak tests the low against a floor
+    # that has not moved yet. Measured here from the tick indices. `None` means
+    # UNKNOWN -- a source that reports excursions as two magnitudes with no
+    # timing (the NinjaTrader database, the add-on export) must leave it None
+    # rather than guess, and the simulator then assumes the pessimistic order.
+    mae_first: bool | None = None
 
     @property
     def date(self):
@@ -474,6 +483,7 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
         stop_end = min(int(np.searchsorted(ts, ts[i0] + horizon, "right")),
                        session_end)
         lo = hi = fill
+        lo_i = hi_i = i0            # WHEN each extreme happened, not just what
         exit_i, exit_px, why = None, None, ("close" if stop_end == session_end
                                             else "timeout")
         for i in range(i0 + 1, min(stop_end, n)):
@@ -488,8 +498,8 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
                 exit_i, exit_px, why = i - 1, float(px[i - 1]), "gap"
                 break
             p = float(px[i])
-            if p < lo: lo = p
-            if p > hi: hi = p
+            if p < lo: lo, lo_i = p, i
+            if p > hi: hi, hi_i = p, i
             hit_stop = (p <= st) if d > 0 else (p >= st)
             hit_targ = (p >= tg) if d > 0 else (p <= tg)
             if hit_stop:                          # stop wins a tie, on purpose
@@ -511,13 +521,15 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
         gross = (exit_px - fill) * d * costs.point_value
         adverse = (lo if d > 0 else hi)
         favorable = (hi if d > 0 else lo)
+        adverse_i = (lo_i if d > 0 else hi_i)
+        favorable_i = (hi_i if d > 0 else lo_i)
         out.append(Trade(
             entry_time=tp.to_datetime(ts[i0]), exit_time=tp.to_datetime(ts[exit_i]),
             direction=d, entry_price=fill, exit_price=exit_px,
             pnl=gross - costs.commission,
             mae=min((adverse - fill) * d * costs.point_value, 0.0),
             mfe=max((favorable - fill) * d * costs.point_value, 0.0),
-            reason=why))
+            reason=why, mae_first=bool(adverse_i <= favorable_i)))
         free_at = ts[exit_i] + cool
     return out
 
@@ -679,6 +691,23 @@ def selfcheck():
                     f"{name}: stop paid {t.pnl:.2f}, excursion implies {want:.2f}")
             elif t.reason == "target":
                 assert t.pnl > 0, f"{name}: losing target exit {t.pnl:+.0f}"
+        # 8b. THE ORDER OF THE EXCURSIONS IS STRUCTURAL, NOT INCIDENTAL, and an
+        #     intraday trailing floor is decided by it. A stop-out ends AT its
+        #     worst price -- nothing worse came earlier or it would have
+        #     triggered first -- so any favourable excursion is behind it and
+        #     the peak ratchets the floor BEFORE the drawdown is tested. A
+        #     target exit is the mirror image. If these two ever disagree with
+        #     the tick indices, `mae_first` is being read off the wrong extreme
+        #     and every Apex-style pass rate built on it is wrong.
+        for t in trades:
+            if t.reason == "stop":
+                assert t.mae_first is False, (
+                    f"{name}: stop-out claims the low came first ({t.entry_time})")
+            elif t.reason == "target":
+                assert t.mae_first is True, (
+                    f"{name}: target exit claims the peak came first ({t.entry_time})")
+            assert t.mfe >= t.pnl - 0.01, (
+                f"{name}: peak {t.mfe:.2f} below realised {t.pnl:.2f}")
         # 8. A stop cannot lose an unbounded amount. Slipping through its level is
         #    real: measured on this tape the median gap-through is 0-3 ticks and
         #    p90 is 3-8, with a tail to 62 ticks for the strategies that enter in

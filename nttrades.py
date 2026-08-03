@@ -80,6 +80,12 @@ class Trade:
     strategy: str | None = None
     strategy_id: str | None = None
     is_replay: bool = False
+    # Always None from this reader: NinjaTrader stores MinPrice/MaxPrice as two
+    # magnitudes and never when either was touched, so the ORDER of the two
+    # excursions is not recoverable here. Left unknown on purpose -- the
+    # simulator then assumes the pessimistic order rather than inventing one.
+    # See `engine.Trade.mae_first`.
+    mae_first: bool | None = None
 
     @property
     def date(self) -> str:
@@ -279,11 +285,27 @@ def to_pool(trades: list[Trade], friction: float = 0.0) -> dict:
     width = max(len(d) for d in days)
     pnl = np.zeros((len(days), width))
     mae = np.zeros((len(days), width))
+    mfe = np.zeros((len(days), width))
+    mae_first = np.zeros((len(days), width), bool)
     mask = np.zeros((len(days), width), bool)
+    known_order = True
     for i, day in enumerate(days):
         for j, t in enumerate(day):
             pnl[i, j] = t.pnl - friction
             mae[i, j] = t.mae - friction
+            # Friction is NOT taken off the peak. It makes the low worse (more
+            # strict) and would make the peak smaller, which ratchets a trailing
+            # floor LESS and flatters the account. Both directions here are the
+            # pessimistic one.
+            mfe[i, j] = t.mfe
+            # Unknown ordering resolves to False = the peak came first, which
+            # ratchets an intraday floor up before the drawdown is tested. That
+            # is the worst of the two orders, so a source that cannot time its
+            # excursions is punished rather than believed.
+            first = getattr(t, "mae_first", None)
+            if first is None:
+                known_order = False
+            mae_first[i, j] = bool(first)
             mask[i, j] = True
     # How many DISTINCT daily totals the bootstrap can draw from. This, not the
     # number of days, is what decides whether the simulated equity paths look
@@ -293,8 +315,10 @@ def to_pool(trades: list[Trade], friction: float = 0.0) -> dict:
     # trajectories. The chart is honest; without this number it reads as broken.
     daily = (pnl * mask).sum(axis=1)
     distinct = int(len(np.unique(np.round(daily, 2))))
-    return dict(pnl=pnl, mae=mae, mask=mask, n_days=len(days), width=width,
+    return dict(pnl=pnl, mae=mae, mfe=mfe, mae_first=mae_first, mask=mask,
+                n_days=len(days), width=width,
                 n_trades=int(mask.sum()), have_mae=True,
+                have_order=known_order,
                 distinct_days=distinct,
                 trades_per_day=float(mask.sum(axis=1).mean()),
                 mean=float(pnl[mask].mean()), source="NinjaTrader.sqlite")
