@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import threading
+import time
 import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -76,6 +77,12 @@ class ClientGone(Exception):
 
 # The most recent backtest, so the Prop Firm tab can score it without re-running.
 LAST_BACKTEST: dict = {}
+
+# Sweeps the browser has asked to hold. A sweep runs inside its own request, so
+# "pause" is the progress callback declining to return -- `optimize.sweep` calls
+# it every few combinations and does not care how long it takes. That is why
+# pausing needs no change to the sweep itself.
+SWEEP_PAUSED: dict[str, bool] = {}
 
 
 def config_tree():
@@ -312,6 +319,7 @@ def ai_translate_stream(q, write):
 
 def optimize_stream(q, write):
     """Sweep a parameter grid and rank it against the pre-registered gate."""
+    run_id = (q.get("id", [""])[0] or "")[:64]
     contract = q.get("contract", [""])[0]
     strategy = q.get("strategy", ["orb"])[0]
     tf = int(q.get("tf", ["5"])[0])
@@ -332,6 +340,7 @@ def optimize_stream(q, write):
     if not ranges:
         raise SystemExit("give at least one parameter a range to sweep")
 
+    SWEEP_PAUSED.setdefault(run_id, False)
     write("meta", dict(strategy=strategy, contract=contract, timeframe=tf,
                        combos=len(optimize.grid(ranges)),
                        ranges={k: list(v) for k, v in ranges.items()}))
@@ -339,9 +348,23 @@ def optimize_stream(q, write):
     def prog(done, total, secs):
         write("progress", dict(done=done, total=total, secs=round(secs, 1),
                                pct=round(100 * done / max(total, 1), 1)))
+        # Holding here holds the sweep. The heartbeat is not decoration: it is
+        # the only thing that notices a browser that went away while paused,
+        # because a paused run makes no other writes and would otherwise sit on
+        # a thread for as long as the process lives.
+        while SWEEP_PAUSED.get(run_id):
+            write("progress", dict(done=done, total=total, secs=round(secs, 1),
+                                   pct=round(100 * done / max(total, 1), 1),
+                                   paused=True))
+            time.sleep(1.0)
 
-    res = optimize.sweep(contract, strategy, tf, start, end, ranges, costs,
-                         on_progress=prog)
+    try:
+        res = optimize.sweep(contract, strategy, tf, start, end, ranges, costs,
+                             on_progress=prog)
+    finally:
+        # However this ends -- finished, stopped, or the browser vanished --
+        # the run stops being pausable.
+        SWEEP_PAUSED.pop(run_id, None)
     best = res["rows"][0] if res["rows"] else None
     res["export"] = optimize.ninjascript_block(res, best) if best else ""
     # The bar can be structurally unreachable on this data -- a one-trade-a-day
@@ -763,6 +786,18 @@ class Handler(BaseHTTPRequestHandler):
                     automation_allowed=rs.automation_allowed,
                     warnings=rs.warnings()))).encode()
             return self._send(200, body, "application/json")
+        if u.path == "/api/optimize/pause":
+            q = parse_qs(u.query)
+            rid = (q.get("id", [""])[0] or "")[:64]
+            on = q.get("on", ["0"])[0] == "1"
+            # Only a run that is actually streaming can be held. Setting the
+            # flag for an unknown id would leave an entry nothing ever clears.
+            known = rid in SWEEP_PAUSED
+            if known:
+                SWEEP_PAUSED[rid] = on
+            return self._send(200, json.dumps(
+                dict(id=rid, paused=on and known, known=known)).encode(),
+                "application/json")
         if u.path == "/api/optimize":
             return self._sse(parse_qs(u.query), optimize_stream)
         if u.path == "/api/startup":

@@ -316,6 +316,7 @@
       </div>
 
       <button id="op_run" class="primary big">Optimize</button>
+      <button id="op_pause" class="mini" hidden>Pause</button>
       <button id="op_stop" class="mini" hidden>Stop</button>
       <span id="op_status" class="hint"></span>
 
@@ -1367,9 +1368,9 @@ function opCount(){
   $("#op_run").disabled = !any || !$("#op_contract").value;
 }
 
-// The handle that stops a running sweep. Null when nothing is running, which
-// is also what the refresh guard below tests.
-let OP_RUN = null;
+// Handles for the running sweep: OP_RUN stops it, OP_PAUSE holds and releases
+// it. Both null when nothing is running, which is what the refresh guard tests.
+let OP_RUN = null, OP_PAUSE = null;
 
 // A sweep dies when the page reloads -- the stream closes and the server
 // unwinds on its next progress tick. It cannot be resumed, so an accidental
@@ -1389,20 +1390,34 @@ function opRun(){
     const v = ($("#op_r_"+p.key)||{}).value || "";
     if(v.trim()) q.set("r_"+p.key, v.trim());
   }
+  // The id is how the pause route finds this run; the sweep itself lives
+  // inside the stream below.
+  const id = "s" + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+  q.set("id", id);
   $("#op_run").disabled=true; $("#op_stop").hidden=false;
+  $("#op_pause").hidden=false; $("#op_pause").textContent="Pause";
   $("#op_status").textContent="Starting…";
   const es = new EventSource("/api/optimize?"+q);
+  let paused = false;
+  OP_PAUSE = () => {
+    paused = !paused;
+    $("#op_pause").textContent = paused ? "Resume" : "Pause";
+    fetch(`/api/optimize/pause?id=${id}&on=${paused?1:0}`);
+  };
   // Closing the stream is what stops the sweep: the server's next progress
   // write finds a dead socket and unwinds. The combinations already searched
   // are still charged to the ledger -- stopping early is not a free look.
-  const finish = msg => { OP_RUN=null; $("#op_run").disabled=false;
-    $("#op_stop").hidden=true; $("#op_status").textContent=msg||""; es.close(); };
+  const finish = msg => { OP_RUN=null; OP_PAUSE=null; $("#op_run").disabled=false;
+    $("#op_stop").hidden=true; $("#op_pause").hidden=true;
+    $("#op_status").textContent=msg||""; es.close(); };
   OP_RUN = () => finish("Stopped. The combinations already searched were "
                         + "charged to the ledger.");
   es.addEventListener("meta", e=>{ const m=JSON.parse(e.data);
     $("#op_status").textContent = `${m.combos} combinations…`; });
   es.addEventListener("progress", e=>{ const p=JSON.parse(e.data);
-    $("#op_status").textContent = `${p.done}/${p.total} combinations (${p.secs}s)`; });
+    $("#op_status").textContent = p.paused
+      ? `Paused at ${p.done}/${p.total} combinations — nothing is being searched`
+      : `${p.done}/${p.total} combinations (${p.secs}s)`; });
   es.addEventListener("result", e=>{
     OP=JSON.parse(e.data); opRender(); finish(""); });
   es.addEventListener("error", e=>{ let m="the sweep failed";
@@ -1826,6 +1841,7 @@ $("#op_strategy").onchange=opParams;
 $("#op_params").oninput=opCount;
 $("#op_run").onclick=opRun;
 $("#op_stop") && ($("#op_stop").onclick=()=>OP_RUN&&OP_RUN());
+$("#op_pause") && ($("#op_pause").onclick=()=>OP_PAUSE&&OP_PAUSE());
 $("#op_copy").onclick=()=>{ $("#op_export").select();
   document.execCommand("copy"); $("#op_copy").textContent="copied"; };
 $("#op_gen").onclick=()=>{
