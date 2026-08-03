@@ -95,6 +95,12 @@
   .an-settings > label{display:flex;justify-content:space-between;align-items:center;
     gap:8px;margin:4px 0;font-size:13px}
   .an-settings > label input,.an-settings > label select{width:170px}
+  .an-badge{display:flex;align-items:center;gap:8px;min-height:30px;margin:2px 0 6px}
+  .an-logo{max-height:26px;max-width:170px;object-fit:contain}
+  .an-mono{display:inline-flex;align-items:center;justify-content:center;
+    width:26px;height:26px;border-radius:6px;color:#fff;font-weight:700;font-size:14px}
+  .an-firmname{font-size:13px;font-weight:600}
+  .an-account{margin-bottom:6px;font-size:12px}
   .an-derived{border-top:1px solid var(--line,#333);margin-top:8px;padding-top:8px;
     font-size:12px}
   .an-derived div{display:flex;justify-content:space-between;margin:2px 0}
@@ -211,6 +217,7 @@
         <div id="an_params" class="params"></div>
 
         <h4>Prop firm account</h4>
+        <div id="an_badge" class="an-badge"></div>
         <label>Firm <select id="an_firm"></select></label>
         <label>Variant <select id="an_variant"></select></label>
         <label>Phase <select id="an_phase"></select></label>
@@ -846,10 +853,11 @@ async function anInit(){
   anPluginNote(lib.dir);
 
   const r = await (await fetch("/api/rules")).json();
+  AN.firms = r.firms || [];
   const f = $("#an_firm"); f.innerHTML = "";
-  for(const name of r.firms){
+  for(const fm of AN.firms){
     const o = document.createElement("option");
-    o.value = o.textContent = name; f.appendChild(o);
+    o.value = fm.key; o.textContent = fm.display; f.appendChild(o);
   }
   f.onchange = anFirm;
   // Each level rebuilds the ones below it; only Size, the leaf, goes straight
@@ -924,21 +932,66 @@ async function anFirm(){
   const r = await (await fetch("/api/rules?firm="+
     encodeURIComponent($("#an_firm").value))).json();
   AN.combos = r.combos || [];
+  anBadge();
   // Cascading, not a cross product: only combinations that exist are offered.
-  const vs = [...new Set(AN.combos.map(c=>c.variant))];
-  $("#an_variant").innerHTML = vs.map(v=>`<option>${v}</option>`).join("");
+  // Each option shows the firm's own name for the plan; one a trader cannot buy
+  // carries the reason beside it rather than sitting there looking normal.
+  // Grouped by PLAN, not by slug. LucidPro is one plan the firm sells with two
+  // phases behind it, and the table happens to key those as `lucidpro_eval` and
+  // `lucidpro_funded` -- listing both put "LucidPro" in the dropdown twice with
+  // no way to tell them apart. The phase picker below resolves which slug.
+  const seen = new Set(), vs = [];
+  for(const c of AN.combos){
+    const k = anKey(c);
+    if(!seen.has(k)){ seen.add(k); vs.push(c); }
+  }
+  // What a trader can actually buy goes first, and the list opens on one.
+  // Sorted alphabetically by slug, Take Profit Trader led with its
+  // risk-remediation placement and Topstep opened on a Labs product whose name
+  // is not even confirmed -- the two rows least likely to be what was wanted.
+  vs.sort((a, b) => (a.plan_note ? 1 : 0) - (b.plan_note ? 1 : 0)
+                    || a.plan.localeCompare(b.plan));
+  $("#an_variant").innerHTML = vs.map(c=>
+    `<option value="${anKey(c).replace(/"/g,"&quot;")}">${anKey(c)}</option>`).join("");
   anPhases();
 }
 
+// One plan can span several rule-set slugs, so the phase option carries the
+// slug it resolves to. Everything downstream reads the pair back from here
+// rather than guessing it from the plan name.
+const anKey = c => c.plan + (c.plan_note ? " — " + c.plan_note : "");
+const anPair = () => ($("#an_phase").value || "|").split("|");
+
 function anPhases(){
-  const v = $("#an_variant").value;
-  const ps = [...new Set(AN.combos.filter(c=>c.variant===v).map(c=>c.phase))];
-  $("#an_phase").innerHTML = ps.map(p=>`<option>${p}</option>`).join("");
+  const k = $("#an_variant").value;
+  const seen = new Set(), ps = [];
+  for(const c of AN.combos){
+    const id = c.variant + "|" + c.phase;
+    if(anKey(c)===k && !seen.has(id)){ seen.add(id); ps.push(c); }
+  }
+  $("#an_phase").innerHTML = ps.map(c=>
+    `<option value="${c.variant}|${c.phase}">${c.phase_label}</option>`).join("");
   anSizes();
 }
 
+function anBadge(){
+  // The firm's logo when the file is there, its monogram on its brand colour
+  // when it is not. `onerror` is what makes a missing asset degrade quietly
+  // instead of leaving a broken image where the firm's name should be.
+  const fm = (AN.firms||[]).find(x=>x.key===$("#an_firm").value);
+  const el = $("#an_badge"); if(!el) return;
+  if(!fm){ el.innerHTML = ""; return; }
+  const mono = `<span class="an-mono" style="background:${fm.colour}">${fm.mono}</span>`
+             + `<span class="an-firmname">${fm.display}</span>`;
+  el.innerHTML = fm.logo
+    ? `<img class="an-logo" src="/assets/logos/${fm.logo}" alt="${fm.display}"
+         onerror="this.parentNode.innerHTML=this.dataset.fb"
+         data-fb="${mono.replace(/"/g,"&quot;")}">`
+    : mono;
+}
+
 function anSizes(){
-  const v = $("#an_variant").value, p = $("#an_phase").value;
+  const [v, p] = anPair();
   const ss = [...new Set(AN.combos.filter(c=>c.variant===v&&c.phase===p)
                                   .map(c=>c.size))].sort((a,b)=>a-b);
   $("#an_size").innerHTML = ss.map(s=>
@@ -947,9 +1000,9 @@ function anSizes(){
 }
 
 async function anRules(){
+  const [pv, pp] = anPair();
   const q = new URLSearchParams({firm:$("#an_firm").value,
-    variant:$("#an_variant").value, phase:$("#an_phase").value,
-    size:$("#an_size").value});
+    variant:pv, phase:pp, size:$("#an_size").value});
   const r = await (await fetch("/api/rules?"+q)).json();
   AN.rules = r.rules;
   if(!r.rules){
@@ -965,8 +1018,11 @@ async function anRules(){
   const breach = R.breach_basis === null ? "UNVERIFIED"
     : (R.breach_basis === "intraday_equity"
        ? "real time, includes unrealized" : "realized only, at the close");
+  const D = r.display || {};
   $("#an_rules").innerHTML =
-    [["Drawdown", money(R.max_dd)], ["Ratchet", ratchet], ["Breach", breach],
+    (D.plan ? `<div class="an-account"><b>${D.firm}</b> · ${D.plan} · ${D.phase}`
+      + (D.plan_note ? `<div class="hint">${D.plan_note}</div>` : "") + `</div>` : "")
+    + [["Drawdown", money(R.max_dd)], ["Ratchet", ratchet], ["Breach", breach],
      ["Floor lock", money(R.dd_floor_lock)],
      ["Profit target", money(R.profit_target)],
      ["Daily loss limit", money(R.daily_loss_limit)],
@@ -988,7 +1044,7 @@ async function anRun(){
     start:$("#an_start").value||"", end:$("#an_end").value||"",
     contracts:$("#an_contracts").value, commission:$("#an_comm").value,
     slippage:$("#an_slip").value, firm:$("#an_firm").value,
-    variant:$("#an_variant").value, phase:$("#an_phase").value,
+    variant:anPair()[0], phase:anPair()[1],
     size:$("#an_size").value});
   for(const p of ((AN.strategies[$("#an_strategy").value]||{}).params||[]))
     q.set("p_"+p.key, $("#an_p_"+p.key).value);

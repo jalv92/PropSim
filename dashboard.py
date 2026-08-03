@@ -44,6 +44,7 @@ import slippage
 import tape as tp
 import engine
 import report
+import branding
 
 HERE = Path(__file__).resolve().parent
 PAGE = pr._res("dashboard.html")
@@ -121,6 +122,22 @@ def prepare_stream(q, write):
     lo, hi, days = tp.available_range(contract)
     write("result", dict(contract=contract, first=lo, last=hi, days=days,
                          ticks=len(tp.load_cache(contract)["ts"])))
+
+
+def _combos(firm_key, combos):
+    """Firm/variant/phase/size combinations, each carrying its display name.
+
+    The label and its note travel WITH the combination so the dropdown can say
+    "LucidDaily — no daily loss limit, end-of-day eval drawdown" instead of
+    `luciddaily_dlloff_eod`, and so an account a trader cannot buy says so
+    where they are choosing.
+    """
+    out = []
+    for v, ph, size in combos:
+        label, note = branding.plan(firm_key, v)
+        out.append(dict(variant=v, phase=ph, size=size, plan=label,
+                        plan_note=note, phase_label=branding.phase(firm_key, ph)))
+    return out
 
 
 def _jsonable(v):
@@ -565,6 +582,18 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == "/":
             return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+        if u.path.startswith("/assets/logos/"):
+            # Served from disk, never fetched: this page makes no external
+            # requests by design (see the module docstring). A missing file is
+            # a 404 and the panel falls back to the firm's monogram, so an
+            # absent asset degrades to something readable.
+            name = Path(u.path).name
+            f = HERE / "assets" / "logos" / name
+            if name in ("", ".", "..") or "/" in name or not f.is_file():
+                return self._send(404, b"", "text/plain")
+            mime = ("image/svg+xml" if f.suffix == ".svg"
+                    else "image/png" if f.suffix == ".png" else "application/octet-stream")
+            return self._send(200, f.read_bytes(), mime)
         if u.path == "/favicon.ico":
             return self._send(204, b"", "image/x-icon")
         if u.path == "/api/tape":
@@ -695,9 +724,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/rules":
             q = parse_qs(u.query)
             firm = q.get("firm", [""])[0]
+            # Firms and plans go out under the names their own sites use, from
+            # `branding.py`. The slugs stay the keys; only the labels change.
+            firm_list = [dict(key=k, **branding.firm(k)) for k in pr.firms()]
             if not firm:
                 return self._send(200, json.dumps(dict(
-                    firms=pr.firms())).encode(), "application/json")
+                    firms=firm_list)).encode(), "application/json")
             variant = q.get("variant", [""])[0]
             phase = q.get("phase", [""])[0]
             size = q.get("size", [""])[0]
@@ -708,22 +740,17 @@ class Handler(BaseHTTPRequestHandler):
                 # offering the cross product would let the user build a request
                 # that cannot be answered.
                 return self._send(200, json.dumps(dict(
-                    firms=pr.firms(),
-                    combos=[dict(variant=v, phase=ph, size=s)
-                            for v, ph, s in combos])).encode(),
+                    firms=firm_list, combos=_combos(firm, combos))).encode(),
                     "application/json")
             try:
                 rs = pr.select(firm, variant, phase, int(size))
             except (KeyError, ValueError) as exc:
                 return self._send(200, json.dumps(dict(
-                    firms=pr.firms(),
-                    combos=[dict(variant=v, phase=ph, size=s)
-                            for v, ph, s in combos],
+                    firms=firm_list, combos=_combos(firm, combos),
                     error=str(exc))).encode(), "application/json")
             body = json.dumps(dict(
-                firms=pr.firms(),
-                combos=[dict(variant=v, phase=ph, size=s)
-                        for v, ph, s in combos],
+                firms=firm_list, combos=_combos(firm, combos),
+                display=branding.describe(rs),
                 rules=dict(
                     firm=rs.firm, variant=rs.variant, phase=rs.phase,
                     size=rs.size, start_balance=rs.start_balance,
