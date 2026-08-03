@@ -17,6 +17,7 @@ import argparse
 
 import numpy as np
 
+import ledger
 import nttrades
 import sim
 from prop_rules import INTRA, NONE, RuleSet
@@ -180,6 +181,24 @@ def prop(trades, rules, contracts=1, sims=20_000, rng=None):
             trades_per_day=pool.get("trades_per_day")))
 
 
+def build(trades, meta, rules, contracts=1, sims=20_000, rng=None):
+    """The whole report for one run: the table, the rules, and the price of the look.
+
+    `prop` is None when there are no trades -- there is nothing to judge, and a
+    verdict of "survived" on an empty range would be the most flattering lie the
+    product could tell.
+    """
+    return dict(
+        has_trades=bool(trades),
+        grid=grid(trades, meta, contracts),
+        prop=(prop(trades, rules, contracts, sims, rng) if trades else None),
+        # Carried INSIDE the report, not on another tab: a t-statistic means
+        # something different on trial 1 than on trial 43, and the two numbers
+        # have to be read together or the first one wins by default.
+        noise=ledger.stats(),
+        meta=dict(meta, contracts=contracts))
+
+
 def selfcheck():
     from types import SimpleNamespace
 
@@ -258,6 +277,30 @@ def selfcheck():
     assert d["run"]["pnl_until"] == -1200.0, d
     assert d["run"]["pnl_after"] == 5000.0, d
 
+    # ---- build --------------------------------------------------------------
+    b = build(fatal, dict(meta, days=3), rules, contracts=1, sims=200,
+              rng=np.random.default_rng(4))
+    assert b["has_trades"] and b["grid"]["all"]["trades"] == 4, b
+    assert b["prop"]["run"]["outcome"] == "busted", b
+    assert set(b["noise"]) >= {"trials", "expected_max_t", "threshold_t"}, b
+
+    # A range with no trades is a legitimate answer, not a crash. Every earlier
+    # version of a report in this project has fallen over on the empty case at
+    # least once, always in front of the user.
+    empty = build([], dict(meta, days=0), rules, sims=200,
+                  rng=np.random.default_rng(4))
+    assert empty["has_trades"] is False, empty
+    assert empty["grid"]["all"]["trades"] == 0, empty
+    assert empty["prop"] is None, empty
+
+    # A long-only strategy is a normal result, not an edge case, and it empties
+    # a whole column. The zero-trade branch has to return the SAME key set as
+    # the populated one, or the day someone adds a metric to one branch and not
+    # the other the report renders a hole and nothing here notices.
+    only_long = grid([t for t in trades if t.direction > 0], meta)
+    assert only_long["short"]["trades"] == 0, only_long
+    assert set(only_long["short"]) == set(only_long["long"]), only_long
+
     print(f"selfcheck OK: grid identity holds on {g['all']['trades']} trades "
           f"(net {g['all']['net_profit']:+,.2f} = gross "
           f"{g['all']['gross_profit']:,.2f} {g['all']['gross_loss']:+,.2f} "
@@ -269,7 +312,9 @@ def selfcheck():
           f"fiction); an unverified breach basis disables the verdict"
           f"; a daily loss limit still credits its booked loss to the real "
           f"half ({d['run']['pnl_until']:+,.0f} real {d['run']['pnl_after']:+,.0f} "
-          f"fiction)")
+          f"fiction)"
+          f"; an empty range returns zeros instead of raising, and an emptied "
+          f"column keeps every key")
 
 
 def main():
