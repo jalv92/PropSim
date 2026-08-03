@@ -158,7 +158,9 @@ def sweep(contract, strategy, timeframe=5, start=None, end=None, ranges=None,
 
     t0 = time.time()
     rows = []
-    for i, p in enumerate(combos):
+    done = 0
+    try:
+      for i, p in enumerate(combos):
         trades, meta = engine.backtest(contract, strategy, timeframe, start, end,
                                        params=p, costs=costs, ctx=ctx)
         s = engine.summarise(trades, meta)
@@ -172,8 +174,30 @@ def sweep(contract, strategy, timeframe=5, start=None, end=None, ranges=None,
             t_daily=(None if t_daily != t_daily else round(float(t_daily), 3)),
             subperiods=[round(v, 2) for v in subs],
             positive_subperiods=sum(1 for v in subs if v > 0)))
+        done = i + 1
         if on_progress and (i % 5 == 0 or i == len(combos) - 1):
             on_progress(i + 1, len(combos), time.time() - t0)
+    except BaseException:
+        # A CANCELLED SWEEP STILL LOOKED AT THE DATA. The user closed the page
+        # or pressed Stop, so no result is returned -- but `done` combinations
+        # were searched and the noise ceiling has to know, or stopping a sweep
+        # early becomes a way to search for free. The partial trial carries its
+        # own fingerprint so it cannot collapse into the completed sweep that a
+        # re-run would write.
+        if log_to_ledger and done:
+            ledger.append("sweep", strategy=strategy, contract=contract,
+                          fp=ledger.fingerprint(kind="sweep_partial",
+                                                strategy=strategy, contract=contract,
+                                                tf=timeframe, start=ctx["start"],
+                                                end=ctx["end"], ranges=ranges,
+                                                done=done,
+                                                slip=costs.slippage_ticks,
+                                                comm=costs.commission),
+                          timeframe=f"{timeframe}m", start=ctx["start"],
+                          end=ctx["end"], days=ctx["days"],
+                          n_trials=done, combos=len(combos), cancelled=True,
+                          ranges={k: [float(v) for v in vs] for k, vs in ranges.items()})
+        raise
 
     # Rank by the gate statistic among configurations that could clear the bar;
     # everything else sorts below it, still visible.
@@ -311,7 +335,35 @@ def selfcheck():
     snippet = ninjascript_block(res, res["rows"][0])
     assert "NOT VALIDATED" in snippet and "StopTicks" in snippet, snippet
 
-    print(f"selfcheck OK: prepared tape matches a cold run exactly; sub-periods sum "
+    # A CANCELLED SWEEP MUST STILL COST ITS LOOKS. Without this the Stop button
+    # is a way to search the data for free: run 200 combinations, read the
+    # progress, cancel, and the noise ceiling never hears about it.
+    import ledger as _ledger, tempfile, json as _json
+    from pathlib import Path as _Path
+    with tempfile.TemporaryDirectory() as td:
+        led = _Path(td) / "trials.jsonl"
+        real_append = _ledger.append
+        _ledger.append = lambda kind, path=None, **kw: real_append(kind, led, **kw)
+        try:
+            boom = RuntimeError("client went away")
+            def die(done, total, secs):
+                if done >= 2: raise boom
+            try:
+                sweep(c, "orb", 5, ranges={"stop_ticks": [20, 30, 40, 50]},
+                      on_progress=die)
+            except RuntimeError as exc:
+                assert exc is boom, exc
+            else:
+                raise AssertionError("the cancelled sweep did not propagate")
+        finally:
+            _ledger.append = real_append
+        rows = [_json.loads(l) for l in led.read_text().splitlines()]
+        assert len(rows) == 1, rows
+        assert rows[0]["cancelled"] is True and rows[0]["n_trials"] >= 1, rows[0]
+        cancelled_trials = rows[0]["n_trials"]
+
+    print(f"selfcheck OK: a cancelled sweep still charged {cancelled_trials} "
+          f"trial(s) to the ledger; prepared tape matches a cold run exactly; sub-periods sum "
           f"to the total; the noise ceiling vetoes a t=2.0 winner at 200 trials "
           f"(ceiling {ledger.expected_max_t(200):.2f}); 4-combination sweep ran in "
           f"{res['elapsed']}s and every row carries a verdict")
