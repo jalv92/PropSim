@@ -17,6 +17,10 @@ import argparse
 
 import numpy as np
 
+import nttrades
+import sim
+from prop_rules import INTRA, NONE, RuleSet
+
 
 def _column(trades, commission, days, contracts):
     """One column of the summary table for a subset of trades.
@@ -110,6 +114,65 @@ def grid(trades, meta, contracts=1):
                       commission, days, contracts))
 
 
+def prop(trades, rules, contracts=1, sims=20_000, rng=None):
+    """The same run seen through one prop firm's rules.
+
+    Two answers, deliberately kept apart. `run` is what happened to THIS
+    sequence -- a fact. `projection` is the Monte Carlo over resampled futures --
+    a projection. Presenting either as the other is how a sample of size one
+    turns into a probability, or a probability into a promise.
+    """
+    ordered = sorted(trades, key=lambda t: t.entry_time)
+    total = sum(t.pnl for t in ordered) * contracts
+
+    rep = sim.replay(ordered, rules, contracts=contracts)
+    after = 0.0
+    if rep["outcome"] == "busted" and rep["date"] is not None:
+        # Walk to the trade the replay named and sum from there. Deriving this
+        # from the trade list rather than from `total - rep["profit"]` is the
+        # point: the two only agree if the replay's indices are right.
+        same_day = [t for t in ordered if t.date == rep["date"]]
+        killer = same_day[rep["trade_of_day"] - 1]
+        idx = ordered.index(killer)
+        after = sum(t.pnl for t in ordered[idx:]) * contracts
+
+    pool = nttrades.to_pool(ordered)
+    prof = dict(p=0.5, rr=1.0, risk=200.0, tpd=pool["width"],
+                friction=0.0, pool=pool)
+    mc = sim.sim_eval(prof, sim.policy_fixed(contracts), sims,
+                      rng if rng is not None else np.random.default_rng(7),
+                      rules)
+
+    return dict(
+        # A firm whose breach basis was never verified against a primary source
+        # gets no verdict. Defaulting it to what the other four do would be
+        # inventing a rule and printing it as a measurement.
+        applicable=rules.breach_basis is not None,
+        # MEASURED means every trade carried a tick-measured intra-trade path;
+        # BOUNDED means at least one fell back to `mfe - mae`, its upper bound,
+        # which at size is not a near miss (0.000 against 0.226 on Apex 25K at
+        # three contracts). The reader must be able to tell which they got.
+        fidelity="measured" if pool["have_path"] else "bounded",
+        run=dict(
+            outcome=rep["outcome"], reason=rep["reason"],
+            date=rep["date"], day=rep["day"],
+            trade_of_day=rep["trade_of_day"],
+            deepest_fall=(max(t.intra_mdd for t in ordered) * contracts
+                          if ordered else 0.0),
+            allowed_fall=rules.max_dd,
+            margin=rep["margin"], low_water=rep["low_water"],
+            best_day=rep["best_day"], days=rep["days"],
+            pnl_until=total - after, pnl_after=after,
+            warnings=rep["warnings"], account=rep["account"]),
+        projection=dict(
+            p_pass=float(mc["p_pass"]), p_bust=float(mc["p_bust"]),
+            p_timeout=float(mc["p_timeout"]),
+            days_to_pass=(None if mc["days"] != mc["days"] else float(mc["days"])),
+            sims=sims, pool_days=pool["n_days"],
+            distinct_days=pool.get("distinct_days"),
+            trades_per_day=pool.get("trades_per_day")))
+
+
 def selfcheck():
     from types import SimpleNamespace
 
@@ -137,11 +200,54 @@ def selfcheck():
     for k in ("net_profit", "gross_profit", "gross_loss", "trades", "commission"):
         assert abs(g["long"][k] + g["short"][k] - g["all"][k]) < 0.01, (k, g)
 
+    # ---- the prop-firm block ------------------------------------------------
+    rules = RuleSet(
+        firm="test", variant="test", phase="evaluation", size=50_000,
+        start_balance=50_000.0, profit_target=3_000.0, profit_target_basis=None,
+        max_dd=2_000.0, hwm_basis=NONE, breach_basis=INTRA, dd_lock_offset=None,
+        daily_loss_limit=None, dll_soft=False, consistency_pct=None,
+        consistency_effect=None, min_days=0, qualifying_day_min_profit=None,
+        max_contracts=5, micro_ratio=10.0, profit_split=0.9,
+        buffer_required=None, min_payout=None, max_withdrawal=None,
+        automation_allowed=None, account_cost=None, reset_cost=None,
+        unmodeled_rules=[], verified=True, retrieved="test", source_url=None)
+
+    # Day 2's second trade digs $2,600 below a floor $2,000 under a static
+    # $50,000 start, so the account dies there and the trades after it are
+    # fiction. Written to kill on a KNOWN trade so the split can be checked
+    # against the trade list rather than against itself.
+    fatal = [_t(1, 1, 300.0, -100.0, 400.0, 100.0),
+             _t(2, 1, 200.0, -100.0, 300.0, 100.0),
+             _t(2, 2, -900.0, -2600.0, 100.0, 2700.0),
+             _t(3, 1, 5000.0, -50.0, 5200.0, 50.0)]
+    p = prop(fatal, rules, contracts=1, sims=500,
+             rng=np.random.default_rng(4))
+    assert p["run"]["outcome"] == "busted", p
+    assert (p["run"]["day"], p["run"]["trade_of_day"]) == (2, 2), p
+
+    # THE SPLIT MUST ADD UP. `until` comes from the replay's balance and `after`
+    # from walking the trade list to the trade the replay named, so the two are
+    # computed by different routes and only agree if the replay's day/trade
+    # indices actually point at the trade that killed the account.
+    total = sum(t.pnl for t in fatal)
+    assert abs(p["run"]["pnl_until"] + p["run"]["pnl_after"] - total) < 0.01, p
+    assert p["run"]["pnl_after"] == 4100.0, p     # -900 + 5000, the fiction
+
+    # An unverified breach basis must disable the verdict, not default it to the
+    # majority. Guessing here is how a simulator quietly invents a rule.
+    unver = RuleSet(**dict(rules.__dict__, breach_basis=None))
+    assert prop(fatal, unver, sims=200,
+                rng=np.random.default_rng(4))["applicable"] is False
+
     print(f"selfcheck OK: grid identity holds on {g['all']['trades']} trades "
           f"(net {g['all']['net_profit']:+,.2f} = gross "
           f"{g['all']['gross_profit']:,.2f} {g['all']['gross_loss']:+,.2f} "
           f"- commission {g['all']['commission']:,.2f}); "
-          f"long+short == all")
+          f"long+short == all"
+          f"; the account dies on day {p['run']['day']} trade "
+          f"{p['run']['trade_of_day']} and the split adds up "
+          f"({p['run']['pnl_until']:+,.0f} real {p['run']['pnl_after']:+,.0f} "
+          f"fiction); an unverified breach basis disables the verdict")
 
 
 def main():
