@@ -17,6 +17,41 @@ copy is kept and the UI says which one is in use.
 
 ---
 
+## Backtesting
+
+**Where it comes from:** `report.py`, composing `sim.replay` (the trade-by-trade
+grid) and `sim.sim_eval` (the Monte Carlo) over one run from `engine.py`.
+`report.build()` does not re-derive a single drawdown rule — it arranges numbers
+that already exist elsewhere, because a second definition of a rule is how this
+project got its one bug from having two (`sim._day_draw`), and a third would be
+the one on screen.
+
+Picking a firm/variant/phase/size selects a `RuleSet` the same way the Prop Firm
+tab does; picking a strategy, contract, date range and timeframe runs it the same
+way the Backtest tab does. `build()` returns one dict — `grid`, `prop`, `noise`,
+`meta`, `has_trades` — and the page reads exactly that, twice: **Raw backtest**
+renders `grid` (NinjaTrader's All/Long/Short table, plus PropSim's own
+intra-trade fall rows), **Prop-firm reality** renders `prop` (what this run did
+against the rules picked above — verdict, day, trade, deepest fall vs. allowed,
+the P&L-until-death / fiction-afterwards split — then the same Monte Carlo
+projection the Prop Firm tab shows). Switching between the two is a local
+re-render; it costs no request and no trial.
+
+**Only PropSim's own strategies run here** — the strategy picker is
+`/api/strategies`, the same list the Backtest tab offers, with no import source
+alongside it. That restriction is what makes the drawdown verdict exact rather
+than an upper bound: these are the only runs with a tick-measured intra-trade
+path (`intra_mdd` on every trade), so a real-time trailing floor can be tested
+against the actual worst equity moment inside a trade, not just its close.
+Runs captured from NinjaTrader (the Imported tab) carry no such path — NinjaTrader
+never records one — so they are read against the end-of-day rules only, on their
+own tab.
+
+One **Run** writes one trial to the ledger, same as the Backtest tab; an
+identical re-run collapses to the same fingerprint and is not charged twice.
+
+---
+
 ## Data
 
 **Where it comes from:** `ntdata.inventory()` walks your NinjaTrader folder.

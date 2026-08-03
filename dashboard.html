@@ -295,7 +295,7 @@
       <div class="an-settings">
         <h4>General</h4>
         <label>Backtest type
-          <select disabled title="parameter sweeps live on the Optimize tab">
+          <select id="an_bttype" disabled title="parameter sweeps live on the Optimize tab">
             <option>Backtest</option></select></label>
         <label>Strategy <select id="an_strategy"></select></label>
         <div id="an_params" class="params"></div>
@@ -310,7 +310,7 @@
         <h4>Data series</h4>
         <label>Instrument <select id="an_contract"></select></label>
         <span class="hint" id="an_range">—</span>
-        <label>Type <input value="Minute" disabled></label>
+        <label>Type <input id="an_bartype" value="Minute" disabled></label>
         <label>Value <select id="an_tf">
           <option>1</option><option>3</option><option selected>5</option>
           <option>15</option><option>30</option><option>60</option></select></label>
