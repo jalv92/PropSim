@@ -220,6 +220,7 @@
         <h4>Data series</h4>
         <label>Instrument <select id="an_contract"></select></label>
         <span class="hint" id="an_range">—</span>
+        <div id="an_prep"></div>
         <label>Type <input id="an_bartype" value="Minute" disabled></label>
         <label>Value <select id="an_tf">
           <option>1</option><option>3</option><option selected>5</option>
@@ -820,17 +821,18 @@ let AN = {combos:[], rules:null, ready:false, view:"raw"};
 async function anInit(){
   if(AN.ready) return; AN.ready = true;
   const lib = await loadLibrary();
-  // Only contracts whose tick cache exists can be backtested. Offering the rest
-  // would put a Run button in front of data that is not there yet.
-  AN.tape = TAPE.filter(c => c.ready);
+  // EVERY contract is offered, cached or not. Hiding the uncached ones was how a
+  // contract the user had just downloaded simply failed to exist on this page,
+  // with nothing saying why. An uncached one disables Run and offers to build.
+  AN.tape = TAPE;
   const sel = $("#an_contract"); sel.innerHTML = "";
   for(const c of AN.tape){
     const o = document.createElement("option");
-    o.value = o.textContent = c.contract; sel.appendChild(o);
+    o.value = o.textContent = c.contract;
+    if(!c.ready) o.textContent += "  (not prepared)";
+    else if(c.stale) o.textContent += "  (new data available)";
+    sel.appendChild(o);
   }
-  if(!AN.tape.length)
-    $("#an_report").innerHTML = '<div class="warn">No contract has a tick cache '
-      + 'yet. Build one on the Data tab, then come back.</div>';
   sel.onchange = anContract; anContract();
 
   AN.strategies = {};
@@ -881,7 +883,41 @@ function anParams(){
 
 function anContract(){
   const c = (AN.tape||[]).find(x=>x.contract===$("#an_contract").value);
-  $("#an_range").textContent = c && c.first ? `${c.first} .. ${c.last}` : "—";
+  const note = $("#an_prep");
+  $("#an_run").disabled = !(c && c.ready);
+  if(!c){ $("#an_range").textContent = "—"; note.innerHTML = ""; return; }
+  $("#an_range").textContent = c.ready ? `${c.first} .. ${c.last}`
+                                       : `${c.raw_first} .. ${c.raw_last}, not prepared`;
+  // The two ranges are stated side by side whenever they disagree. A backtester
+  // that quietly covers less than the data on disk is the failure this reports.
+  if(!c.ready)
+    note.innerHTML = `<div class="warn">This contract has ${c.raw_days} day(s) on
+      disk but no tick cache yet. <button id="an_prepare" class="mini">Prepare
+      it</button> — about 15 seconds.</div>`;
+  else if(c.stale)
+    note.innerHTML = `<div class="warn">The cache covers <b>${c.last}</b> but you
+      have data through <b>${c.raw_last}</b> (${c.raw_days} days on disk). The
+      backtest can only use what the cache holds.
+      <button id="an_prepare" class="mini">Rebuild it</button></div>`;
+  else note.innerHTML = "";
+  if($("#an_prepare")) $("#an_prepare").onclick = ()=>anPrepare(c);
+}
+
+function anPrepare(c){
+  const note = $("#an_prep");
+  const q = "contract=" + encodeURIComponent(c.contract) + (c.stale ? "&force=1" : "");
+  note.innerHTML = '<div class="hint">Reading your .ncd files…</div>';
+  const es = new EventSource("/api/tape/prepare?" + q);
+  es.addEventListener("progress", e=>{
+    const d = JSON.parse(e.data);
+    note.innerHTML = `<div class="hint">Reading your .ncd files… ${d.pct}%
+      (${d.ticks.toLocaleString()} ticks)</div>`; });
+  es.addEventListener("result", e=>{
+    es.close();
+    loadLibrary(true).then(()=>{ AN.tape = TAPE; anContract(); });
+  });
+  es.addEventListener("error", ()=>{ es.close();
+    note.innerHTML = '<div class="warn">Could not prepare this contract.</div>'; });
 }
 
 async function anFirm(){
@@ -1153,7 +1189,7 @@ function opInit(){
   const keep = $("#op_contract").value;
   $("#op_contract").innerHTML = ready.map(c=>
     `<option value="${c.contract}">${c.contract}</option>`).join("")
-    || `<option value="">— prepare a contract on the Backtest tab first —</option>`;
+    || `<option value="">— prepare a contract on the Backtesting tab first —</option>`;
   if(keep && ready.some(c=>c.contract===keep)) $("#op_contract").value = keep;
   opContract(); opCount();
 }
@@ -1278,7 +1314,7 @@ function aiInit(){
   const keep = $("#ai_contract").value;
   $("#ai_contract").innerHTML = ready.map(c=>
     `<option value="${c.contract}">${c.contract}</option>`).join("")
-    || `<option value="">— prepare a contract on the Backtest tab first —</option>`;
+    || `<option value="">— prepare a contract on the Backtesting tab first —</option>`;
   if(keep && ready.some(c=>c.contract===keep)) $("#ai_contract").value = keep;
   if(!$("#ai_tstrategy").options.length){
     $("#ai_tstrategy").innerHTML = STRATS.map(s=>

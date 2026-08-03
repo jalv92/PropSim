@@ -578,9 +578,18 @@ class Handler(BaseHTTPRequestHandler):
                         lo, hi, days = tp.available_range(name)
                     except Exception:
                         ready = False
+                # THE CACHE IS BUILT ONCE AND DOES NOT NOTICE NEW FILES. Reporting
+                # only its range makes a contract with 44 days on disk look like a
+                # contract with 34: the backtester then refuses dates the user
+                # knows they downloaded, and nothing on the page explains why.
+                # Both ranges go out, and `stale` is the difference stated plainly.
+                raw_first, raw_last = _fmt_day(v["first"]), _fmt_day(v["last"])
+                stale = bool(ready and hi and raw_last > hi)
                 rows.append(dict(contract=name, ready=ready, days=days,
-                                 first=lo or _fmt_day(v["first"]),
-                                 last=hi or _fmt_day(v["last"]),
+                                 first=lo or raw_first,
+                                 last=hi or raw_last,
+                                 raw_first=raw_first, raw_last=raw_last,
+                                 raw_days=v["days"], stale=stale,
                                  mb=v["mb"], est_ticks=v["est_ticks"]))
             return self._send(200, json.dumps(dict(contracts=rows)).encode(),
                               "application/json")
