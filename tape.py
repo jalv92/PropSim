@@ -362,12 +362,19 @@ def selfcheck():
         assert cached_contracts()[0] == cont.ALL, "ALL must sort first"
         b = build_bars(slice_range(a, rth_only=True), 300)
         assert len(b["t"]) > 0, "ALL must bar like any other contract"
-        # The one behaviour that actually distinguishes the wiring from its
-        # absence: available_range("ALL") must answer from the sidecar JSON,
-        # not by loading the 500 MB+ tape to recompute the same three values.
-        m = cont.load_meta()
-        assert available_range(cont.ALL) == (m["first"], m["last"], m["sessions"]), \
-            "ALL's range must come from the sidecar, not from loading the tape"
+        # Prove the sidecar path is TAKEN, not merely that it agrees with the tape.
+        # Both return the same three values -- that is what the sidecar is for --
+        # so equality cannot tell them apart; the previous attempt at this
+        # assertion passed with the branch deleted. A sentinel can tell them apart:
+        # these values exist nowhere in the tape.
+        real = cont.load_meta
+        try:
+            cont.load_meta = lambda: {"first": "1999-01-01", "last": "1999-12-31",
+                                      "sessions": 7}
+            assert available_range(cont.ALL) == ("1999-01-01", "1999-12-31", 7), \
+                "available_range('ALL') must read the sidecar, not load the tape"
+        finally:
+            cont.load_meta = real
         print(f"  ALL: {len(a['ts']):,} ticks, {nd_a} sessions {lo_a}..{hi_a}")
     else:
         print("  ALL not built yet — run: python3 continuous.py --build")
