@@ -635,6 +635,26 @@ def selfcheck():
         m = load_meta()
         assert m and m.get("inputs"), "a built ALL must record what built it"
 
+    # THE EQUIVALENCE THAT MATTERS. A backtest on ALL over dates inside one
+    # contract must return the same trades as the same backtest on that
+    # contract alone. If the stitch shifted, dropped or duplicated a session,
+    # this is where it shows.
+    if cache_path().exists():
+        import engine
+        m = load_meta()
+        src = m["contracts"][-1]                    # newest contract
+        lo, hi, _ = tape.available_range(src)
+        a, _ = engine.backtest(src, "ma_cross", 300, lo, hi)
+        b, _ = engine.backtest(ALL, "ma_cross", 300, lo, hi)
+        assert len(a) == len(b), f"{src}: {len(a)} trades, ALL: {len(b)}"
+        for x, y in zip(a, b):
+            assert x.entry_time == y.entry_time, (x.entry_time, y.entry_time)
+            assert abs(x.entry_price - y.entry_price) < 0.01, \
+                (x.entry_price, y.entry_price)
+            assert abs(x.pnl - y.pnl) < 0.01, (x.pnl, y.pnl)
+        print(f"  ALL matches {src} trade-for-trade over {lo}..{hi} "
+              f"({len(a)} trades)")
+
     print("selfcheck OK: front months monotone across an oscillating roll")
 
 
