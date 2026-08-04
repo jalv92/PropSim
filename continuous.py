@@ -20,10 +20,13 @@ ROOT = "NQ"                     # ALL stitches this instrument only
 ROLL_BAND = (150.0, 350.0)
 
 # Largest tolerable move between the close of one weekday session and the open
-# of the next, in the adjusted series. Over a 24-hour tape those sessions are
-# separated only by the 17:00-18:00 maintenance break: measured median 8 points,
-# 90th percentile 33, maximum 134.5, none above 150. A session assigned to the
-# wrong contract sits a roll spread out of line and trips this immediately.
+# of the next weekday session, in the adjusted series (weekends and holidays are
+# excluded -- see audit()). Over a 24-hour tape consecutive weekdays are
+# separated only by the 17:00-18:00 maintenance break: measured on the real
+# stitched tape, 50 weekday-consecutive boundaries, median 1.00 points, 90th
+# percentile 2.00, maximum 3.00, none above 150 -- 50x headroom. A session
+# assigned to the wrong contract sits a roll spread out of line and trips this
+# immediately.
 SESSION_GAP_LIMIT = 150.0
 
 # Seconds both contracts must print in for a roll spread to be measurable. The
@@ -130,16 +133,26 @@ def audit(ts: np.ndarray, px: np.ndarray, rolls: list) -> list:
         bad.append(f"{n_mid} intraday step(s) of {lo:g}+ points")
 
     # The strong one: a whole session on the wrong contract. Consecutive
-    # sessions are separated only by the maintenance break, so the adjusted
-    # price barely moves across it -- measured median 8 points, 90th percentile
-    # 33, maximum 134.5. A session a roll spread out of line shows up here even
-    # when the step onto it hid inside an overnight gap, which is exactly how
-    # the morning of 2025-03-18 stayed on the wrong contract undetected during
-    # the NQData build.
+    # *weekdays* are separated only by the maintenance break, so the adjusted
+    # price barely moves across it (see SESSION_GAP_LIMIT). A session a roll
+    # spread out of line shows up here even when the step onto it hid inside an
+    # overnight gap, which is exactly how the morning of 2025-03-18 stayed on
+    # the wrong contract undetected during the NQData build.
+    #
+    # Weekends and holidays are NOT consecutive weekdays -- PropSim's tape is
+    # 24-hour, so Friday's close sits next to Sunday's Globex open in the array
+    # with a real multi-day gap between them, and that gap is legitimately
+    # roll-sized. Restricting the check to boundaries exactly one calendar day
+    # apart, both Monday-Friday, is what keeps it from firing on every weekend.
     edges = np.flatnonzero(np.r_[True, np.diff(day) != 0])
     ends = np.r_[edges[1:] - 1, len(ts) - 1]
+    from_day = day[ends[:-1]]
+    into_day = day[edges[1:]]
+    weekday_from = (from_day + 3) % 7          # 0=Monday .. 6=Sunday, day 0 = Thu 1970-01-01
+    weekday_into = (into_day + 3) % 7
+    consecutive_weekday = ((into_day - from_day) == 1) & (weekday_from < 5) & (weekday_into < 5)
     gaps = np.abs(px[edges[1:]].astype(np.float64) - px[ends[:-1]])
-    over = np.flatnonzero(gaps > SESSION_GAP_LIMIT)
+    over = np.flatnonzero(consecutive_weekday & (gaps > SESSION_GAP_LIMIT))
     if len(over):
         first = tape.date_str(int(day[edges[1:][over[0]]]))
         bad.append(f"{len(over)} session gap(s) over {SESSION_GAP_LIMIT:g} pts, "
@@ -234,16 +247,22 @@ def build(on_progress=None) -> dict:
     parts_ts, parts_px, parts_vol, parts_side = [], [], [], []
     rolls = []
     prev_c = None
-    prev_ts = prev_px = None
+    prev_ts = prev_px = prev_lastd = None
 
     for c in cs:
         days = mine.get(c) or []
         z = np.load(tape.cache_path(c))
         ts, px = z["ts"], z["px"]
         if days and prev_c is not None:
-            # Measure on the first session this contract owns: both it and the
-            # outgoing contract still print there.
-            sp, n = measure_roll(prev_ts, prev_px, ts, px, days[0])
+            # Measure on the day the OUTGOING contract last owned, not the day
+            # the new one first owns -- those are different days on real data
+            # (e.g. NQ 06-26 ends 06-11, NQ 09-26 starts 06-12) and the outgoing
+            # contract has already stopped printing on the new contract's first
+            # day, so matching there finds nothing. prev_lastd is the day both
+            # still trade. The roll's recorded `day` stays days[0] -- that is
+            # where ownership switches and where the adjustment boundary sits,
+            # even though the spread itself was observed the day before.
+            sp, n = measure_roll(prev_ts, prev_px, ts, px, prev_lastd)
             rolls.append(dict(day=int(days[0]), **{"from": prev_c, "to": c},
                               spread=sp, n=int(n)))
         if days:
@@ -254,7 +273,7 @@ def build(on_progress=None) -> dict:
             # measurement, not the whole contract.
             lastd = days[-1]
             m = tape.day_index(ts) == lastd
-            prev_ts, prev_px, prev_c = ts[m], px[m], c
+            prev_ts, prev_px, prev_c, prev_lastd = ts[m], px[m], c, lastd
         tick(sum(len(p) for p in parts_ts))
         del z, ts, px
 
@@ -368,11 +387,23 @@ def selfcheck():
     sp3, n3 = measure_roll(old_ts, old_px, new_ts, new_px, day + 1)
     assert sp3 is None and n3 == 0, (sp3, n3)
 
-    # A sound two-session tape: one session per day, a small overnight move.
+    # A sound multi-session tape: one session per day, a small overnight move.
+    # Base day 20003 is a Monday, so consecutive indices are consecutive
+    # weekdays -- exactly the boundaries the session-gap check now looks at.
     def _tape(sess_closes):
         ts, px = [], []
         for i, close in enumerate(sess_closes):
-            d = 20000 + i
+            d = 20003 + i
+            s0 = (np.int64(d) * 86400 + tape.NET_EPOCH_S) * tape.TPS
+            n = 400
+            ts.append(s0 + (36000 + np.arange(n, dtype=np.int64)) * tape.TPS)
+            px.append(np.full(n, close, np.float32))
+        return np.concatenate(ts), np.concatenate(px)
+
+    # Like _tape but with explicit day numbers, for the weekend-vs-weekday check.
+    def _tape_at(days_closes):
+        ts, px = [], []
+        for d, close in days_closes:
             s0 = (np.int64(d) * 86400 + tape.NET_EPOCH_S) * tape.TPS
             n = 400
             ts.append(s0 + (36000 + np.arange(n, dtype=np.int64)) * tape.TPS)
@@ -380,7 +411,7 @@ def selfcheck():
         return np.concatenate(ts), np.concatenate(px)
 
     good_ts, good_px = _tape([23000.0, 23010.0, 23005.0])
-    ok_rolls = [dict(day=20001, **{"from": "NQ 09-25", "to": "NQ 12-25"},
+    ok_rolls = [dict(day=20004, **{"from": "NQ 09-25", "to": "NQ 12-25"},
                      spread=241.75, n=26104)]
     assert audit(good_ts, good_px, ok_rolls) == [], audit(good_ts, good_px, ok_rolls)
 
@@ -394,7 +425,7 @@ def selfcheck():
 
     # Out-of-band roll spread.
     assert audit(good_ts, good_px,
-                 [dict(day=20001, **{"from": "a", "to": "b"},
+                 [dict(day=20004, **{"from": "a", "to": "b"},
                        spread=12.0, n=999)]), "12 points is not a roll"
 
     # Unsorted time.
@@ -410,6 +441,19 @@ def selfcheck():
     large_ts, large_px = _tape([23000.0])
     large_px[200:] += 1000.0
     assert audit(large_ts, large_px, ok_rolls), "must reject a large intraday corruption"
+
+    # Weekends are not consecutive weekdays. Day 20000 is a Friday, 20002 the
+    # following Sunday -- adjacent sessions in a 24-hour tape, real 300-point
+    # move across the break, and the check must stay quiet about it.
+    fri_sun_ts, fri_sun_px = _tape_at([(20000, 23000.0), (20002, 23300.0)])
+    assert audit(fri_sun_ts, fri_sun_px, []) == [], \
+        "a weekend gap must not trip the session-gap check"
+
+    # The same 300-point gap between two consecutive weekdays (20003 Monday,
+    # 20004 Tuesday) IS a real failure and must still be caught.
+    mon_tue_ts, mon_tue_px = _tape_at([(20003, 23000.0), (20004, 23300.0)])
+    fails = audit(mon_tue_ts, mon_tue_px, [])
+    assert any("session" in f for f in fails), fails
 
     # to_raw undoes the back-adjustment. Adjustment is POSITIVE going back in
     # time -- the deferred contract trades above the front, so each roll puts an
