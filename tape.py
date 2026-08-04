@@ -69,9 +69,20 @@ def build_cache(contract: str, nt_root=None, force=False, on_progress=None) -> d
     for fi, f in enumerate(files):
         if on_progress and fi % 25 == 0:
             on_progress(fi, len(files), len(ts))
-        for tt, price, boff, aoff, v in read_ticks(f):
-            ts.append(tt); px.append(price); vol.append(v)
-            side.append(BUY if aoff == 0 else (SELL if boff == 0 else UNKNOWN))
+        try:
+            for tt, price, boff, aoff, v in read_ticks(f):
+                ts.append(tt); px.append(price); vol.append(v)
+                side.append(BUY if aoff == 0 else (SELL if boff == 0 else UNKNOWN))
+        except Exception as e:
+            # ponytail: skip one corrupt/unsupported hour, log it -- matches
+            # ncd_parse.minute_features(), which has the same guard. Real data
+            # hit this once in 5,560 hourly files across all NQ contracts: a
+            # single byte carrying an undocumented flag value that even the
+            # upstream reference parser (bboyle1234/NTDFileReader) can't
+            # decode either, so this is a one-off anomaly in that hour, not a
+            # systematic bug -- skipping it loses one hour of one contract,
+            # not the build.
+            print(f"  skipping corrupt hour {f.name}: {e}")
 
     arr = dict(ts=np.asarray(ts, np.int64), px=np.asarray(px, np.float32),
                vol=np.asarray(vol, np.int32), side=np.asarray(side, np.int8))
