@@ -282,10 +282,8 @@
         <label>Instrument <select id="an_contract"></select></label>
         <span class="hint" id="an_range">—</span>
         <div id="an_prep"></div>
-        <label>Type <input id="an_bartype" value="Minute" disabled></label>
-        <label>Value <select id="an_tf">
-          <option>1</option><option>3</option><option selected>5</option>
-          <option>15</option><option>30</option><option>60</option></select></label>
+        <label>Type <select id="an_bartype"></select></label>
+        <label>Value <select id="an_tf"></select></label>
 
         <h4>Time frame</h4>
         <label>Start date <input type="date" id="an_start"></label>
@@ -334,10 +332,8 @@
         <label>Dates <input type="date" id="op_start"> <span class="hint">to</span>
           <input type="date" id="op_end"></label>
         <label>Strategy <select id="op_strategy"></select></label>
-        <label>Timeframe <select id="op_tf">
-          <option>1</option><option>3</option><option selected>5</option>
-          <option>15</option><option>30</option><option>60</option>
-        </select><span class="hint">minute bars</span></label>
+        <label>Bar type <select id="op_bartype"></select></label>
+        <label>Value <select id="op_tf"></select><span class="hint" id="op_tfnote"></span></label>
       </div>
 
       <div id="op_params" class="params"></div>
@@ -430,10 +426,8 @@
         <div class="row">
           <label>Name <input id="ai_name" placeholder="range_fade" style="width:150px"></label>
           <label>Validate on <select id="ai_contract"></select></label>
-          <label>Timeframe <select id="ai_tf">
-            <option>1</option><option>3</option><option selected>5</option>
-            <option>15</option><option>30</option><option>60</option>
-          </select><span class="hint">minute bars</span></label>
+          <label>Bar type <select id="ai_bartype"></select></label>
+          <label>Value <select id="ai_tf"></select><span class="hint" id="ai_tfnote"></span></label>
           <label><input type="checkbox" id="ai_install" checked>
             <span class="hint">install it if it passes</span></label>
         </div>
@@ -519,6 +513,32 @@ function fmtDur(s){
 }
 const pct = v => (v*100).toFixed(2)+"%";
 let CFG=null, RES=null, META=null, ES=null, ACCOUNTS=[], NTSTRATS=[], PHASE="challenge", V=null;
+
+/* ---------- bar size, NinjaTrader's own two fields ----------
+   Type and Value, exactly as the Data Series dialog splits them, on all three
+   screens that run a strategy. The values offered per type are the ones a tick
+   tape can honestly build: seconds down to 5, minutes up to an hour. The wire
+   format is that same pair (`tf` + `bartype`), so a bookmarked `?tf=5` still
+   means five MINUTES -- the server turns the pair into seconds, once. */
+const TF_VALUES = {Minute:[1,2,3,5,10,15,30,60], Second:[5,10,15,20,30]};
+function tfFill(pfx, secs){
+  const type = $("#"+pfx+"_bartype");
+  if(!type.options.length)
+    type.innerHTML = Object.keys(TF_VALUES).map(t=>`<option>${t}</option>`).join("");
+  if(secs != null) type.value = (secs % 60 === 0 && secs >= 60) ? "Minute" : "Second";
+  const vals = TF_VALUES[type.value] || TF_VALUES.Minute;
+  const want = secs == null ? null : (type.value === "Minute" ? secs/60 : secs);
+  const sel = $("#"+pfx+"_tf");
+  const keep = want != null ? want : Number(sel.value);
+  sel.innerHTML = vals.map(v=>`<option>${v}</option>`).join("");
+  // Switching Minute -> Second keeps the number when that number exists on the
+  // other side (5m -> 5s) and otherwise falls back to the type's default, rather
+  // than silently landing on whatever happened to be first.
+  sel.value = vals.includes(keep) ? String(keep) : String(type.value==="Second" ? 30 : 5);
+  const note = $("#"+pfx+"_tfnote");
+  if(note) note.textContent = type.value === "Second" ? "second bars" : "minute bars";
+}
+const tfPair = pfx => ({tf: $("#"+pfx+"_tf").value, bartype: $("#"+pfx+"_bartype").value});
 
 /* ---------- crisp canvas ---------- */
 function ctxOf(c){
@@ -1253,7 +1273,7 @@ function anSourceChanged(){
   const external = !!$("#an_source").value;
   // Greyed rather than hidden: a control that vanishes reads as a bug, and the
   // user needs to see WHY it stopped applying.
-  ["an_strategy","an_bttype","an_contract","an_tf","an_start","an_end",
+  ["an_strategy","an_bttype","an_contract","an_bartype","an_tf","an_start","an_end",
    "an_comm","an_slip","an_measure"].forEach(id=>{
     const e = $("#"+id); if(e) e.disabled = external; });
   const ps = $("#an_params"); if(ps) ps.style.opacity = external ? ".35" : "";
@@ -1270,7 +1290,7 @@ function anSourceChanged(){
 
 async function anRun(){
   const q = new URLSearchParams({contract:$("#an_contract").value,
-    strategy:$("#an_strategy").value, tf:$("#an_tf").value,
+    strategy:$("#an_strategy").value, ...tfPair("an"),
     start:$("#an_start").value||"", end:$("#an_end").value||"",
     contracts:$("#an_contracts").value, commission:$("#an_comm").value,
     slippage:$("#an_slip").value, firm:$("#an_firm").value,
@@ -1807,7 +1827,7 @@ function opRun(){
   const s = STRATS.find(x=>x.name===$("#op_strategy").value);
   const [av, ap] = acctPair("op");
   const q = new URLSearchParams({contract:$("#op_contract").value,
-    strategy:s.name, tf:$("#op_tf").value,
+    strategy:s.name, ...tfPair("op"),
     start:$("#op_start").value, end:$("#op_end").value,
     slippage:$("#op_slip").value, commission:$("#op_comm").value,
     firm:$("#op_firm").value||"", variant:av||"", phase:ap||"",
@@ -1890,7 +1910,7 @@ function opRender(){
                  : (v==="indistinguishable from noise" ? "a" : "");
   $("#op_head").innerHTML = `
     <div class="meta"><b>${OP.label}</b> · ${OP.contract} ·
-      <b>${OP.timeframe}-minute bars</b> · ${OP.combos} combinations in
+      <b>${OP.timeframe} bars</b> · ${OP.combos} combinations in
       ${OP.elapsed}s · slippage ${OP.slippage_ticks} ticks/side</div>
     <div class="warn" style="margin-top:10px">Your ledger went from
       <b>${OP.trials_before}</b> to <b>${OP.trials_after}</b> trials. The best of
@@ -2005,7 +2025,7 @@ function aiWrite(){
   const desc = $("#ai_desc").value.trim();
   if(!desc){ $("#ai_wstatus").textContent="describe the strategy first"; return; }
   const q = new URLSearchParams({description:desc, name:$("#ai_name").value.trim(),
-    contract:$("#ai_contract").value, tf:$("#ai_tf").value});
+    contract:$("#ai_contract").value, ...tfPair("ai")});
   if($("#ai_install").checked){ q.set("install","1"); q.set("overwrite","1"); }
   $("#ai_write").disabled=true; $("#ai_wout").hidden=true;
   $("#ai_wlog").innerHTML="";
@@ -2292,6 +2312,14 @@ fetch("/api/config").then(r=>r.json()).then(c=>{
   $("#foot").textContent="Ready — pick an account and run.";
 });
 anInit();
+// The bar-size pair, on every screen that runs a strategy. Filled once at boot
+// (5 Minute, what every one of them defaulted to before) and refilled whenever
+// the type changes, because the values a Second series offers are not the ones
+// a Minute series does.
+["an","op","ai"].forEach(pfx=>{
+  tfFill(pfx, 300);
+  $("#"+pfx+"_bartype").onchange=()=>tfFill(pfx);
+});
 $("#firm").onchange=()=>{syncPickers();};
 $("#variant").onchange=()=>{syncPickers($("#variant").value);};
 $("#size").onchange=()=>{showWarnings();};
@@ -2397,7 +2425,7 @@ $("#op_score").onclick=()=>{
   $("#an_source").value=""; anSourceChanged();     // a strategy run, not a list
   $("#an_contract").value=OP.contract; anContract();
   $("#an_strategy").value=OP.strategy; anParams();
-  $("#an_tf").value=String(OP.timeframe);
+  tfFill("an", OP.tf_secs);
   for(const [k,v] of Object.entries(best.params)){
     const el=$("#an_p_"+k); if(el) el.value=v;
   }

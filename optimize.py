@@ -51,6 +51,7 @@ import numpy as np
 import engine
 import ledger
 import sim
+import tape as tp
 
 # The pre-registered bar: a hypothesis earns a forward test at train t >= 1.5,
 # N >= 80 trades, and positive in at least 2 of 3 sub-periods.
@@ -229,8 +230,9 @@ def _worker_init(job: dict):
     except Exception:
         pass
     _W.update(job)
-    _W["ctx"] = engine.prepare(job["contract"], job["timeframe"],
-                               job["start"], job["end"])
+    _W["ctx"] = engine.prepare(job["contract"], job["tf_secs"],
+                               job["start"], job["end"],
+                               strategy=job["strategy"])
 
 
 def _run_combo(p: dict) -> dict:
@@ -239,7 +241,7 @@ def _run_combo(p: dict) -> dict:
     Handing back the Trade objects would pickle several hundred dataclasses per
     combination for a summary that is nine numbers wide.
     """
-    trades, meta = engine.backtest(_W["contract"], _W["strategy"], _W["timeframe"],
+    trades, meta = engine.backtest(_W["contract"], _W["strategy"], _W["tf_secs"],
                                    _W["start"], _W["end"], params=p,
                                    costs=_W["costs"], ctx=_W["ctx"])
     return result_row(p, _W["keys"], trades, meta, _W.get("rules"),
@@ -308,7 +310,7 @@ def evaluate(row: dict, noise_t: float) -> tuple[str, str]:
         f"above the {noise_t:.2f} noise ceiling at this trial count")
 
 
-def sweep(contract, strategy, timeframe=5, start=None, end=None, ranges=None,
+def sweep(contract, strategy, tf_secs=300, start=None, end=None, ranges=None,
           costs: engine.Costs | None = None, on_progress=None,
           log_to_ledger=True, rules=None, contracts=1) -> dict:
     """Run every combination, rank by the daily t-statistic, charge the ledger."""
@@ -322,7 +324,7 @@ def sweep(contract, strategy, timeframe=5, start=None, end=None, ranges=None,
                          + ", ".join(k for k, v in ranges.items() if not v)
                          + " was given an empty range")
     costs = costs or engine.Costs()
-    ctx = engine.prepare(contract, timeframe, start, end)
+    ctx = engine.prepare(contract, tf_secs, start, end, strategy=strategy)
 
     t0 = time.time()
     keys = list(ranges)
@@ -335,7 +337,7 @@ def sweep(contract, strategy, timeframe=5, start=None, end=None, ranges=None,
       # fast one, and the gap between them is 30x -- too wide to guess at and too
       # dependent on the tape length to hardcode. So measure one, keep its
       # result, and let the number choose. Nothing is wasted either way.
-      trades, meta = engine.backtest(contract, strategy, timeframe, start, end,
+      trades, meta = engine.backtest(contract, strategy, tf_secs, start, end,
                                      params=combos[0], costs=costs, ctx=ctx)
       rows.append(result_row(combos[0], keys, trades, meta, rules, contracts))
       done = 1
@@ -358,7 +360,7 @@ def sweep(contract, strategy, timeframe=5, start=None, end=None, ranges=None,
         pool = mp.get_context("spawn").Pool(
             n, initializer=_worker_init,
             initargs=(dict(contract=contract, strategy=strategy,
-                           timeframe=timeframe, start=start, end=end,
+                           tf_secs=tf_secs, start=start, end=end,
                            costs=costs, keys=keys, rules=rules,
                            contracts=contracts),))
         # BATCHED, AND THE BATCH BOUNDARY IS A BARRIER ON PURPOSE. Two things
@@ -383,7 +385,7 @@ def sweep(contract, strategy, timeframe=5, start=None, end=None, ranges=None,
                 on_progress(done, len(combos), time.time() - t0)
       else:
         for i, p in enumerate(rest):
-            trades, meta = engine.backtest(contract, strategy, timeframe, start, end,
+            trades, meta = engine.backtest(contract, strategy, tf_secs, start, end,
                                            params=p, costs=costs, ctx=ctx)
             rows.append(result_row(p, keys, trades, meta, rules, contracts))
             done = i + 2
@@ -400,12 +402,12 @@ def sweep(contract, strategy, timeframe=5, start=None, end=None, ranges=None,
             ledger.append("sweep", strategy=strategy, contract=contract,
                           fp=ledger.fingerprint(kind="sweep_partial",
                                                 strategy=strategy, contract=contract,
-                                                tf=timeframe, start=ctx["start"],
+                                                tf=tf_secs, start=ctx["start"],
                                                 end=ctx["end"], ranges=ranges,
                                                 done=done,
                                                 slip=costs.slippage_ticks,
                                                 comm=costs.commission),
-                          timeframe=f"{timeframe}m", start=ctx["start"],
+                          timeframe=tp.tf_label(tf_secs), start=ctx["start"],
                           end=ctx["end"], days=ctx["days"],
                           n_trials=done, combos=len(combos), cancelled=True,
                           ranges={k: [float(v) for v in vs] for k, vs in ranges.items()})
@@ -435,12 +437,12 @@ def sweep(contract, strategy, timeframe=5, start=None, end=None, ranges=None,
         w = rows[0] if rows else {}
         ledger.append("sweep", strategy=strategy, contract=contract,
                       fp=ledger.fingerprint(kind="sweep", strategy=strategy,
-                                            contract=contract, tf=timeframe,
+                                            contract=contract, tf=tf_secs,
                                             start=ctx["start"], end=ctx["end"],
                                             ranges=ranges,
                                             slip=costs.slippage_ticks,
                                             comm=costs.commission),
-                      timeframe=f"{timeframe}m",
+                      timeframe=tp.tf_label(tf_secs),
                       start=ctx["start"], end=ctx["end"], days=ctx["days"],
                       n_trials=len(combos), combos=len(combos),
                       ranges={k: [float(v) for v in vs] for k, vs in ranges.items()},
@@ -455,7 +457,7 @@ def sweep(contract, strategy, timeframe=5, start=None, end=None, ranges=None,
         r["verdict"], r["reason"] = evaluate(r, noise_t)
 
     return dict(strategy=strategy, label=engine.LIBRARY[strategy].label,
-                contract=contract, timeframe=timeframe,
+                contract=contract, timeframe=tp.tf_label(tf_secs), tf_secs=tf_secs,
                 account_label=(None if rules is None else
                                f"{rules.firm}/{rules.variant}/{rules.phase}"
                                f"/${rules.size:,}"),
@@ -481,7 +483,7 @@ def ninjascript_block(res: dict, row: dict) -> str:
     name = lambda k: "".join(w.capitalize() for w in k.split("_"))
     lines = [
         f"// PropSim sweep — {res['label']} on {res['contract']}, "
-        f"{res['timeframe']}-minute bars",
+        f"{res['timeframe']} bars",
         f"// {row['trades']} trades over {row['days']} sessions, "
         f"net {row['pnl']:,.0f}, daily t = "
         + ("n/a" if row["t_daily"] is None else f"{row['t_daily']:.2f}"),
@@ -528,14 +530,14 @@ def selfcheck():
 
     # 2. A prepared tape must give byte-identical results to a cold call, or the
     #    whole speedup is silently changing the answer.
-    ctx = engine.prepare(c, 5)
-    a, ma = engine.backtest(c, "orb", 5, ctx=ctx)
-    b, mb = engine.backtest(c, "orb", 5)
+    ctx = engine.prepare(c, 300)
+    a, ma = engine.backtest(c, "orb", 300, ctx=ctx)
+    b, mb = engine.backtest(c, "orb", 300)
     assert len(a) == len(b) and abs(sum(t.pnl for t in a) - sum(t.pnl for t in b)) < 1e-9, \
         (len(a), len(b))
 
     # 3. Sub-periods split by DAY and account for the whole run.
-    trades, meta = engine.backtest(c, "fvg", 5, ctx=engine.prepare(c, 5))
+    trades, meta = engine.backtest(c, "fvg", 300, ctx=engine.prepare(c, 300))
     subs = subperiod_pnl(trades)
     assert len(subs) == SUBPERIODS
     assert abs(sum(subs) - sum(t.pnl for t in trades)) < 0.01, (subs, sum(subs))
@@ -564,7 +566,7 @@ def selfcheck():
     assert 2.7 < s["expected_max_t"] < 2.8, s   # noise ceiling at 200 trials
 
     # 6. End to end, small, without touching the real ledger.
-    res = sweep(c, "orb", 5, ranges={"stop_ticks": [30, 40], "rr": [1.5, 2.0]},
+    res = sweep(c, "orb", 300, ranges={"stop_ticks": [30, 40], "rr": [1.5, 2.0]},
                 log_to_ledger=False)
     assert res["combos"] == 4 and len(res["rows"]) == 4, res["combos"]
     assert all("verdict" in r for r in res["rows"])
@@ -579,12 +581,12 @@ def selfcheck():
     #    same machine. If the answer moved with it, a result would not be
     #    reproducible -- and the ledger has already charged for it.
     rng = {"stop_ticks": [20, 30, 40, 50, 60], "rr": [1.5, 2.0]}
-    serial = sweep(c, "orb", 5, ranges=rng, log_to_ledger=False)
+    serial = sweep(c, "orb", 300, ranges=rng, log_to_ledger=False)
     g = globals()
     keep = (PARALLEL_MIN_SECONDS, worker_count)
     g["PARALLEL_MIN_SECONDS"], g["worker_count"] = -1.0, lambda: 2
     try:
-        par = sweep(c, "orb", 5, ranges=rng, log_to_ledger=False)
+        par = sweep(c, "orb", 300, ranges=rng, log_to_ledger=False)
     finally:
         g["PARALLEL_MIN_SECONDS"], g["worker_count"] = keep
     assert par["combos"] == serial["combos"] == 10, par["combos"]
@@ -608,7 +610,7 @@ def selfcheck():
             def die(done, total, secs):
                 if done >= 2: raise boom
             try:
-                sweep(c, "orb", 5, ranges={"stop_ticks": [20, 30, 40, 50, 60, 70, 80, 90]},
+                sweep(c, "orb", 300, ranges={"stop_ticks": [20, 30, 40, 50, 60, 70, 80, 90]},
                       on_progress=die)
             except RuntimeError as exc:
                 assert exc is boom, exc
@@ -648,7 +650,7 @@ def selfcheck():
             def die(done, total, secs):
                 if done >= 2: raise boom
             try:
-                sweep(c, "orb", 5, ranges={"stop_ticks": [20, 30, 40, 50]},
+                sweep(c, "orb", 300, ranges={"stop_ticks": [20, 30, 40, 50]},
                       on_progress=die)
             except RuntimeError as exc:
                 assert exc is boom, exc
@@ -673,7 +675,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--contract")
     ap.add_argument("--strategy")
-    ap.add_argument("--tf", type=int, default=5)
+    ap.add_argument("--tf", default="5m", help="bar size: 30s, 2m, 15m (bare "
+                                               "numbers are minutes)")
     ap.add_argument("--start"); ap.add_argument("--end")
     ap.add_argument("--range", action="append", default=[],
                     help="key=lo:hi:step or key=v1,v2,v3 (repeatable)")
@@ -706,14 +709,14 @@ def main():
     def prog(done, total, secs):
         print(f"\r  {done}/{total} combinations ({secs:.0f}s)", end="", flush=True)
 
-    res = sweep(args.contract, args.strategy, args.tf, args.start, args.end,
+    res = sweep(args.contract, args.strategy, tp.tf_secs(args.tf), args.start, args.end,
                 ranges, costs, on_progress=prog, log_to_ledger=not args.no_ledger)
     print()
     if args.json:
         print(json.dumps(res, indent=1))
         return
 
-    print(f"\n{res['label']} on {res['contract']}, {res['timeframe']}-minute bars — "
+    print(f"\n{res['label']} on {res['contract']}, {res['timeframe']} bars — "
           f"{res['combos']} combinations in {res['elapsed']}s")
     print("ranges: " + ", ".join(f"{k}={v[0]:g}..{v[-1]:g}" for k, v in res["ranges"].items()))
     print(f"ledger: trial {res['trials_before']} -> {res['trials_after']}. "

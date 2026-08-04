@@ -186,12 +186,21 @@ Three inputs define a run, and all three change the answer:
 1. **Market data** — contract and date range. `Prepare this contract` builds the
    cache once (~15 s per contract).
 2. **Strategy and parameters** — `ma_cross`, `orb`, `range_break`,
-   `sweep_follow`, `fvg`, `vwap_revert`. The last four read the raw tape,
-   including the true aggressor side of every print.
-3. **Timeframe** — bars are rebuilt from the same ticks, so 1m and 5m runs are
-   measured against *identical* market data. In NinjaTrader the timeframe is
-   chosen when you apply a strategy, not in its code: it is a property of the run.
-   Measured, same strategy, same ticks: −$10,575 at 1 minute and +$300 at 5.
+   `sweep_follow`, `fvg`, `vwap_revert`, `latigo_break`. All but the first two
+   read the raw tape, including the true aggressor side of every print.
+   `latigo_break` (the port of the NT8 `LatigoBreakStrategy.cs`) also sets
+   `full_session`: its 18:00 and 20:00 ET windows are outside RTH, so `prepare`
+   drops the RTH filter when it is the strategy being run. A strategy that needs
+   the overnight tape and is handed an RTH one does not fail — it finds nothing,
+   which reads exactly like "no edge", which is why the strategy declares it
+   rather than the caller remembering.
+3. **Timeframe** — a **Type** (Minute or Second) and a **Value**, exactly as
+   NinjaTrader's Data Series dialog splits them; internally both collapse to one
+   number of seconds, so a 30-second bar and a 2-minute bar are the same kind of
+   input. Bars are rebuilt from the same ticks, so 15s, 1m and 5m runs are measured
+   against *identical* market data. In NinjaTrader the timeframe is chosen when you
+   apply a strategy, not in its code: it is a property of the run. Measured, same
+   strategy, same ticks: −$10,575 at 1 minute and +$300 at 5.
 
 ### The fill model, which decides the answer
 

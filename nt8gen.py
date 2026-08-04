@@ -110,7 +110,7 @@ def _header(strategy, params, meta: dict | None) -> str:
             bits.append(f"{m['start']}..{m['end']}"
                         + (f" ({m['days']} sessions)" if m.get("days") else ""))
         if m.get("timeframe"):
-            bits.append(f"{m['timeframe']}-minute bars")
+            bits.append(f"{m['timeframe']} bars")
         if m.get("slippage_ticks") is not None:
             bits.append(f"{m['slippage_ticks']:g} ticks/side slippage")
         lines.append("Fitted on " + ", ".join(bits) + ".")

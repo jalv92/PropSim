@@ -111,14 +111,23 @@ Three choices define a run, and all three change the answer:
 
 1. **Market data** — contract and date range. A contract needs preparing once
    (`Prepare this contract`), which parses its `.ncd` files into a columnar cache.
-2. **Strategy and parameters** — five are built in: moving-average cross,
-   opening-range breakout, aggressive-sweep follow, fair-value-gap retrace, VWAP
-   reversion.
-3. **Timeframe** — bars are built from ticks on demand, so 1m and 5m runs are
-   measured against *identical* ticks. In NinjaTrader the timeframe is chosen when
-   you apply a strategy, not in its code, which is why it is a property of the RUN
-   here. Measured: the same MA cross on the same ticks gave −$10,575 at 1 minute
-   and +$300 at 5.
+2. **Strategy and parameters** — seven are built in: moving-average cross,
+   opening-range breakout, consolidation breakout, aggressive-sweep follow,
+   fair-value-gap retrace, VWAP reversion, and **LatigoBreak** — the port of
+   `LatigoBreakStrategy.cs`, so the NT8 strategy can be swept here. It hunts the
+   three session windows at 18:00 / 20:00 / 09:30 ET, two of which are outside
+   RTH: it declares `full_session`, and the tape is prepared unfiltered for it
+   automatically. Its parameters carry the NT8 property names, so the sweep's
+   NinjaScript block pastes straight into the `.cs`. The v4 big-print flow gate
+   is not ported — read the deltas in the class docstring before trusting a
+   number.
+3. **Timeframe** — **Type** and **Value**, the same two fields NinjaTrader's Data
+   Series dialog uses: Minute (1–60) or Second (5–30). Bars are built from ticks on
+   demand, so a 30-second run and a 5-minute run are measured against *identical*
+   ticks — nothing has to be downloaded per timeframe the way NinjaTrader does it.
+   In NinjaTrader the timeframe is chosen when you apply a strategy, not in its
+   code, which is why it is a property of the RUN here. Measured: the same MA cross
+   on the same ticks gave −$10,575 at 1 minute and +$300 at 5.
 
 Press **measure from my tape** to replace the slippage guess with the spread you
 actually faced, measured from your own tick files during regular trading hours.

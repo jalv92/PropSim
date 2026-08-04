@@ -361,7 +361,7 @@ def _perturb(tape: dict, frm: int, shift_ticks=100) -> dict:
     return t
 
 
-def _last_sessions(tape: dict, bars: dict, sessions: int, timeframe: int):
+def _last_sessions(tape: dict, bars: dict, sessions: int, tf_secs: int):
     """The tail of the tape, so the probe can afford to re-run several times.
 
     Causality does not need six months of ticks to show itself, and the probe re-runs
@@ -374,10 +374,10 @@ def _last_sessions(tape: dict, bars: dict, sessions: int, timeframe: int):
         return tape, bars, len(uniq)
     k = int(np.searchsorted(days, uniq[-sessions]))
     t = {key: v[k:] for key, v in tape.items()}
-    return t, tp.build_bars(t, timeframe), sessions
+    return t, tp.build_bars(t, tf_secs), sessions
 
 
-def lookahead_probe(S: type, ctx: dict | None = None, contract=None, timeframe=5,
+def lookahead_probe(S: type, ctx: dict | None = None, contract=None, tf_secs=300,
                     sessions=15, max_cuts=6, shift_ticks=100) -> dict:
     """Does its answer for a trade change when data AFTER that trade changes?
 
@@ -398,7 +398,7 @@ def lookahead_probe(S: type, ctx: dict | None = None, contract=None, timeframe=5
     if contract is None:
         return dict(ran=False, clean=None, findings=[],
                     note="no tape cached, so the lookahead probe could not run")
-    ctx = ctx or engine.prepare(contract, timeframe)
+    ctx = ctx or engine.prepare(contract, tf_secs)
     strat = S()
     p = {k: v.default for k, v in strat.params.items()}
 
@@ -410,7 +410,7 @@ def lookahead_probe(S: type, ctx: dict | None = None, contract=None, timeframe=5
     # Widen once if the tail is too quiet: a strategy that trades weekly has nothing to
     # probe in fifteen sessions, and silence is not a pass.
     for window in (sessions, 0):
-        tape, bars, used = (_last_sessions(ctx["tape"], ctx["bars"], window, timeframe)
+        tape, bars, used = (_last_sessions(ctx["tape"], ctx["bars"], window, tf_secs)
                             if window else (ctx["tape"], ctx["bars"], None))
         base = run(tape, bars)
         if base is not None and len(base[0]) >= 2:
@@ -429,7 +429,7 @@ def lookahead_probe(S: type, ctx: dict | None = None, contract=None, timeframe=5
         if frm >= len(tape["ts"]) - 1:
             continue
         t2 = _perturb(tape, frm, shift_ticks)
-        b2 = tp.build_bars(t2, timeframe)
+        b2 = tp.build_bars(t2, tf_secs)
         if len(b2["c"]) != len(bars["c"]):
             continue                        # bar grid moved; comparison would be unsound
         alt = run(t2, b2)
@@ -467,7 +467,7 @@ def lookahead_probe(S: type, ctx: dict | None = None, contract=None, timeframe=5
 
 # ---------------------------------------------------------------- validation
 
-def validate(src: str, contract=None, timeframe=5) -> tuple[str, dict]:
+def validate(src: str, contract=None, tf_secs=300) -> tuple[str, dict]:
     """Everything a generated strategy has to survive. ("", info) when it survives.
 
     Order matters: the structural check is free, the smoke test costs seconds, the
@@ -489,7 +489,7 @@ def validate(src: str, contract=None, timeframe=5) -> tuple[str, dict]:
                     f"another: two strategies sharing a name make the trial ledger's "
                     f"history ambiguous."), info
         info.update(name=S.name, label=S.label, params=list(S.params))
-        sm = plugins.smoke_test(S, contract, timeframe)
+        sm = plugins.smoke_test(S, contract, tf_secs)
         # Deliberately NOT the P&L or the t-statistic: see the module docstring.
         info["smoke"] = dict(ran=sm.get("ran"), trades=sm.get("trades"),
                              signals=sm.get("signals"), contract=sm.get("contract"),
@@ -500,7 +500,7 @@ def validate(src: str, contract=None, timeframe=5) -> tuple[str, dict]:
                     "target on the wrong side of the entry, or an entry index that lands "
                     "outside a session."), info
         probe = lookahead_probe(S, contract=contract or sm.get("contract"),
-                                timeframe=timeframe)
+                                tf_secs=tf_secs)
         info["lookahead"] = probe
         if probe.get("findings"):
             return "LOOKAHEAD: " + " ".join(probe["findings"]), info
@@ -550,7 +550,7 @@ def _provenance(description: str, model: str, info: dict) -> str:
 
 
 def write_strategy(description: str, name: str | None = None, model: str | None = None,
-                   contract=None, timeframe=5, max_attempts=MAX_ATTEMPTS,
+                   contract=None, tf_secs=300, max_attempts=MAX_ATTEMPTS,
                    on_attempt=None) -> dict:
     """Ask, validate, and hand the validator's own words back until it passes."""
     if not (description or "").strip():
@@ -563,7 +563,7 @@ def write_strategy(description: str, name: str | None = None, model: str | None 
     for i in range(1, max_attempts + 1):
         text, content, usage = _ask(system, messages, model)
         src = extract_code(text)
-        problems, info = validate(src, contract, timeframe)
+        problems, info = validate(src, contract, tf_secs)
         attempts.append(dict(attempt=i, ok=not problems, problems=problems,
                              usage=usage, name=info.get("name")))
         if on_attempt:
@@ -736,7 +736,7 @@ def selfcheck():
     #    catch the peeker. This is the check the whole feature rests on.
     contracts = tp.cached_contracts()
     if contracts:
-        ctx = engine.prepare(contracts[0], 5)
+        ctx = engine.prepare(contracts[0], 300)
         good = plugins.load_source(_HONEST, "honest.py")
         bad = plugins.load_source(_PEEKER, "peeker.py")
         g = lookahead_probe(good, ctx=ctx, contract=contracts[0])
@@ -793,7 +793,7 @@ def main():
     ap.add_argument("--translate", metavar="STRATEGY")
     ap.add_argument("--params", help="k=v,k=v for --translate")
     ap.add_argument("--contract")
-    ap.add_argument("--timeframe", type=int, default=5)
+    ap.add_argument("--timeframe", default="5m", help="bar size: 30s, 2m, 15m")
     ap.add_argument("--model")
     ap.add_argument("--selfcheck", action="store_true")
     args = ap.parse_args()
@@ -822,7 +822,7 @@ def main():
 
     if args.write:
         res = write_strategy(args.write, args.name, args.model, args.contract,
-                             args.timeframe, on_attempt=shout)
+                             tp.tf_secs(args.timeframe), on_attempt=shout)
         t = res["tokens"]
         print(f"\n{t['input']:,} input + {t['output']:,} output tokens on your key.")
         if not res["ok"]:

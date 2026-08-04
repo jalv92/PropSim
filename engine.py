@@ -2,8 +2,8 @@
 """Backtest engine: run a strategy over the tick tape at any timeframe.
 
     python3 engine.py --list
-    python3 engine.py --strategy ma_cross --contract "NQ 09-26" --tf 5
-    python3 engine.py --strategy sweep_follow --contract "NQ 09-26" --tf 1 \
+    python3 engine.py --strategy ma_cross --contract "NQ 09-26" --tf 5m
+    python3 engine.py --strategy sweep_follow --contract "NQ 09-26" --tf 30s \
                       --start 2026-06-15 --end 2026-07-20
 
 Three inputs define a run, and all three are explicit here because leaving any
@@ -15,7 +15,9 @@ of them implicit is how incomparable results get compared:
 
 Timeframe is a first-class input rather than a property of the data: bars are
 built from ticks on demand, so 1m and 5m runs of the same strategy are measured
-against *identical* ticks.
+against *identical* ticks. It is carried in SECONDS (`tf_secs`) so that a
+30-second bar and a 2-minute bar are the same kind of number; NinjaTrader's
+Type/Value pair is rebuilt only for display, by `tape.tf_label`.
 
 ARCHITECTURE, and it follows a measurement. Signal generation is
 path-independent and vectorises over bars. Fill resolution is path-dependent
@@ -588,16 +590,23 @@ class LatigoBreak(Strategy):
     # Seconds from the 18:00 ET session begin, in TRADING-DAY order: the third
     # window lands at 09:30 of the following calendar morning.
     _OFFSETS = (0, 7200, 55800)
-    _FLAGS = ("win_1800", "win_2000", "win_0930")
+    _FLAGS = ("trade_globex_reopen", "trade_evening", "trade_us_open")
     _SESSION_BEGIN = 18 * 3600
 
+    # PARAMETER NAMES ARE THE NT8 PROPERTY NAMES, in snake_case. The sweep's
+    # NinjaScript block capitalises each word, so a winning row pastes into
+    # LatigoBreakStrategy.cs as-is instead of having to be translated by hand --
+    # and a translation done by hand is a translation done wrong on a Friday.
+    # `max_stop_ticks` is the one exception and has no NT8 property; see the
+    # class docstring.
     params = {
         # Windows are DECISIONS, not dials -- flags, so the sweep leaves them be.
-        "win_1800": Param(1, 0, 1, "hunt the 18:00 ET Globex reopen"),
-        "win_2000": Param(1, 0, 1, "hunt the 20:00 ET window"),
-        "win_0930": Param(1, 0, 1, "hunt the 09:30 ET US open"),
-        "entry_window_min": Param(30, 1, 480, "hunt breaks/entries only this long "
-                                              "after a window opens", fixed=True),
+        "trade_globex_reopen": Param(1, 0, 1, "hunt the 18:00 ET Globex reopen"),
+        "trade_evening": Param(1, 0, 1, "hunt the 20:00 ET window"),
+        "trade_us_open": Param(1, 0, 1, "hunt the 09:30 ET US open"),
+        "entry_window_minutes": Param(30, 1, 480, "hunt breaks/entries only this "
+                                                  "long after a window opens",
+                                      fixed=True),
         "use_whipsaw_filter": Param(1, 0, 1, "0 = naive chase at the break print"),
         "hold_seconds": Param(30, 0, 300, "seconds the break must survive outside"),
         "extension_r30": Param(0.25, 0, 3, "excursion beyond the level required to "
@@ -606,14 +615,19 @@ class LatigoBreak(Strategy):
         "min_r30_ticks": Param(4, 0, 100, "skip the window if the opening range is "
                                           "narrower, ticks"),
         "atr_period": Param(14, 2, 100, "bars in the ATR"),
-        "atr_stop": Param(2.0, 0.25, 10, "stop distance, in ATRs"),
-        "atr_target": Param(2.0, 0.25, 10, "target distance, in ATRs"),
+        "atr_stop_mult": Param(2.0, 0.25, 10, "stop distance, in ATRs"),
+        "atr_target_mult": Param(2.0, 0.25, 10, "target distance, in ATRs"),
         "max_trades_per_window": Param(1, 1, 10, "re-arm this many times per window"),
-        "max_stop_ticks": Param(400, 8, 1200, "skip the trade if the ATR stop is wider"),
+        "max_stop_ticks": Param(400, 8, 1200, "skip the trade if the ATR stop is "
+                                              "wider (PropSim only)"),
         "use_breakeven": Param(0, 0, 1, "move the stop to the entry once the run is "
                                         "covered"),
-        "be_percent": Param(50, 1, 99, "percent of the entry->target run that arms "
-                                       "breakeven"),
+        # Kept out of the DEFAULT grid because it is inert while `use_breakeven`
+        # is off: sweeping it there would multiply every combination by four and
+        # charge the ledger for cells that cannot differ. Pass a range for it
+        # explicitly once breakeven is on.
+        "breakeven_percent": Param(50, 1, 99, "percent of the entry->target run that "
+                                              "arms breakeven", fixed=True),
     }
 
     def risk_ticks(self, p) -> float:
@@ -635,11 +649,11 @@ class LatigoBreak(Strategy):
         hold_ticks = int(p["hold_seconds"] * tp.TPS)
         max_stop = p["max_stop_ticks"] * TICK_SIZE
         max_trades = int(p["max_trades_per_window"])
-        be_frac = p["be_percent"] / 100.0 if p["use_breakeven"] else 0.0
+        be_frac = p["breakeven_percent"] / 100.0 if p["use_breakeven"] else 0.0
         candle_s = float(p["candle_seconds"])
         # Floored so the candle can never starve the hunt, and capped below at
         # the next enabled window's open so one window cannot swallow the next.
-        want = max(p["entry_window_min"] * 60.0, candle_s + 60.0)
+        want = max(p["entry_window_minutes"] * 60.0, candle_s + 60.0)
 
         et, dr, st, tg, be = [], [], [], [], []
         for d in np.unique(day):
@@ -745,10 +759,10 @@ class LatigoBreak(Strategy):
         a = atr[bi - 1]                 # closed bar: reading bar `bi` is lookahead
         if not np.isfinite(a) or a <= TICK_SIZE:
             return False               # ATR not formed; NT8's chart fallback has
-        risk = p["atr_stop"] * float(a)             # no meaning on a full tape
+        risk = p["atr_stop_mult"] * float(a)             # no meaning on a full tape
         if risk > max_stop:
             return False               # a spike-wide stop is not this setup
-        reward = p["atr_target"] * float(a)
+        reward = p["atr_target_mult"] * float(a)
         ref = float(ref)
         et.append(e)
         dr.append(side)
@@ -993,7 +1007,7 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
     return out
 
 
-def prepare(contract, timeframe=5, start=None, end=None, rth_only=True,
+def prepare(contract, tf_secs=300, start=None, end=None, rth_only=True,
             strategy=None) -> dict:
     """Load, slice and bar the tape once, for reuse across many runs.
 
@@ -1003,6 +1017,11 @@ def prepare(contract, timeframe=5, start=None, end=None, rth_only=True,
     data that did not change -- hoisting this out makes a 200-combination sweep
     roughly five times faster.
     """
+    # The strategy decides the session, not the caller: an overnight setup on an
+    # RTH tape returns no trades and no error, and every screen would then report
+    # a flat, healthy-looking nothing.
+    if strategy is not None and LIBRARY[strategy].full_session:
+        rth_only = False
     full = tp.load_cache(contract)
     t = tp.slice_range(full, start, end, rth_only=rth_only)
     if not len(t["ts"]):
@@ -1017,14 +1036,14 @@ def prepare(contract, timeframe=5, start=None, end=None, rth_only=True,
     # simulation; it was compute-bound on constants.
     dt = np.diff(t["ts"])
     holes = np.flatnonzero((dt > MAX_GAP_S * tp.TPS) & (np.diff(dayi) == 0))
-    return dict(contract=contract, tape=t, bars=tp.build_bars(t, timeframe),
-                timeframe=timeframe, rth_only=rth_only, days=len(days),
+    return dict(contract=contract, tape=t, bars=tp.build_bars(t, tf_secs),
+                tf_secs=tf_secs, rth_only=rth_only, days=len(days),
                 start=tp.date_str(days[0]), end=tp.date_str(days[-1]),
                 dayi=dayi, n_holes=len(holes),
                 hole_days=sorted({tp.date_str(int(dayi[i])) for i in holes}))
 
 
-def backtest(contract, strategy_name, timeframe=5, start=None, end=None,
+def backtest(contract, strategy_name, tf_secs=300, start=None, end=None,
              params=None, costs: Costs | None = None, rth_only=True, ctx=None):
     """One run. Returns (trades, meta) -- meta records all three inputs.
 
@@ -1037,9 +1056,14 @@ def backtest(contract, strategy_name, timeframe=5, start=None, end=None,
     costs = costs or Costs()
 
     if ctx is None:
-        ctx = prepare(contract, timeframe, start, end, rth_only)
-    elif ctx["timeframe"] != timeframe:
-        raise SystemExit(f"prepared tape is {ctx['timeframe']}m, asked for {timeframe}m")
+        ctx = prepare(contract, tf_secs, start, end, rth_only, strategy_name)
+    elif ctx["tf_secs"] != tf_secs:
+        raise SystemExit(f"prepared tape is {tp.tf_label(ctx['tf_secs'])}, asked for "
+                         f"{tp.tf_label(tf_secs)}")
+    elif strat.full_session and ctx["rth_only"]:
+        raise SystemExit(f"{strategy_name} trades outside RTH — prepare the tape "
+                         f"with strategy={strategy_name!r} (or rth_only=False)")
+    rth_only = ctx["rth_only"]              # the tape that ran, not the request
     t, bars = ctx["tape"], ctx["bars"]
 
     res = strat.entries(bars, t, p)
@@ -1062,7 +1086,7 @@ def backtest(contract, strategy_name, timeframe=5, start=None, end=None,
     # is fiction. The user needs to see that before believing a P&L built on it.
     # Measured once per tape in `prepare`, not once per parameter set.
     meta = dict(contract=contract, strategy=strategy_name, label=strat.label,
-                timeframe=timeframe, start=ctx["start"],
+                timeframe=tp.tf_label(tf_secs), tf_secs=tf_secs, start=ctx["start"],
                 end=ctx["end"], days=ctx["days"], rth_only=rth_only,
                 params=p, bars=len(bars["t"]), ticks=len(t["ts"]),
                 signals=len(ei), trades=len(trades),
@@ -1102,18 +1126,22 @@ def selfcheck():
     #    crosses it. Identical results across timeframes is therefore the
     #    CORRECT behaviour -- and the first implementation, which entered at the
     #    bar's first tick using end-of-bar information, scored t=4.78 instead.
-    res = {tf: summarise(*backtest(c, "orb", tf)) for tf in (1, 5, 15)}
+    #    The 30-second bar is in the list for a second reason: sub-minute sizes go
+    #    through the same code, and a run that silently re-barred to something else
+    #    would break this invariant rather than pass it quietly.
+    res = {tf: summarise(*backtest(c, "orb", tf)) for tf in (30, 60, 300, 900)}
     pnls = {tf: round(r["pnl"], 2) for tf, r in res.items()}
     assert len(set(pnls.values())) == 1, f"ORB must be timeframe-invariant: {pnls}"
 
     # 2. A bar-counting strategy must NOT be timeframe-invariant, or bars are
-    #    not really being rebuilt.
-    ma = {tf: summarise(*backtest(c, "ma_cross", tf)) for tf in (1, 15)}
-    assert ma[1]["trades"] != ma[15]["trades"], "MA cross should differ by timeframe"
+    #    not really being rebuilt. 30s vs 2m spans both units.
+    ma = {tf: summarise(*backtest(c, "ma_cross", tf)) for tf in (30, 120, 900)}
+    assert ma[30]["trades"] != ma[900]["trades"] and ma[30]["trades"] != ma[120]["trades"], \
+        f"MA cross should differ by timeframe: {[m['trades'] for m in ma.values()]}"
 
     # 3. Pessimism must be monotonic: more slippage can never help.
-    a = summarise(*backtest(c, "orb", 5, costs=Costs(slippage_ticks=0)))
-    b = summarise(*backtest(c, "orb", 5, costs=Costs(slippage_ticks=5)))
+    a = summarise(*backtest(c, "orb", 300, costs=Costs(slippage_ticks=0)))
+    b = summarise(*backtest(c, "orb", 300, costs=Costs(slippage_ticks=5)))
     assert b["pnl"] < a["pnl"], f"slippage did not hurt: {a['pnl']} -> {b['pnl']}"
 
     # 4. A date range must actually restrict the data. The cut is derived from what
@@ -1122,13 +1150,13 @@ def selfcheck():
     #    and the test failed for the data rather than for the code.
     lo, hi, _ = tp.available_range(c)
     cut = tp.date_str(np.unique(tp.day_index(tp.load_cache(c)["ts"]))[-2])
-    full = summarise(*backtest(c, "orb", 5))
-    half = summarise(*backtest(c, "orb", 5, start=None, end=cut))
+    full = summarise(*backtest(c, "orb", 300))
+    half = summarise(*backtest(c, "orb", 300, start=None, end=cut))
     assert half["days"] < full["days"], (
         f"date range had no effect: {c} spans {lo}..{hi}, cut at {cut}")
 
     # 5. Every trade must resolve to a real exit reason.
-    tr, _ = backtest(c, "orb", 5)
+    tr, _ = backtest(c, "orb", 300)
     assert all(t.reason in ("stop", "be", "target", "timeout", "close", "gap")
                for t in tr)
     assert all(t.mae <= 0 <= t.mfe for t in tr), "MAE/MFE signs"
@@ -1141,7 +1169,7 @@ def selfcheck():
     costs = Costs()
     slip_cost = costs.slippage_ticks * costs.tick_size * costs.point_value
     for name in LIBRARY:
-        trades, meta = backtest(c, name, 5, costs=costs)
+        trades, meta = backtest(c, name, 300, costs=costs)
         # 7. NO TRADE MAY SPAN TWO DATES. The tape is RTH-filtered, so the array
         #    hides the overnight break entirely: 16:00 sits next to 09:30. Every
         #    strategy fell through it, and the damage was not subtle -- an FVG
@@ -1218,20 +1246,20 @@ def selfcheck():
     # 9. THE TIME WINDOW IS A CONSTRAINT, NOT A LABEL. It is tested on the entry
     #    tick rather than on the signal bar, so the check is on entry times: a
     #    window read off the bar would let a 14:59 bar enter at 15:00:20.
-    rb, rbm = backtest(c, "range_break", 1, params={"session_start": 600,
+    rb, rbm = backtest(c, "range_break", 60, params={"session_start": 600,
                                                     "last_entry": 720})
     for t in rb:
         s = t.entry_time.hour * 60 + t.entry_time.minute
         assert 600 <= s < 720, f"range_break entered at {t.entry_time}"
-    wide = summarise(*backtest(c, "range_break", 1))
+    wide = summarise(*backtest(c, "range_break", 60))
     assert wide["signals"] >= len(rb), "narrowing the window added signals"
     # 9b. BREAKEVEN MUST DO SOMETHING, AND ONLY WHAT IT SAYS. Arming it can only
     #     turn winners-that-came-back into small losses and losers into smaller
     #     ones, so it must produce `be` exits that the same run without it does
     #     not have -- and it must never touch a trade that went straight to its
     #     target, which is the mistake a trigger tested on the wrong side makes.
-    off, om = backtest(c, "range_break", 1, params={"be_trigger_pct": 0})
-    on, _ = backtest(c, "range_break", 1, params={"be_trigger_pct": 50})
+    off, om = backtest(c, "range_break", 60, params={"be_trigger_pct": 0})
+    on, _ = backtest(c, "range_break", 60, params={"be_trigger_pct": 50})
     assert not any(t.reason == "be" for t in off), "be_trigger_pct=0 still moved a stop"
     assert any(t.reason == "be" for t in on), "breakeven never triggered"
     assert (sum(1 for t in on if t.reason == "target")
@@ -1240,13 +1268,57 @@ def selfcheck():
     # And a consolidation is defined by its width: nothing wider than
     # max_range_ticks may arm. Checked by squeezing the ceiling to the floor,
     # which must leave strictly fewer signals than the default band.
-    tight = summarise(*backtest(c, "range_break", 1,
+    tight = summarise(*backtest(c, "range_break", 60,
                                 params={"min_range_ticks": 1, "max_range_ticks": 20}))
     assert tight["signals"] < wide["signals"], (
         f"range width had no effect: {tight['signals']} vs {wide['signals']}")
 
-    print(f"selfcheck OK: ORB timeframe-invariant (${pnls[1]:,.0f} at 1/5/15m); "
-          f"MA cross varies ({ma[1]['trades']} vs {ma[15]['trades']} trades); "
+    # 10. THE WINDOWS ARE THE STRATEGY. LatigoBreak's three windows are offsets
+    #     from the 18:00 ET session begin, and two of them live outside RTH -- so
+    #     the two ways this port can be silently wrong are an RTH tape (finds
+    #     nothing, reads as "no edge") and an offset that drifts (trades the
+    #     wrong minutes and reads as an edge). Both are checked on entry TIMES.
+    lb, lbm = backtest(c, "latigo_break", 300)
+    assert not lbm["rth_only"], "latigo_break was handed an RTH tape"
+    win_s = [(18 * 3600 + o) % 86400 for o in LatigoBreak._OFFSETS]
+    span = max(30 * 60, 30 + 60)                  # default window, floored
+    for t in lb:
+        s = (t.entry_time.hour * 3600 + t.entry_time.minute * 60
+             + t.entry_time.second)
+        assert any((s - w0) % 86400 <= span for w0 in win_s), (
+            f"latigo_break entered at {t.entry_time}, outside every window")
+    # A flag that does nothing is the classic silent bug, and so is a degenerate-
+    # candle gate that never gates.
+    off = summarise(*backtest(c, "latigo_break", 300, params={
+        "trade_globex_reopen": 0, "trade_evening": 0, "trade_us_open": 0}))
+    assert off["trades"] == 0, f"windows all off still traded {off['trades']} times"
+    # The degenerate-candle gate has to BITE, and "a 400-tick threshold silences
+    # it" is not the way to say so: this tape really does hold 30-second opening
+    # ranges of 400-729 ticks (2026-06-14 and 2026-07-26 at the reopen, 2026-06-12
+    # at 09:30). Asserting zero there passed by luck and would have failed the day
+    # a news reopen landed in the range. Monotonic instead, plus one threshold no
+    # opening candle can reach.
+    tight = summarise(*backtest(c, "latigo_break", 300, params={"min_r30_ticks": 100}))
+    assert tight["signals"] < lbm["signals"], "min_r30_ticks never skipped a window"
+    none = summarise(*backtest(c, "latigo_break", 300,
+                               params={"min_r30_ticks": 100_000}))
+    assert none["signals"] == 0, "an unreachable opening range still traded"
+    # 10b. THE CONFIRMATION MUST DEGENERATE TO THE NAIVE CHASE. With no hold and
+    #      no extension required, NT8's `ConfirmReady` is true on the break print
+    #      itself, so the filtered path must produce the SAME entries as the
+    #      unfiltered one, tick for tick. This is the check that catches an
+    #      off-by-one in the confirmation index -- the filter is otherwise free to
+    #      be quietly wrong, because a different entry still looks like a trade.
+    naive, _ = backtest(c, "latigo_break", 300, params={"use_whipsaw_filter": 0})
+    degen, _ = backtest(c, "latigo_break", 300, params={"hold_seconds": 0,
+                                                      "extension_r30": 0})
+    assert ([t.entry_time for t in naive] == [t.entry_time for t in degen]), (
+        "hold=0, extension=0 did not reproduce the naive chase")
+    assert not set(t.entry_time for t in naive) & set(t.entry_time for t in lb), (
+        "the whipsaw filter changed nothing: same entries as the naive chase")
+
+    print(f"selfcheck OK: ORB timeframe-invariant (${pnls[300]:,.0f} at 30s/1m/5m/15m); "
+          f"MA cross varies ({ma[30]['trades']} vs {ma[900]['trades']} trades); "
           f"slippage monotonic (${a['pnl']:,.0f} -> ${b['pnl']:,.0f}); "
           f"date range {full['days']} -> {half['days']} days")
 
@@ -1255,11 +1327,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--strategy"); ap.add_argument("--contract")
-    ap.add_argument("--tf", type=int, default=5)
+    ap.add_argument("--tf", default="5m", help="bar size: 30s, 2m, 15m (bare "
+                                               "numbers are minutes)")
     ap.add_argument("--start"); ap.add_argument("--end")
     ap.add_argument("--slippage", type=float, default=2.0)
     ap.add_argument("--sweep-tf", action="store_true",
-                    help="run 1/3/5/15m on identical ticks")
+                    help="run 30s/1m/3m/5m/15m on identical ticks")
     ap.add_argument("--selfcheck", action="store_true")
     args = ap.parse_args()
 
@@ -1282,14 +1355,14 @@ def main():
         return
 
     costs = Costs(slippage_ticks=args.slippage)
-    tfs = [1, 3, 5, 15] if args.sweep_tf else [args.tf]
-    print(f"{'tf':>4}{'bars':>9}{'signals':>9}{'trades':>8}{'/day':>7}"
+    tfs = [30, 60, 180, 300, 900] if args.sweep_tf else [tp.tf_secs(args.tf)]
+    print(f"{'tf':>5}{'bars':>9}{'signals':>9}{'trades':>8}{'/day':>7}"
           f"{'P&L':>12}{'WR':>7}{'t(daily)':>10}")
     for tf in tfs:
         tr, meta = backtest(args.contract, args.strategy, tf,
                             args.start, args.end, costs=costs)
         s = summarise(tr, meta)
-        print(f"{tf:>4}{s['bars']:>9,}{s['signals']:>9,}{s['trades']:>8,}"
+        print(f"{tp.tf_label(tf):>5}{s['bars']:>9,}{s['signals']:>9,}{s['trades']:>8,}"
               f"{s['per_day']:>7.1f}{s['pnl']:>12,.0f}{s['wr']:>7.1%}"
               f"{s['t_daily']:>10.2f}")
     print(f"\n{meta['contract']} {meta['start']}..{meta['end']} "

@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """The tick tape: parse once, cache columnar, build bars at any timeframe.
 
-    python3 tape.py --list                     # what is cached
-    python3 tape.py --build "NQ 09-26"         # parse and cache a contract
-    python3 tape.py --bars "NQ 09-26" --tf 5   # 5-minute bars from ticks
+    python3 tape.py --list                      # what is cached
+    python3 tape.py --build "NQ 09-26"          # parse and cache a contract
+    python3 tape.py --bars "NQ 09-26" --tf 5m   # 5-minute bars from ticks
+    python3 tape.py --bars "NQ 09-26" --tf 30s  # ...or 30-second bars
 
 This is what makes timeframe a real input rather than a fixed property of the
 data. NinjaTrader stores 1-minute and 5-minute series as separate downloads;
 here both are built from the same ticks on demand, so re-barring a strategy at
 1, 3 and 5 minutes compares it against *identical* market data instead of three
-separate datasets that may not even cover the same days.
+separate datasets that may not even cover the same days. Second bars come from
+the same place: ticks carry their own timestamps, so a 15-second bar is exactly
+as available as a 15-minute one.
 
 Why cache. Parsing `.ncd` runs at roughly 0.5M ticks/sec, and the strategy
 logic on top is nearly free -- measured 0.45M ticks/sec for a full engine loop
@@ -153,10 +156,44 @@ def slice_range(tape: dict, start=None, end=None, rth_only=True,
 # bars
 # --------------------------------------------------------------------------
 
-def build_bars(tape: dict, minutes: int = 5) -> dict:
-    """OHLCV + signed order flow per bar, built from ticks.
+def tf_secs(value, bar_type: str = "Minute") -> int:
+    """Bar size in SECONDS, from NinjaTrader's own (Type, Value) pair.
 
-    Bars never span a session gap: bucketing is by (day, minute-slot), so an
+    Seconds is the only unit anything below the UI speaks. The pair exists at the
+    edges only -- the browser sends it, the labels rebuild it -- so no function in
+    the engine ever has to ask which unit a bar size is written in. A `value` that
+    already carries its unit ("30s", "5m") is accepted too, which is what the CLIs
+    take.
+    """
+    s = str(value).strip().lower()
+    if s.endswith("s") or s.endswith("m"):
+        bar_type, s = ("Second" if s[-1] == "s" else "Minute"), s[:-1]
+    try:
+        n = float(s)
+    except ValueError:
+        raise SystemExit(f"{value!r} is not a bar size")
+    if str(bar_type).strip().lower().startswith("m"):
+        n *= 60
+    n = int(round(n))
+    # A trust boundary: this number comes off a query string. Zero divides in the
+    # bucketing below, and a day-long bar is a way to ask for no bars at all.
+    if not 1 <= n <= 86400:
+        raise SystemExit(f"bar size must be between 1 second and 1 day, got {value} "
+                         f"{bar_type}")
+    return n
+
+
+def tf_label(secs: int, long: bool = False) -> str:
+    """300 -> "5m" / "5-minute"; 30 -> "30s" / "30-second"."""
+    if secs % 60 == 0:
+        return f"{secs // 60}-minute" if long else f"{secs // 60}m"
+    return f"{secs}-second" if long else f"{secs}s"
+
+
+def build_bars(tape: dict, secs: int = 300) -> dict:
+    """OHLCV + signed order flow per bar, built from ticks. `secs` is the bar size.
+
+    Bars never span a session gap: bucketing is by (day, time-slot), so an
     overnight break cannot merge into one bar the way a naive
     `timestamp // period` would.
     """
@@ -166,7 +203,7 @@ def build_bars(tape: dict, minutes: int = 5) -> dict:
                     l=np.array([]), c=np.array([]), v=np.array([]),
                     delta=np.array([]), n=np.array([]), start=np.array([]),
                     end=np.array([]))
-    period = minutes * 60
+    period = int(secs)
     slot = day_index(ts) * (86400 // period + 1) + sec_of_day(ts) // period
     # boundaries of each bar in the tick array
     edge = np.flatnonzero(np.diff(slot)) + 1
@@ -197,25 +234,40 @@ def selfcheck():
     s = sec_of_day(rth["ts"])
     assert s.min() >= 9 * 3600 + 30 * 60 and s.max() < 16 * 3600, "RTH filter leaked"
 
-    for tf in (1, 5, 15):
+    # Seconds and minutes are the same code path, so both are checked on it. The
+    # sub-minute sizes are the ones worth stating: a bucket width that does not
+    # divide the hour is where an off-by-one in the slot stride would show.
+    for tf in (15, 30, 60, 120, 300, 900):
         b = build_bars(rth, tf)
-        assert (b["h"] >= b["o"]).all() and (b["h"] >= b["c"]).all(), f"{tf}m high"
-        assert (b["l"] <= b["o"]).all() and (b["l"] <= b["c"]).all(), f"{tf}m low"
-        assert (b["v"] > 0).all(), f"{tf}m empty bar"
-        assert b["n"].sum() == len(rth["ts"]), f"{tf}m lost ticks"
-    b1, b5 = build_bars(rth, 1), build_bars(rth, 5)
-    assert len(b1["t"]) > len(b5["t"]), "1m must produce more bars than 5m"
-    assert b1["v"].sum() == b5["v"].sum(), "volume must survive re-barring"
+        lab = tf_label(tf)
+        assert (b["h"] >= b["o"]).all() and (b["h"] >= b["c"]).all(), f"{lab} high"
+        assert (b["l"] <= b["o"]).all() and (b["l"] <= b["c"]).all(), f"{lab} low"
+        assert (b["v"] > 0).all(), f"{lab} empty bar"
+        assert b["n"].sum() == len(rth["ts"]), f"{lab} lost ticks"
+    b15s, b1, b5 = build_bars(rth, 15), build_bars(rth, 60), build_bars(rth, 300)
+    assert len(b15s["t"]) > len(b1["t"]) > len(b5["t"]), "finer bars must be more bars"
+    assert b15s["v"].sum() == b1["v"].sum() == b5["v"].sum(), \
+        "volume must survive re-barring"
+    # No bar may straddle its own boundary: every tick in a bucket has to fall in
+    # the same slot the bucket was cut for.
+    for tf in (15, 120):
+        b = build_bars(rth, tf)
+        slots = sec_of_day(rth["ts"]) // tf
+        assert all(len(np.unique(slots[s:e])) == 1
+                   for s, e in zip(b["start"], b["end"])), f"{tf_label(tf)} straddles"
+    assert (tf_secs(30, "Second"), tf_secs("2", "Minute"), tf_secs("15s")) == (30, 120, 15)
     lo, hi, nd = available_range(c)
     print(f"selfcheck OK: {c} {len(tape['ts']):,} ticks, {nd} days {lo}..{hi}; "
-          f"bars 1m={len(b1['t']):,} 5m={len(b5['t']):,}, volume conserved")
+          f"bars 15s={len(b15s['t']):,} 1m={len(b1['t']):,} 5m={len(b5['t']):,}, "
+          f"volume conserved")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", metavar="CONTRACT")
     ap.add_argument("--bars", metavar="CONTRACT")
-    ap.add_argument("--tf", type=int, default=5, help="bar minutes")
+    ap.add_argument("--tf", default="5m", help="bar size: 30s, 2m, 15m (bare "
+                                               "numbers are minutes)")
     ap.add_argument("--start"); ap.add_argument("--end")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--list", action="store_true")
@@ -239,9 +291,10 @@ def main():
               f"{lo}..{hi} -> {cache_path(args.build)}")
         return
     if args.bars:
+        secs = tf_secs(args.tf)
         tape = slice_range(load_cache(args.bars), args.start, args.end)
-        b = build_bars(tape, args.tf)
-        print(f"{args.bars} {args.tf}m: {len(b['t']):,} bars from "
+        b = build_bars(tape, secs)
+        print(f"{args.bars} {tf_label(secs)}: {len(b['t']):,} bars from "
               f"{len(tape['ts']):,} ticks")
         print(f"{'time':<20}{'open':>10}{'high':>10}{'low':>10}{'close':>10}"
               f"{'vol':>9}{'delta':>9}")

@@ -259,13 +259,13 @@ def check_output(res, tape, bars) -> list[str]:
     return problems
 
 
-def smoke_test(S: type, contract: str | None = None, timeframe=5) -> dict:
+def smoke_test(S: type, contract: str | None = None, tf_secs=300) -> dict:
     """Run the strategy once on real ticks and check what it returned."""
     contracts = tp.cached_contracts()
     contract = contract or (contracts[0] if contracts else None)
     if contract is None:
         return dict(ran=False, note="no tape cached — cannot smoke-test yet")
-    ctx = engine.prepare(contract, timeframe)
+    ctx = engine.prepare(contract, tf_secs)
     strat = S()
     p = {k: v.default for k, v in strat.params.items()}
     res = strat.entries(ctx["bars"], ctx["tape"], p)
@@ -278,14 +278,14 @@ def smoke_test(S: type, contract: str | None = None, timeframe=5) -> dict:
     had = engine.LIBRARY.get(S.name)
     engine.LIBRARY[S.name] = S
     try:
-        trades, meta = engine.backtest(contract, S.name, timeframe, ctx=ctx)
+        trades, meta = engine.backtest(contract, S.name, tf_secs, ctx=ctx)
         s = engine.summarise(trades, meta)
     finally:
         if had is None:
             engine.LIBRARY.pop(S.name, None)
         else:
             engine.LIBRARY[S.name] = had
-    return dict(ran=True, contract=contract, timeframe=timeframe,
+    return dict(ran=True, contract=contract, timeframe=tp.tf_label(tf_secs),
                 signals=len(np.asarray(res[0])), trades=s["trades"],
                 pnl=round(s["pnl"], 2),
                 t_daily=(None if s["t_daily"] != s["t_daily"] else round(s["t_daily"], 2)))
@@ -515,7 +515,7 @@ def selfcheck():
     # 4. The output contract catches the mistakes a generated strategy makes.
     contracts = tp.cached_contracts()
     if contracts:
-        ctx = engine.prepare(contracts[0], 5)
+        ctx = engine.prepare(contracts[0], 300)
         tape, bars = ctx["tape"], ctx["bars"]
         ei = np.array([10, 20], np.int64)
         px = tape["px"][ei]

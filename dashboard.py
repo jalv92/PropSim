@@ -170,7 +170,9 @@ def analyzer_stream(q, write):
     """
     contract = q.get("contract", [""])[0]
     strategy = q.get("strategy", ["orb"])[0]
-    tf = int(q.get("tf", ["5"])[0])
+    # NinjaTrader's own two fields. They arrive as a pair and become seconds here,
+    # once, so nothing downstream has to know which unit the user picked.
+    tf = tp.tf_secs(q.get("tf", ["5"])[0], q.get("bartype", ["Minute"])[0])
     start = q.get("start", [""])[0] or None
     end = q.get("end", [""])[0] or None
     slip = float(q.get("slippage", ["2"])[0])
@@ -242,7 +244,7 @@ def analyzer_stream(q, write):
                                         start=meta["start"], end=meta["end"],
                                         params=meta["params"],
                                         slip=slip, comm=comm),
-                  timeframe=f"{tf}m", start=meta["start"], end=meta["end"],
+                  timeframe=tp.tf_label(tf), start=meta["start"], end=meta["end"],
                   params=meta["params"], trades=len(trades),
                   pnl=round(summary["pnl"], 2),
                   t_daily=(None if summary["t_daily"] != summary["t_daily"]
@@ -288,7 +290,7 @@ def ai_write_stream(q, write):
     description = q.get("description", [""])[0]
     name = (q.get("name", [""])[0] or "").strip() or None
     contract = (q.get("contract", [""])[0] or "").strip() or None
-    tf = int(q.get("tf", ["5"])[0])
+    tf = tp.tf_secs(q.get("tf", ["5"])[0], q.get("bartype", ["Minute"])[0])
     write("meta", dict(model=aiauthor.model_name(),
                        max_attempts=aiauthor.MAX_ATTEMPTS,
                        key_source=aiauthor.key_source()))
@@ -298,7 +300,7 @@ def ai_write_stream(q, write):
                               problems=aiauthor.redact(a.get("problems") or ""),
                               tokens=a["usage"]))
 
-    res = aiauthor.write_strategy(description, name, contract=contract, timeframe=tf,
+    res = aiauthor.write_strategy(description, name, contract=contract, tf_secs=tf,
                                   on_attempt=on_attempt)
     installed = None
     if res["ok"] and q.get("install"):
@@ -362,7 +364,7 @@ def optimize_stream(q, write):
     run_id = (q.get("id", [""])[0] or "")[:64]
     contract = q.get("contract", [""])[0]
     strategy = q.get("strategy", ["orb"])[0]
-    tf = int(q.get("tf", ["5"])[0])
+    tf = tp.tf_secs(q.get("tf", ["5"])[0], q.get("bartype", ["Minute"])[0])
     start = q.get("start", [""])[0] or None
     end = q.get("end", [""])[0] or None
     costs = engine.Costs(slippage_ticks=float(q.get("slippage", ["2"])[0]),
@@ -393,7 +395,8 @@ def optimize_stream(q, write):
         raise SystemExit("give at least one parameter a range to sweep")
 
     SWEEP_PAUSED.setdefault(run_id, False)
-    write("meta", dict(strategy=strategy, contract=contract, timeframe=tf,
+    write("meta", dict(strategy=strategy, contract=contract,
+                       timeframe=tp.tf_label(tf), tf_secs=tf,
                        combos=len(optimize.grid(ranges)),
                        account=(None if rules is None else dict(
                            label=f"{rules.firm}/{rules.variant}/{rules.phase}"
@@ -487,7 +490,7 @@ def trade_source(account: str):
         bt = LAST_BACKTEST
         m = bt["meta"]
         return bt["trades"], (f"{len(bt['trades'])} trades from a backtest: "
-                              f"{m['label']} · {m['contract']} · {m['timeframe']}m · "
+                              f"{m['label']} · {m['contract']} · {m['timeframe']} · "
                               f"{m['start']}..{m['end']}"), None
 
     if account.startswith("__strategy:"):
