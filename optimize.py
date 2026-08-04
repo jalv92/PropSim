@@ -44,7 +44,10 @@ import itertools
 import json
 import multiprocessing as mp
 import os
+import shutil
+import tempfile
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -217,22 +220,79 @@ def result_row(p: dict, keys: list, trades, meta, rules=None, contracts=1) -> di
 _W: dict = {}           # per-worker state; only ever touched inside a worker
 
 
-def _worker_init(job: dict):
-    """Rebuild everything a worker needs, once, before it takes any task.
+_ARRAYS = ("tape", "bars")      # the two dicts of arrays a prepared ctx carries
 
-    The tape is NOT pickled across: 303 MB on 37 days of NQ, and it would be
-    copied per worker per task. Each worker reads the same cache from disk
-    instead, which is one second it spends in parallel with the others.
+
+def _share(ctx: dict) -> dict:
+    """Write the prepared tape ONCE, for every worker to map read-only.
+
+    THE POOL USED TO RE-PREPARE THE TAPE PER WORKER, and that one decision cost
+    both of the things a pool is supposed to give you. Memory: nineteen private
+    copies of 30 sessions of full-session NQ measured 10.9 GB of PSS on an 11.8
+    GB machine -- so the pool had to be sized down to one or two workers to be
+    safe, which on a 20-core box turned a 57,600-combination sweep into four and
+    a half hours of one core. Time: each of those copies costs a full slice and
+    re-bar before the worker takes its first task.
+
+    Mapped, both problems are the same non-problem. The arrays live in the page
+    cache, which the kernel already shares between processes, so the twentieth
+    worker costs what the first one did: nothing but its own interpreter. And a
+    mapping is lazy, so a worker starts in milliseconds instead of seconds.
+
+    Read-only is not a precaution here, it is the contract. Nothing in the
+    backtest path writes into the tape or the bars -- strategies index and
+    allocate their own results -- and a mapping opened `r` turns any future
+    violation into a loud exception in the worker rather than a private copy of
+    a 400 MB array that silently un-shares it.
     """
-    try:                                   # user strategies exist here too
+    # `sweep` deletes its own directory on every exit it can see -- finishing,
+    # raising, and the Stop button. It cannot see SIGKILL or the power going out,
+    # and half a gigabyte of orphan is not a nice thing to leave in someone's
+    # temp folder. A day is far longer than any sweep that has run here and far
+    # shorter than forever, so anything older than that belongs to a process that
+    # is not coming back. Deleted on the way IN, because that is the moment we
+    # are certainly running.
+    old = time.time() - 86400
+    for stale in Path(tempfile.gettempdir()).glob("propsim-ctx-*"):
+        if stale.is_dir() and stale.stat().st_mtime < old:
+            shutil.rmtree(stale, ignore_errors=True)
+
+    d = Path(tempfile.mkdtemp(prefix="propsim-ctx-"))
+    nbytes = 0
+    for key in _ARRAYS:
+        for name, arr in ctx[key].items():
+            np.save(d / f"{key}.{name}.npy", arr)
+            nbytes += arr.nbytes
+    np.save(d / "dayi.npy", ctx["dayi"])
+    nbytes += ctx["dayi"].nbytes
+    scalars = {k: ctx[k] for k in ("contract", "tf_secs", "rth_only", "days",
+                                   "start", "end", "n_holes", "hole_days")}
+    return dict(dir=str(d), scalars=scalars, mb=nbytes / (1 << 20))
+
+
+def _map_shared(share: dict) -> dict:
+    """The other half of `_share`, inside a worker: a ctx backed by the page cache."""
+    d = Path(share["dir"])
+    ctx = dict(share["scalars"])
+    for key in _ARRAYS:
+        ctx[key] = {p.name.split(".")[1]: np.load(p, mmap_mode="r")
+                    for p in d.glob(f"{key}.*.npy")}
+    ctx["dayi"] = np.load(d / "dayi.npy", mmap_mode="r")
+    return ctx
+
+
+def _worker_init(job: dict):
+    """Map everything a worker needs, once, before it takes any task."""
+    try:
+        # The user's own strategies have to exist in here too -- but only as
+        # CLASSES. Validating them is the parent's job, already done, and doing
+        # it again per worker is what made a pool cost more than it saved.
         import plugins
-        plugins.register_all()
+        plugins.register_all(validate=False)
     except Exception:
         pass
     _W.update(job)
-    _W["ctx"] = engine.prepare(job["contract"], job["tf_secs"],
-                               job["start"], job["end"],
-                               strategy=job["strategy"])
+    _W["ctx"] = _map_shared(job["share"])
 
 
 def _run_combo(p: dict) -> dict:
@@ -253,7 +313,7 @@ def _worker_name(_) -> str:
     return mp.current_process().name
 
 
-def worker_count() -> int:
+def worker_count(shared_mb: float = 0.0) -> int:
     """How many processes this machine can actually feed.
 
     Bounded by MEMORY, not by cores, and the bound is MEASURED rather than
@@ -264,27 +324,44 @@ def worker_count() -> int:
     show. Fifteen workers asked for 14.8 GB on an 11 GB machine and took it to
     1 GB free before it was killed.
 
-    So: ask the kernel what this process actually peaked at. By the time this is
-    called the parent has already run one full combination, which makes its own
-    high-water mark exactly the thing a worker is about to need.
+    So: ask the kernel what this process is holding, and then SUBTRACT what the
+    workers will not be paying for. `shared_mb` is the tape and the bars, which
+    since `_share` exist once in the page cache no matter how many workers map
+    them; what is left of the parent's RSS is the interpreter, numpy, and the
+    per-combination allocations -- which is precisely what each worker DOES pay
+    for, privately, and is the only thing that should be multiplied by N.
+
+    Getting that subtraction wrong is expensive in both directions, and both have
+    happened here. Charging a worker for the whole tape sized a 57,600-
+    combination sweep at ONE worker on a 20-core machine: four and a half hours
+    in series while nineteen cores idled. Charging it for nothing at all is how
+    an earlier version asked for 14.8 GB on an 11 GB machine and got killed.
     """
     n = max(1, (os.cpu_count() or 2) - 1)
     try:
         with open("/proc/self/status") as f:
-            peak_mb = next(int(l.split()[1]) for l in f
-                           if l.startswith("VmHWM")) / 1024
+            rss_mb = next(int(l.split()[1]) for l in f
+                          if l.startswith("VmRSS")) / 1024
         with open("/proc/meminfo") as f:
             avail_mb = next(int(l.split()[1]) for l in f
                             if l.startswith("MemAvailable")) / 1024
-        n = min(n, int(avail_mb * 0.6 / max(peak_mb, 1)))
+        # Floored: a worker is never free, and a floor of 0 would divide the
+        # whole machine by rounding error.
+        private_mb = max(rss_mb - shared_mb, 64.0)
+        n = min(n, int(avail_mb * 0.6 / private_mb))
     except Exception:
         # No /proc, i.e. Windows, where the packaged build runs. Reading the
         # equivalent counters there means ctypes against GlobalMemoryStatusEx
         # and GetProcessMemoryInfo -- untestable from here, and untested code in
         # the path that decides whether to exhaust a user's RAM is worse than a
-        # small constant. Two workers is still 2x. MEASURE THIS ON WINDOWS and
-        # raise it; the number above is what the same measurement produced here.
-        n = min(n, 2)
+        # small constant.
+        #
+        # This constant is a BOUND, not a measurement, and it was two while a
+        # worker cost the whole tape. Since `_share` a worker measures 47 MB on
+        # the same machine where it used to measure 600, so six of them is a
+        # smaller bet than two used to be -- and six cores is six cores. MEASURE
+        # THIS ON WINDOWS and let the number decide instead.
+        n = min(n, 6)
     return max(1, n)
 
 
@@ -331,6 +408,7 @@ def sweep(contract, strategy, tf_secs=300, start=None, end=None, ranges=None,
     rows = []
     done = 0
     pool = None
+    share = None
     try:
       # THE FIRST COMBINATION RUNS HERE, AND ITS COST DECIDES THE REST. A pool is
       # worth about an order of magnitude on a slow strategy and a net loss on a
@@ -355,13 +433,18 @@ def sweep(contract, strategy, tf_secs=300, start=None, end=None, ranges=None,
       # cost of being wrong is their machine, not an exception. `parent_process()`
       # is still None this early in a spawned child; the process NAME is not.
       in_worker = mp.current_process().name != "MainProcess"
-      n = worker_count() if rest and not in_worker else 1
-      if n > 1 and per_combo * len(rest) > PARALLEL_MIN_SECONDS:
+      # Written before the pool is sized, because what it takes off a worker's
+      # bill is exactly what decides how many workers fit.
+      if rest and not in_worker and per_combo * len(rest) > PARALLEL_MIN_SECONDS:
+          share = _share(ctx)
+      n = worker_count(share["mb"]) if share else 1
+      if n > 1:
         pool = mp.get_context("spawn").Pool(
             n, initializer=_worker_init,
             initargs=(dict(contract=contract, strategy=strategy,
                            tf_secs=tf_secs, start=start, end=end,
                            costs=costs, keys=keys, rules=rules,
+                           share=share,
                            contracts=contracts),))
         # BATCHED, AND THE BATCH BOUNDARY IS A BARRIER ON PURPOSE. Two things
         # depend on it, and both are correctness rather than speed:
@@ -419,6 +502,9 @@ def sweep(contract, strategy, tf_secs=300, start=None, end=None, ranges=None,
         if pool is not None:
             pool.terminate()
             pool.join()
+        # The mappings die with the workers; the files behind them do not.
+        if share is not None:
+            shutil.rmtree(share["dir"], ignore_errors=True)
 
     # Rank by the gate statistic among configurations that could clear the bar;
     # everything else sorts below it, still visible.
@@ -584,7 +670,7 @@ def selfcheck():
     serial = sweep(c, "orb", 300, ranges=rng, log_to_ledger=False)
     g = globals()
     keep = (PARALLEL_MIN_SECONDS, worker_count)
-    g["PARALLEL_MIN_SECONDS"], g["worker_count"] = -1.0, lambda: 2
+    g["PARALLEL_MIN_SECONDS"], g["worker_count"] = -1.0, lambda *_: 2
     try:
         par = sweep(c, "orb", 300, ranges=rng, log_to_ledger=False)
     finally:
@@ -604,7 +690,7 @@ def selfcheck():
         led = Path(td) / "trials.jsonl"
         real_append = ledger.append
         ledger.append = lambda kind, path=None, **kw: real_append(kind, led, **kw)
-        g["PARALLEL_MIN_SECONDS"], g["worker_count"] = -1.0, lambda: 2
+        g["PARALLEL_MIN_SECONDS"], g["worker_count"] = -1.0, lambda *_: 2
         try:
             boom = RuntimeError("stop pressed")
             def die(done, total, secs):

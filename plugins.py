@@ -319,8 +319,17 @@ def _isolated_check(path: Path, timeout=30) -> tuple[bool, str]:
     return bool(d.get("ok")), d.get("why", "")
 
 
-def scan(directory: Path | None = None) -> list[dict]:
-    """Every file in the folder, with its verdict. Never raises."""
+def scan(directory: Path | None = None, validate: bool = True) -> list[dict]:
+    """Every file in the folder, with its verdict. Never raises.
+
+    `validate=False` loads the classes and NOTHING else. A verdict costs a
+    subprocess per file plus a smoke test, and a smoke test loads the whole
+    contract tape and runs a backtest on it -- which is the right price to pay
+    once, in the process that is about to show a user their strategy folder, and
+    an absurd one to pay in each of nineteen sweep workers that were handed the
+    strategy to run and a tape to run it on. Measured: 600 MB and several seconds
+    per worker, on files the parent had already validated.
+    """
     d = Path(directory or USER_DIR)
     if not d.is_dir():
         return []
@@ -329,7 +338,7 @@ def scan(directory: Path | None = None) -> list[dict]:
         if f.name.startswith("_"):
             continue
         row = dict(file=f.name, path=str(f))
-        ok, why = _isolated_check(f)
+        ok, why = _isolated_check(f) if validate else (True, "")
         if not ok:
             rows.append(dict(row, ok=False, error=why))
             continue
@@ -342,7 +351,8 @@ def scan(directory: Path | None = None) -> list[dict]:
                     f"history ambiguous.")
             row.update(ok=True, name=S.name, label=S.label,
                        params=list(S.params), cls=S)
-            row["smoke"] = smoke_test(S)
+            if validate:
+                row["smoke"] = smoke_test(S)
             rows.append(row)
         except Rejected as exc:
             rows.append(dict(row, ok=False, error=str(exc)))
@@ -354,9 +364,9 @@ def scan(directory: Path | None = None) -> list[dict]:
 _INSTALLED: dict[str, type] = {}
 
 
-def register_all(directory: Path | None = None) -> list[dict]:
+def register_all(directory: Path | None = None, validate: bool = True) -> list[dict]:
     """Load every valid plugin into `engine.LIBRARY`. Returns the scan report."""
-    rows = scan(directory)
+    rows = scan(directory, validate)
     for r in rows:
         if r.get("ok") and r.get("cls") is not None:
             engine.LIBRARY[r["name"]] = r["cls"]
