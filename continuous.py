@@ -16,26 +16,54 @@ ROOT = "NQ"                     # ALL stitches this instrument only
 
 # A real NQ quarterly roll spread. Anything a stitch calls a "roll" has to land
 # in this band or it is an outlier that happened to look like one. Measured on
-# this data: +241.75, +250.00, +214.50, +281.75.
+# this data: +237.25, +256.00, +210.25, +281.75.
 ROLL_BAND = (150.0, 350.0)
 
 # Largest tolerable move between the close of one weekday session and the open
-# of the next weekday session, in the adjusted series (weekends and holidays are
-# excluded -- see audit()). Over a 24-hour tape consecutive weekdays are
-# separated only by the 17:00-18:00 maintenance break: measured on the real
-# stitched tape, 50 weekday-consecutive boundaries, median 1.00 points, 90th
-# percentile 2.00, maximum 3.00, none above 150 -- 50x headroom. A session
-# assigned to the wrong contract sits a roll spread out of line and trips this
-# immediately.
-SESSION_GAP_LIMIT = 150.0
+# of the next weekday session, in the adjusted series (weekends and holidays
+# are excluded -- see audit()). This boundary sits at the REAL 17:00-18:00 ET
+# maintenance halt now that `day` is session_day, not calendar day -- and the
+# halt moves a lot more than a mid-session midnight crossing used to.
+# Measured on the real 107.7M-tick stitched tape, 174 consecutive-weekday
+# boundaries: median 5.50, p90 24.55, p99 84.64, max 133.75. The smallest real
+# roll spread is 210.25 -- a wrong-contract session offset by that spread must
+# still clear this gate. The usable band is exactly (133.75, 210.25): a
+# 1.57x span, not a comfortable one on either side. 175.0 sits roughly in the
+# middle -- 31% above the worst halt move seen so far, 17% below the smallest
+# defect this exists to catch. Both margins are THIN. A future halt move
+# bigger than 133.75 (this is one tape's max, not a proven ceiling) can still
+# trip this and block a rebuild; a wrong-contract session offset by exactly
+# 210.25 could still hide if a halt move happens to cancel ~35 points of it.
+# This check is not the primary defense against that defect any more, though:
+# build() assigns contracts by CALENDAR day (front_months/mine), so a whole
+# wrong-contract session lands as a step at midnight -- which now sits INSIDE
+# a session_day key, not at a session-gap boundary -- and the intraday-step
+# check catches it there. This check's remaining job is narrower: flag a
+# session-to-session move too big to be a real halt, which is still worth
+# keeping as a second line of defense, just not the one to lean on.
+SESSION_GAP_LIMIT = 175.0
 
-# Seconds both contracts must print in for a roll spread to be measurable. The
-# thinnest real roll on this data had 10,821.
+# Seconds both contracts must print in for a roll spread to be measurable.
+# The thinnest real roll on this data had 1,567 -- 7.8x headroom over this
+# threshold, not the 54x a smaller-tape measurement once suggested. Worth
+# saying plainly: that is a real cushion, but a much smaller one than it looks
+# if this constant is read in isolation.
 MIN_OVERLAP_SECONDS = 200
 
 # NQ's session runs roughly 18:00 ET one evening to 17:00 ET the next day --
 # only the maintenance halt (17:00-18:00 ET) sits in between.
 SESSION_OPEN_H = 18
+
+# A calendar-day gap this big between two sessions that ARE both present in
+# the tape is no longer a weekend. Measured on the real tape's 273 gaps
+# between consecutive sessions: 231 of 1 day (weekday to weekday), 40 of 2
+# (Friday to Sunday), zero of 3 (a holiday Monday/Friday would show as this --
+# none happened to land in this window, but a real one must not be reported
+# as a hole). Anything past that -- the real tape has one 9-day gap and one
+# 47-day gap -- is missing data, not a market closure, and worth telling
+# someone about before they backtest across it and wonder where their trades
+# went.
+MAX_NORMAL_GAP_DAYS = 3
 
 
 def session_day(ts: np.ndarray) -> np.ndarray:
@@ -44,8 +72,8 @@ def session_day(ts: np.ndarray) -> np.ndarray:
 
     tape.day_index buckets at midnight. Most of the time that's harmless --
     the daily step across the maintenance halt is a few points (max observed
-    114.75 across 30.4M ticks, see the step check below). But the same
-    midnight bucketing also puts a stale pre-open filler tick (NT8 emits a
+    85.50 across the full 107.7M-tick tape, see the step check below). But the
+    same midnight bucketing also puts a stale pre-open filler tick (NT8 emits a
     flat, 1-lot "last price" print every minute or so through the halt) and
     the real reopen print in the SAME calendar-day bucket whenever the halt's
     other side is a whole weekend rather than an hour -- every Sunday reopen.
@@ -125,7 +153,7 @@ def measure_roll(old_ts, old_px, new_ts, new_px, day):
     Both contracts are in the tape for the same seconds around the roll, so the
     spread is read off rather than assumed: the median per-second difference on
     the day they change hands. Measured this way the four rolls on this data
-    come out at +241.75, +250.00, +214.50 and +281.75 with an interquartile
+    come out at +237.25, +256.00, +210.25 and +281.75 with an interquartile
     range near 2 points, so a guess would have been wrong by tens of points.
 
     Returns (None, n) when the overlap is too thin to be a measurement.
@@ -158,9 +186,13 @@ def audit(ts: np.ndarray, px: np.ndarray, rolls: list) -> list:
 
     # An intraday step of 150 points or more is either a contract change or
     # corruption, and both must stop the write. No market moves 150 points
-    # between prints inside a session. Real data: max observed 114.75 over 30.4M
-    # ticks, zero above 150. So an unbounded check costs nothing in false
-    # positives and catches everything suspicious.
+    # between prints inside a session. Real data: max observed 85.50 over the
+    # full 107.7M-tick tape, zero above 150. So an unbounded check costs
+    # nothing in false positives and catches everything suspicious. This is
+    # also the check that actually catches a wrong-contract session now
+    # (see SESSION_GAP_LIMIT's comment): build() assigns contracts by
+    # calendar day, so a whole session on the wrong contract steps at
+    # midnight -- inside a session_day key, not at a session-gap boundary.
     #
     # No float64 here: px is already exact float32 (see build()'s comment on
     # why), and this was measured as the single largest allocation in the
@@ -192,7 +224,7 @@ def audit(ts: np.ndarray, px: np.ndarray, rolls: list) -> list:
     weekday_from = (from_day + 3) % 7          # 0=Monday .. 6=Sunday, day 0 = Thu 1970-01-01
     weekday_into = (into_day + 3) % 7
     consecutive_weekday = ((into_day - from_day) == 1) & (weekday_from < 5) & (weekday_into < 5)
-    gaps = np.abs(px[edges[1:]].astype(np.float64) - px[ends[:-1]])
+    gaps = np.abs(px[edges[1:]] - px[ends[:-1]])
     over = np.flatnonzero(consecutive_weekday & (gaps > SESSION_GAP_LIMIT))
     if len(over):
         first = tape.date_str(int(day[edges[1:][over[0]]]))
@@ -221,6 +253,25 @@ def load_meta():
         return json.loads(meta_path().read_text())
     except (OSError, ValueError):
         return None
+
+
+def find_holes(days_u: np.ndarray) -> list:
+    """Gaps between consecutive present sessions bigger than a long weekend.
+
+    A diff over the (already sorted, already unique) session-day array: a
+    normal week is gap 1, a normal weekend is gap 2, a holiday long weekend is
+    gap 3 -- see MAX_NORMAL_GAP_DAYS. Anything past that is a coverage hole:
+    no cached contract had data for that stretch, not the market being
+    closed. Nothing else in the audit looks for this -- a hole doesn't
+    corrupt a price or misplace a roll, it just makes a backtest run on a
+    fraction of the trades someone expects with nothing on screen saying why.
+    """
+    gaps = np.diff(days_u)
+    over = np.flatnonzero(gaps > MAX_NORMAL_GAP_DAYS)
+    return [dict(**{"from": tape.date_str(int(days_u[i]))},
+                 to=tape.date_str(int(days_u[i + 1])),
+                 sessions_missing=int(gaps[i] - 1))
+            for i in over]
 
 
 def to_raw(px, ts, meta):
@@ -367,6 +418,7 @@ def build(on_progress=None) -> dict:
         first=tape.date_str(int(days_u[0])), last=tape.date_str(int(days_u[-1])),
         roll_ts=roll_ts, roll_cum=roll_cum,
         rolls=[dict(r, date=tape.date_str(r["day"])) for r in rolls],
+        holes=find_holes(days_u),
         inputs=fingerprint(),
     )
     tape.CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -550,6 +602,16 @@ def selfcheck():
     assert to_raw(px_q, ts_q, None).tolist() == px_q.tolist(), \
         "no roll table means no mapping"
 
+    # find_holes: consecutive gaps of 1, 1, 2, 3 days (a normal week, a normal
+    # weekend, a holiday long weekend) must all be silent -- only the last
+    # gap here (49 days) is past MAX_NORMAL_GAP_DAYS and counts as a hole.
+    days = np.array([20000, 20001, 20002, 20004, 20007, 20056], np.int64)
+    holes = find_holes(days)
+    assert len(holes) == 1, holes
+    assert holes[0]["from"] == tape.date_str(20007), holes
+    assert holes[0]["to"] == tape.date_str(20056), holes
+    assert holes[0]["sessions_missing"] == 48, holes
+
     print("selfcheck OK: front months monotone across an oscillating roll")
 
 
@@ -572,6 +634,9 @@ def main():
         for r in m["rolls"]:
             sp = "unmeasured" if r["spread"] is None else f"{r['spread']:+.2f} pts"
             print(f"  {r['date']}  {r['from']} -> {r['to']}  {sp}  (n={r['n']})")
+        for h in m.get("holes", []):
+            print(f"  HOLE: {h['from']} -> {h['to']}  "
+                  f"({h['sessions_missing']} sessions missing)")
         return
     if args.build:
         def prog(done, total, ticks):

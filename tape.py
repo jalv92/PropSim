@@ -66,23 +66,34 @@ def build_cache(contract: str, nt_root=None, force=False, on_progress=None) -> d
         raise SystemExit(f"no .ncd files under {cdir}")
 
     ts, px, vol, side = [], [], [], []
+    truncated = 0
     for fi, f in enumerate(files):
         if on_progress and fi % 25 == 0:
             on_progress(fi, len(files), len(ts))
+        n0 = len(ts)
         try:
             for tt, price, boff, aoff, v in read_ticks(f):
                 ts.append(tt); px.append(price); vol.append(v)
                 side.append(BUY if aoff == 0 else (SELL if boff == 0 else UNKNOWN))
         except Exception as e:
-            # ponytail: skip one corrupt/unsupported hour, log it -- matches
-            # ncd_parse.minute_features(), which has the same guard. Real data
-            # hit this once in 5,560 hourly files across all NQ contracts: a
-            # single byte carrying an undocumented flag value that even the
-            # upstream reference parser (bboyle1234/NTDFileReader) can't
-            # decode either, so this is a one-off anomaly in that hour, not a
-            # systematic bug -- skipping it loses one hour of one contract,
-            # not the build.
-            print(f"  skipping corrupt hour {f.name}: {e}")
+            # ponytail: one corrupt/unsupported hour truncates instead of
+            # aborting the whole build -- matches ncd_parse.minute_features(),
+            # which has the same guard. Real data hit this once in 5,560
+            # hourly files across all NQ contracts: a single byte carrying an
+            # undocumented flag value that even the upstream reference parser
+            # (bboyle1234/NTDFileReader) can't decode either, so this is a
+            # one-off anomaly in that hour, not a systematic bug. The
+            # generator already yielded some ticks before it raised -- those
+            # stay (verified: 202509120700.Last.ncd raised at byte 287 after
+            # 39 ticks, and those 39 are in the cache) -- only the REST of
+            # that hour is lost, so "truncated" is the honest word, not
+            # "skipped".
+            truncated += 1
+            print(f"  truncated {f.name} after {len(ts) - n0} ticks: {e}")
+
+    if not ts:
+        raise SystemExit(f"{contract}: 0 ticks parsed from {len(files)} files "
+                         f"({truncated} failed) -- refusing to write an empty cache")
 
     arr = dict(ts=np.asarray(ts, np.int64), px=np.asarray(px, np.float32),
                vol=np.asarray(vol, np.int32), side=np.asarray(side, np.int8))
@@ -90,10 +101,14 @@ def build_cache(contract: str, nt_root=None, force=False, on_progress=None) -> d
     arr = {k: v[order] for k, v in arr.items()}
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    np.savez(out, **arr)
+    # `truncated` travels IN the cache file, not just this process's return
+    # value -- a rebuild months later that hits the same anomaly must not be
+    # indistinguishable from a clean one just because nobody was watching
+    # stdout when it ran.
+    np.savez(out, truncated=np.int64(truncated), **arr)
     if on_progress:
         on_progress(len(files), len(files), len(arr["ts"]))
-    return arr
+    return {**arr, "truncated": truncated}
 
 
 def load_cache(contract: str, start=None, end=None) -> dict:
@@ -147,6 +162,19 @@ def load_cache(contract: str, start=None, end=None) -> dict:
         full = z[k]
         out[k] = full[i0:i1].copy() if narrow else full
     return out
+
+
+def truncated_hours(contract: str) -> int:
+    """How many hourly files were truncated by a parse error when this cache
+    was built, read back from the cache file itself -- durable, so it answers
+    the same whether the cache was just built or has sat there for months.
+    0 for a cache built before this field existed, same as a clean one.
+    """
+    p = cache_path(contract)
+    if not p.exists():
+        return 0
+    z = np.load(p)
+    return int(z["truncated"]) if "truncated" in z.files else 0
 
 
 def cached_contracts() -> list[str]:
@@ -330,6 +358,25 @@ def selfcheck():
     s = sec_of_day(rth["ts"])
     assert s.min() >= 9 * 3600 + 30 * 60 and s.max() < 16 * 3600, "RTH filter leaked"
 
+    # A contract whose every hour fails to parse must raise, not write an
+    # empty cache -- a future NT8 format change has to be a loud crash, not a
+    # silently empty tape nobody notices until a backtest runs on nothing.
+    # One crafted file: a valid 28-byte header followed by a record whose
+    # time-flag bits (6) no known parser of this format decodes -- the same
+    # failure real data hit once in NQ 12-25, just with zero surviving ticks.
+    import struct, tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        cdir = Path(tmp) / "db" / "tick" / "FAKE 01-99"
+        cdir.mkdir(parents=True)
+        header = struct.pack("<Iddq", 0, 0.25, 23000.0, 0)
+        (cdir / "202501010000.Last.ncd").write_bytes(header + bytes([0b00000110, 0]))
+        try:
+            build_cache("FAKE 01-99", nt_root=tmp)
+            assert False, "must raise on an all-corrupt contract"
+        except SystemExit as e:
+            assert "0 ticks" in str(e), e
+        assert not cache_path("FAKE 01-99").exists(), "must not write an empty cache"
+
     # Seconds and minutes are the same code path, so both are checked on it. The
     # sub-minute sizes are the ones worth stating: a bucket width that does not
     # divide the hour is where an off-by-one in the slot stride would show.
@@ -416,8 +463,10 @@ def main():
     if args.build:
         t = build_cache(args.build, force=args.force)
         lo, hi, nd = available_range(args.build)
+        n = truncated_hours(args.build)
+        warn = f" ({n} hour(s) truncated by parse errors)" if n else ""
         print(f"cached {args.build}: {len(t['ts']):,} ticks, {nd} days, "
-              f"{lo}..{hi} -> {cache_path(args.build)}")
+              f"{lo}..{hi}{warn} -> {cache_path(args.build)}")
         return
     if args.bars:
         secs = tf_secs(args.tf)

@@ -129,7 +129,8 @@ def prepare_stream(q, write):
     tp.build_cache(contract, force=bool(q.get("force")), on_progress=prog)
     lo, hi, days = tp.available_range(contract)
     write("result", dict(contract=contract, first=lo, last=hi, days=days,
-                         ticks=len(tp.load_cache(contract)["ts"])))
+                         ticks=len(tp.load_cache(contract)["ts"]),
+                         truncated=tp.truncated_hours(contract)))
 
 
 def _combos(firm_key, combos):
