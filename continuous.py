@@ -116,14 +116,16 @@ def audit(ts: np.ndarray, px: np.ndarray, rolls: list) -> list:
     day = tape.day_index(ts)
     lo, hi = ROLL_BAND
 
-    # A roll-sized step between two consecutive ticks of the SAME session. No
-    # market moves 150 points between prints inside a session; a contract change
-    # does.
+    # An intraday step of 150 points or more is either a contract change or
+    # corruption, and both must stop the write. No market moves 150 points
+    # between prints inside a session. Real data: max observed 114.75 over 30.4M
+    # ticks, zero above 150. So an unbounded check costs nothing in false
+    # positives and catches everything suspicious.
     step = np.abs(np.diff(px.astype(np.float64)))
     same = np.diff(day) == 0
-    n_mid = int((same & (step >= lo) & (step <= hi)).sum())
+    n_mid = int((same & (step >= lo)).sum())
     if n_mid:
-        bad.append(f"{n_mid} roll-sized step(s) inside a session")
+        bad.append(f"{n_mid} intraday step(s) of {lo:g}+ points")
 
     # The strong one: a whole session on the wrong contract. Consecutive
     # sessions are separated only by the maintenance break, so the adjusted
@@ -243,6 +245,12 @@ def selfcheck():
     mid_ts, mid_px = _tape([23000.0])
     mid_px[200:] += 241.75
     assert audit(mid_ts, mid_px, ok_rolls), "must reject an intraday roll step"
+
+    # Unbounded check: a large corruption (1000 points) well above the roll band
+    # must also be rejected, proving the upper bound is gone.
+    large_ts, large_px = _tape([23000.0])
+    large_px[200:] += 1000.0
+    assert audit(large_ts, large_px, ok_rolls), "must reject a large intraday corruption"
 
     print("selfcheck OK: front months monotone across an oscillating roll")
 
