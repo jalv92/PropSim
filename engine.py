@@ -75,6 +75,10 @@ class Strategy:
     name = "base"
     label = "Base"
     uses_ticks = False
+    # A strategy whose session is not RTH says so HERE rather than relying on the
+    # caller to remember. An overnight setup handed an RTH-filtered tape does not
+    # fail -- it silently finds nothing, which reads exactly like "no edge".
+    full_session = False
     params: dict[str, Param] = {}
 
     def entries(self, bars, tape, p):
@@ -528,8 +532,238 @@ class VWAPRevert(Strategy):
         return entry_tick.astype(np.int64), direc, stop, target
 
 
+class LatigoBreak(Strategy):
+    """LatigoBreak: opening-candle breakout with a whipsaw veto, per session window.
+
+    A 1:1 port of `LatigoBreakStrategy.cs` (v3 core -- the v4 big-print flow gate
+    is deliberately NOT here, see below). At each enabled window it freezes the
+    first `candle_seconds` of tape as an opening range, watches for the first
+    print at least one tick beyond it, and refuses the break unless it SURVIVES:
+    `hold_seconds` outside with a cumulative excursion of at least
+    `extension_r30` x the opening range. A re-entry of one tick back inside
+    before that is a whipsaw -- the break is vetoed, the window re-arms, and a
+    print already through the OPPOSITE level opens the other side at once.
+
+    THE THREE WINDOWS ARE FIXED OFFSETS FROM THE 18:00 ET GLOBEX REOPEN, exactly
+    as in NT8 where they are offsets from `ActualSessionBegin`: +0 (18:00),
+    +7200 (20:00), +55800 (09:30 the next morning). Wall-clock offsets are exact
+    because every DST change falls inside the closed weekend. Two of the three
+    live outside RTH, hence `full_session`.
+
+    DELTAS FROM THE NT8 STRATEGY, all of them forced by the architecture and none
+    of them silent:
+
+    1. Brackets are priced off the SIGNAL print, not off the actual fill. NT8
+       prices them in `OnExecutionUpdate`; here the fill is the engine's business
+       and it adds slippage afterwards, which makes the effective stop slightly
+       tighter than NT8's. That is the same convention every other strategy here
+       uses, and it errs pessimistic.
+    2. ATR is the mean true range of the last `atr_period` CLOSED bars of the run's
+       timeframe, not Wilder's smoothing of the forming bar. Wilder differs by a
+       lag constant; reading the forming bar would be a live-only value.
+    3. NT8 skips a whole window it was not already flat at, and re-arms only when
+       a trade CLOSES. Entry generation here is path-independent -- it cannot know
+       when a position closes -- so the window emits its candidates and the
+       engine's one-position-at-a-time rule drops the ones that land while a
+       trade is open. With the default `max_trades_per_window=1` the two are the
+       same thing.
+    4. `max_stop_ticks` has no NT8 counterpart and is not a preference: an ATR
+       stop has no upper bound of its own, and this engine's selfcheck bounds
+       every stop-out against `risk_ticks`. A trade whose stop would be wider is
+       SKIPPED, never shrunk -- shrinking keeps the trade and quietly changes the
+       setup.
+    5. Contracts, the daily profit target and the daily loss limit are absent on
+       purpose. Position size and daily limits are what PropSim models at the
+       ACCOUNT layer against real prop-firm rules; re-implementing them inside
+       the signal would score the strategy against a second, worse copy.
+    6. The v4 flow gate (big-print support) is out of scope by request. It needs
+       aggressor-classified clusters and its own corpus, and the offline scan has
+       not cleared it -- porting it here would put an unvalidated filter in the
+       optimizer's search space.
+    """
+    name, label = "latigo_break", "LatigoBreak (opening-candle break, whipsaw veto)"
+    uses_ticks = True
+    full_session = True                 # 18:00 and 20:00 ET are outside RTH
+
+    # Seconds from the 18:00 ET session begin, in TRADING-DAY order: the third
+    # window lands at 09:30 of the following calendar morning.
+    _OFFSETS = (0, 7200, 55800)
+    _FLAGS = ("win_1800", "win_2000", "win_0930")
+    _SESSION_BEGIN = 18 * 3600
+
+    params = {
+        # Windows are DECISIONS, not dials -- flags, so the sweep leaves them be.
+        "win_1800": Param(1, 0, 1, "hunt the 18:00 ET Globex reopen"),
+        "win_2000": Param(1, 0, 1, "hunt the 20:00 ET window"),
+        "win_0930": Param(1, 0, 1, "hunt the 09:30 ET US open"),
+        "entry_window_min": Param(30, 1, 480, "hunt breaks/entries only this long "
+                                              "after a window opens", fixed=True),
+        "use_whipsaw_filter": Param(1, 0, 1, "0 = naive chase at the break print"),
+        "hold_seconds": Param(30, 0, 300, "seconds the break must survive outside"),
+        "extension_r30": Param(0.25, 0, 3, "excursion beyond the level required to "
+                                           "confirm, as a fraction of the range"),
+        "candle_seconds": Param(30, 5, 300, "opening candle, seconds"),
+        "min_r30_ticks": Param(4, 0, 100, "skip the window if the opening range is "
+                                          "narrower, ticks"),
+        "atr_period": Param(14, 2, 100, "bars in the ATR"),
+        "atr_stop": Param(2.0, 0.25, 10, "stop distance, in ATRs"),
+        "atr_target": Param(2.0, 0.25, 10, "target distance, in ATRs"),
+        "max_trades_per_window": Param(1, 1, 10, "re-arm this many times per window"),
+        "max_stop_ticks": Param(400, 8, 1200, "skip the trade if the ATR stop is wider"),
+        "use_breakeven": Param(0, 0, 1, "move the stop to the entry once the run is "
+                                        "covered"),
+        "be_percent": Param(50, 1, 99, "percent of the entry->target run that arms "
+                                       "breakeven"),
+    }
+
+    def risk_ticks(self, p) -> float:
+        return p["max_stop_ticks"]          # the trade is skipped past this
+
+    def entries(self, bars, tape, p):
+        ts, px = tape["ts"], tape["px"]
+        if len(ts) < 2 or len(bars["t"]) < 3:
+            return _empty()
+        enabled = [bool(p[f]) for f in self._FLAGS]
+        if not any(enabled):
+            return _empty()
+
+        day = tp.day_index(bars["t"])
+        atr = _atr(bars, int(p["atr_period"]), day)
+        bstart = bars["start"]
+        half = TICK_SIZE * 0.5
+        filt = bool(p["use_whipsaw_filter"])
+        hold_ticks = int(p["hold_seconds"] * tp.TPS)
+        max_stop = p["max_stop_ticks"] * TICK_SIZE
+        max_trades = int(p["max_trades_per_window"])
+        be_frac = p["be_percent"] / 100.0 if p["use_breakeven"] else 0.0
+        candle_s = float(p["candle_seconds"])
+        # Floored so the candle can never starve the hunt, and capped below at
+        # the next enabled window's open so one window cannot swallow the next.
+        want = max(p["entry_window_min"] * 60.0, candle_s + 60.0)
+
+        et, dr, st, tg, be = [], [], [], [], []
+        for d in np.unique(day):
+            base = (int(d) * 86400 + tp.NET_EPOCH_S + self._SESSION_BEGIN)
+            for wi in range(3):
+                if not enabled[wi]:
+                    continue
+                deadline = want
+                for j in range(wi + 1, 3):
+                    if enabled[j]:
+                        deadline = min(deadline, self._OFFSETS[j] - self._OFFSETS[wi])
+                        break
+                w0 = (base + self._OFFSETS[wi]) * tp.TPS
+                a = int(np.searchsorted(ts, w0))
+                cend = int(np.searchsorted(ts, w0 + int(candle_s * tp.TPS)))
+                b = int(np.searchsorted(ts, w0 + int(deadline * tp.TPS), "right"))
+                if cend <= a or b <= cend:
+                    continue                    # empty candle, or no hunt left
+                h = float(px[a:cend].max())
+                l = float(px[a:cend].min())
+                r30 = int(round((h - l) / TICK_SIZE))
+                if r30 < p["min_r30_ticks"]:
+                    continue                    # degenerate candle, window skipped
+                # ceil, as in NT8: a fractional tick of extension is a whole tick
+                need_ext = int(np.ceil(p["extension_r30"] * r30))
+
+                seg = px[cend:b].astype(np.float64)
+                tseg = ts[cend:b]
+                up = seg >= h + half
+                dn = seg <= l - half
+                inside = ~up & ~dn
+
+                k, armed_inside, taken = 0, True, 0
+                while k < len(seg) and taken < max_trades:
+                    # A break needs an inside->outside transition. After a
+                    # re-arm the state machine is not inside yet, so find that
+                    # first -- otherwise the tick after an entry would re-break
+                    # the level it is already through.
+                    if not armed_inside:
+                        ins = np.flatnonzero(inside[k:])
+                        if not len(ins):
+                            break
+                        k += int(ins[0])
+                        armed_inside = True
+                    out = np.flatnonzero(up[k:] | dn[k:])
+                    if not len(out):
+                        break
+                    i = k + int(out[0])
+                    side = 1 if up[i] else -1
+
+                    while True:                 # one break episode
+                        level = h if side > 0 else l
+                        # Whipsaw: the first print back inside by a full tick.
+                        rei = (np.flatnonzero(seg[i + 1:] <= h - half) if side > 0
+                               else np.flatnonzero(seg[i + 1:] >= l + half))
+                        j_w = i + 1 + int(rei[0]) if len(rei) else len(seg)
+                        if not filt:
+                            m = i                       # naive chase at the break
+                        else:
+                            # Both conditions are monotone once true, so the
+                            # confirmation is simply the later of the two: the
+                            # tick that completes the hold, and the tick whose
+                            # excursion first reaches the required extension.
+                            i_t = int(np.searchsorted(tseg, tseg[i] + hold_ticks))
+                            if need_ext <= 0:
+                                i_e = i
+                            else:
+                                thr = level + side * (need_ext - 0.5) * TICK_SIZE
+                                hit = (np.flatnonzero(seg[i:] >= thr) if side > 0
+                                       else np.flatnonzero(seg[i:] <= thr))
+                                i_e = i + int(hit[0]) if len(hit) else len(seg)
+                            m = max(i_t, i_e)
+                        # A tie goes to the whipsaw: NT8 tests the re-entry first
+                        # on the tick, and only then the confirmation.
+                        if m < j_w and m < len(seg):
+                            e = cend + m
+                            if self._emit(e, side, seg[m], atr, bstart, p,
+                                          max_stop, be_frac, et, dr, st, tg, be):
+                                taken += 1
+                            k, armed_inside = m + 1, False
+                            break
+                        if j_w >= len(seg):
+                            k = len(seg)
+                            break               # window ran out mid-episode
+                        # Gap-through: the same print that vetoed this break is
+                        # already past the opposite level, which opens it now.
+                        if dn[j_w] if side > 0 else up[j_w]:
+                            side, i = -side, j_w
+                            continue
+                        k, armed_inside = j_w + 1, True
+                        break
+        if not et:
+            return _empty()
+        return (np.array(et, np.int64), np.array(dr, np.int8),
+                np.array(st), np.array(tg), None, np.array(be))
+
+    def _emit(self, e, side, ref, atr, bstart, p, max_stop, be_frac,
+              et, dr, st, tg, be) -> bool:
+        """Price one entry off the last CLOSED bar's ATR. False = trade skipped."""
+        bi = int(np.searchsorted(bstart, e, "right")) - 1
+        if bi < 1:
+            return False
+        a = atr[bi - 1]                 # closed bar: reading bar `bi` is lookahead
+        if not np.isfinite(a) or a <= TICK_SIZE:
+            return False               # ATR not formed; NT8's chart fallback has
+        risk = p["atr_stop"] * float(a)             # no meaning on a full tape
+        if risk > max_stop:
+            return False               # a spike-wide stop is not this setup
+        reward = p["atr_target"] * float(a)
+        ref = float(ref)
+        et.append(e)
+        dr.append(side)
+        st.append(_round_tick(ref - side * risk))
+        tg.append(_round_tick(ref + side * reward))
+        be.append(ref + side * be_frac * reward if be_frac > 0 else ref)
+        return True
+
+
+def _round_tick(px: float) -> float:
+    return round(px / TICK_SIZE) * TICK_SIZE
+
+
 LIBRARY = {s.name: s for s in (MACross, ORB, RangeBreak, SweepFollow, FVG,
-                               VWAPRevert)}
+                               VWAPRevert, LatigoBreak)}
 
 
 def _empty():
@@ -759,7 +993,8 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
     return out
 
 
-def prepare(contract, timeframe=5, start=None, end=None, rth_only=True) -> dict:
+def prepare(contract, timeframe=5, start=None, end=None, rth_only=True,
+            strategy=None) -> dict:
     """Load, slice and bar the tape once, for reuse across many runs.
 
     Measured on 28 days of NQ: loading the cache, slicing to RTH and building
