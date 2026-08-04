@@ -81,6 +81,13 @@ class Strategy:
     # caller to remember. An overnight setup handed an RTH-filtered tape does not
     # fail -- it silently finds nothing, which reads exactly like "no edge".
     full_session = False
+    # Seconds past midnight ET at which this setup's TRADING day starts. It is 0
+    # -- the calendar day -- for everything that trades one RTH session, and it
+    # matters only to the daily governor: `tape.day_index` cuts at midnight, so a
+    # setup whose session opens at 18:00 would otherwise have its evening windows
+    # and the next morning's 09:30 window counted as two different days, while
+    # NinjaTrader resets its daily P&L once, at the session begin.
+    session_offset_s = 0
     params: dict[str, Param] = {}
 
     def entries(self, bars, tape, p):
@@ -560,25 +567,25 @@ class LatigoBreak(Strategy):
        and it adds slippage afterwards, which makes the effective stop slightly
        tighter than NT8's. That is the same convention every other strategy here
        uses, and it errs pessimistic.
-    2. ATR is the mean true range of the last `atr_period` CLOSED bars of the run's
-       timeframe, not Wilder's smoothing of the forming bar. Wilder differs by a
-       lag constant; reading the forming bar would be a live-only value.
+    2. (was a delta, now matched) The ATR is Wilder's, extended with the bar in
+       formation up to the entry tick -- what `Calculate.OnEachTick` hands NT8 at
+       that instant. See `_emit`. It is not lookahead: nothing after the entry
+       tick is read.
     3. NT8 skips a whole window it was not already flat at, and re-arms only when
        a trade CLOSES. Entry generation here is path-independent -- it cannot know
        when a position closes -- so the window emits its candidates and the
        engine's one-position-at-a-time rule drops the ones that land while a
        trade is open. With the default `max_trades_per_window=1` the two are the
        same thing.
-    4. `max_stop_ticks` has no NT8 counterpart and is not a preference: an ATR
-       stop has no upper bound of its own, and this engine's selfcheck bounds
-       every stop-out against `risk_ticks`. A trade whose stop would be wider is
-       SKIPPED, never shrunk -- shrinking keeps the trade and quietly changes the
-       setup.
-    5. Contracts, the daily profit target and the daily loss limit are absent on
-       purpose. Position size and daily limits are what PropSim models at the
-       ACCOUNT layer against real prop-firm rules; re-implementing them inside
-       the signal would score the strategy against a second, worse copy.
-    6. The v4 flow gate (big-print support) is out of scope by request. It needs
+    4. `_SANITY_STOP_TICKS` is a data-integrity guard, NOT a parameter, and it is
+       deliberately not exposed: a tunable that silently drops trades is a second
+       strategy wearing the first one's name. It sat at 200 ticks as a dial once
+       and threw away 188 of 340 signals over 47 days -- the median ATR stop here
+       is 215 ticks -- which made every comparison against NinjaTrader a
+       comparison of two different trade sets. The constant sits above the
+       measured maximum (799 ticks) and far below what a fill resolved across a
+       hole in the tape produces, so on real data it never fires.
+    5. The v4 flow gate (big-print support) is out of scope by request. It needs
        aggressor-classified clusters and its own corpus, and the offline scan has
        not cleared it -- porting it here would put an unvalidated filter in the
        optimizer's search space.
@@ -586,6 +593,10 @@ class LatigoBreak(Strategy):
     name, label = "latigo_break", "LatigoBreak (opening-candle break, whipsaw veto)"
     uses_ticks = True
     full_session = True                 # 18:00 and 20:00 ET are outside RTH
+    session_offset_s = 18 * 3600        # the daily governor resets at the reopen
+
+    # See delta 4. Above the measured maximum, below tape-hole nonsense.
+    _SANITY_STOP_TICKS = 1200
 
     # Seconds from the 18:00 ET session begin, in TRADING-DAY order: the third
     # window lands at 09:30 of the following calendar morning.
@@ -593,12 +604,15 @@ class LatigoBreak(Strategy):
     _FLAGS = ("trade_globex_reopen", "trade_evening", "trade_us_open")
     _SESSION_BEGIN = 18 * 3600
 
-    # PARAMETER NAMES ARE THE NT8 PROPERTY NAMES, in snake_case. The sweep's
-    # NinjaScript block capitalises each word, so a winning row pastes into
-    # LatigoBreakStrategy.cs as-is instead of having to be translated by hand --
-    # and a translation done by hand is a translation done wrong on a Friday.
-    # `max_stop_ticks` is the one exception and has no NT8 property; see the
-    # class docstring.
+    # PARAMETER NAMES ARE THE NT8 PROPERTY NAMES, in snake_case, AND THE LIST IS
+    # CLOSED: every dial here exists in LatigoBreakStrategy.cs and every dial
+    # there exists here. That is not tidiness, it is the only way a PropSim run
+    # and a Market Replay run are the same experiment -- an extra parameter on
+    # this side silently makes them two. The three NT8 properties with no
+    # counterpart are the ones with nothing to simulate: "Account-wide (all
+    # markets)" governs OTHER instances on other instruments, "Show drawings" is
+    # chart furniture, and the "07. Flow gate" group is the v4 filter left out of
+    # scope by delta 5.
     params = {
         # Windows are DECISIONS, not dials -- flags, so the sweep leaves them be.
         "trade_globex_reopen": Param(1, 0, 1, "hunt the 18:00 ET Globex reopen"),
@@ -614,12 +628,11 @@ class LatigoBreak(Strategy):
         "candle_seconds": Param(30, 5, 300, "opening candle, seconds"),
         "min_r30_ticks": Param(4, 0, 100, "skip the window if the opening range is "
                                           "narrower, ticks"),
+        "contracts": Param(1, 1, 100, "position size, contracts", fixed=True),
         "atr_period": Param(14, 2, 100, "bars in the ATR"),
         "atr_stop_mult": Param(2.0, 0.25, 10, "stop distance, in ATRs"),
         "atr_target_mult": Param(2.0, 0.25, 10, "target distance, in ATRs"),
         "max_trades_per_window": Param(1, 1, 10, "re-arm this many times per window"),
-        "max_stop_ticks": Param(400, 8, 1200, "skip the trade if the ATR stop is "
-                                              "wider (PropSim only)"),
         "use_breakeven": Param(0, 0, 1, "move the stop to the entry once the run is "
                                         "covered"),
         # Kept out of the DEFAULT grid because it is inert while `use_breakeven`
@@ -628,10 +641,29 @@ class LatigoBreak(Strategy):
         # explicitly once breakeven is on.
         "breakeven_percent": Param(50, 1, 99, "percent of the entry->target run that "
                                               "arms breakeven", fixed=True),
+        "breakeven_offset_ticks": Param(0, 0, 100, "ticks past the entry the "
+                                                   "breakeven stop sits", fixed=True),
+        # Zero = off, as in NT8. Both are DOLLAR thresholds and therefore depend
+        # on `contracts`: one four-lot LatigoBreak trade is worth $3-4k here, so
+        # a $3,000 target is in practice "one trade a day" and a $2,000 loss
+        # limit is narrower than the stop it is supposed to bound.
+        # 500/300 because that is NT8's SetDefaults, not because they are good
+        # numbers -- at one contract they stop most days after a single trade.
+        # Defaulting them to 0 would have been the tidier-looking choice and the
+        # wrong one: it hands anyone who does not touch the panel a strategy that
+        # is not the one running in NinjaTrader, which is the entire class of bug
+        # this parameter list was closed to prevent. 0 disables either side.
+        "daily_profit_target": Param(500, 0, 100_000, "flatten and stop for the day "
+                                                      "at this profit, USD; 0 = off",
+                                     fixed=True),
+        "daily_loss_limit": Param(300, 0, 100_000, "flatten and stop for the day at "
+                                                   "this loss, USD; 0 = off",
+                                  fixed=True),
     }
 
     def risk_ticks(self, p) -> float:
-        return p["max_stop_ticks"]          # the trade is skipped past this
+        # Not a parameter any more: the widest stop the guard below will pass.
+        return self._SANITY_STOP_TICKS
 
     def entries(self, bars, tape, p):
         ts, px = tape["ts"], tape["px"]
@@ -642,12 +674,12 @@ class LatigoBreak(Strategy):
             return _empty()
 
         day = tp.day_index(bars["t"])
-        atr = _atr(bars, int(p["atr_period"]), day)
+        atr = _atr_wilder(bars, int(p["atr_period"]), day)
         bstart = bars["start"]
         half = TICK_SIZE * 0.5
         filt = bool(p["use_whipsaw_filter"])
         hold_ticks = int(p["hold_seconds"] * tp.TPS)
-        max_stop = p["max_stop_ticks"] * TICK_SIZE
+        max_stop = self._SANITY_STOP_TICKS * TICK_SIZE
         max_trades = int(p["max_trades_per_window"])
         be_frac = p["breakeven_percent"] / 100.0 if p["use_breakeven"] else 0.0
         candle_s = float(p["candle_seconds"])
@@ -730,7 +762,7 @@ class LatigoBreak(Strategy):
                         # on the tick, and only then the confirmation.
                         if m < j_w and m < len(seg):
                             e = cend + m
-                            if self._emit(e, side, seg[m], atr, bstart, p,
+                            if self._emit(e, side, seg[m], atr, bars, px, p,
                                           max_stop, be_frac, et, dr, st, tg, be):
                                 taken += 1
                             k, armed_inside = m + 1, False
@@ -750,16 +782,41 @@ class LatigoBreak(Strategy):
         return (np.array(et, np.int64), np.array(dr, np.int8),
                 np.array(st), np.array(tg), None, np.array(be))
 
-    def _emit(self, e, side, ref, atr, bstart, p, max_stop, be_frac,
+    def _emit(self, e, side, ref, atr, bars, px, p, max_stop, be_frac,
               et, dr, st, tg, be) -> bool:
-        """Price one entry off the last CLOSED bar's ATR. False = trade skipped."""
+        """Price one entry off the ATR NT8 HELD AT THAT TICK. False = skipped.
+
+        NinjaTrader runs `Calculate.OnEachTick`, so `ComputeAtr()` reads
+        `TrueRange(0)` of the bar STILL FORMING and folds it into Wilder's
+        smoothing. Reading the previous closed bar instead was the single
+        largest remaining difference against Market Replay: on the 2026-07-27
+        18:01 trade NT8 priced its target off an ATR of 6.90 points where this
+        read 6.35, which put the target 2.00 points nearer and cost $160 on four
+        contracts -- and, because the same ATR sets the stop, quietly changed
+        which trades stopped out at all.
+
+        THE FORMING BAR IS BUILT ONLY FROM TICKS UP TO AND INCLUDING `e`, which
+        is the whole point: it is what NT8 could see at that instant, not what
+        the bar turned out to be. Taking the finished bar's high and low would
+        be lookahead wearing the same numbers.
+        """
+        bstart = bars["start"]
         bi = int(np.searchsorted(bstart, e, "right")) - 1
         if bi < 1:
             return False
-        a = atr[bi - 1]                 # closed bar: reading bar `bi` is lookahead
-        if not np.isfinite(a) or a <= TICK_SIZE:
+        prev = atr[bi - 1]              # Wilder's value at the last CLOSED bar
+        if not np.isfinite(prev) or prev <= 0:
             return False               # ATR not formed; NT8's chart fallback has
-        risk = p["atr_stop_mult"] * float(a)             # no meaning on a full tape
+        seg = px[int(bstart[bi]):e + 1]                  # no meaning on a full tape
+        if not len(seg):
+            return False
+        h, l = float(seg.max()), float(seg.min())
+        pc = float(bars["c"][bi - 1])   # previous close, as NinjaTrader's TrueRange
+        tr = max(h - l, abs(h - pc), abs(l - pc))
+        a = prev + (tr - prev) / int(p["atr_period"])
+        if not np.isfinite(a) or a <= TICK_SIZE:
+            return False
+        risk = p["atr_stop_mult"] * float(a)
         if risk > max_stop:
             return False               # a spike-wide stop is not this setup
         reward = p["atr_target_mult"] * float(a)
@@ -804,6 +861,40 @@ def _atr(bars, n, day):
     new_day[1:] = day[1:] != day[:-1]
     tr[new_day] = (h - l)[new_day]
     return _roll(tr, n, np.mean)
+
+
+def _atr_wilder(bars, n, day):
+    """Wilder's ATR over CLOSED bars, aligned on the last one.
+
+    NinjaTrader's recursion exactly, seeding included: a plain mean of the true
+    ranges seen so far until `n` bars exist, then
+    `atr += (tr - atr) / n` (`LatigoBreakStrategy.cs:1009-1021`). The seed
+    matters more than it looks -- Wilder's smoothing never forgets its first
+    value, so seeding it differently is a permanent offset, not a warm-up.
+
+    Wilder against the simple mean is worth about 1% here and it is not why the
+    two systems disagreed; the forming bar, folded in by the caller, is. This
+    exists so that the recursion the caller extends is the one NT8 extends.
+
+    The session reset of `_atr` is deliberately NOT copied: NinjaTrader's
+    `TrueRange` reaches across the break, and for this strategy the two never
+    differ anyway -- `day` cuts at midnight, which is nine hours from the 09:30
+    window and in the future for the 18:00 and 20:00 ones, so the boundary never
+    lands inside the 15 bars any entry averages.
+    """
+    h, l, c = bars["h"], bars["l"], bars["c"]
+    prev = np.concatenate(([c[0]], c[:-1]))
+    tr = np.maximum(h - l, np.maximum(np.abs(h - prev), np.abs(l - prev)))
+    tr[0] = h[0] - l[0]                 # no previous close to reach for
+    out = np.empty(len(tr))
+    run = 0.0
+    for i in range(len(tr)):
+        if i < n:
+            run = (run * i + tr[i]) / (i + 1)
+        else:
+            run += (tr[i] - run) / n
+        out[i] = run
+    return out
 
 
 def _roll(x, n, fn):
@@ -873,7 +964,9 @@ MAX_GAP_S = 120.0           # a longer silence inside a session is missing data
 
 def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
             cooldown_min=0.0, timeout_min=240.0, limit_px=None,
-            max_gap_s=MAX_GAP_S, day=None, be_trigger=None) -> list[Trade]:
+            max_gap_s=MAX_GAP_S, day=None, be_trigger=None, contracts=1,
+            be_offset_ticks=0.0, day_target=0.0, day_loss=0.0,
+            gov_day=None) -> list[Trade]:
     """Walk ticks from each entry to its exit. One position at a time.
 
     Bounded forward scans, deliberately: an unbounded per-trade scan to the end
@@ -897,7 +990,24 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
 
     A breakeven exit still LOSES: it gives back the exit slippage and the
     commission. Modelling it as flat would be the same kind of free money the
-    rest of this function exists to refuse.
+    rest of this function exists to refuse. `be_offset_ticks` moves the stop to
+    the entry plus that many ticks IN THE TRADE'S FAVOUR, as NinjaTrader does;
+    at 0 it is the entry fill and nothing changes.
+
+    `contracts` scales every currency figure -- P&L, both excursions, the fall
+    from the running peak, and the commission, which is charged per contract
+    because a broker charges per contract. It is here rather than at the account
+    layer for one reason: the daily governor below is a DOLLAR threshold, and
+    $3,000 on four contracts stops a trade that $3,000 on one would let run. A
+    strategy that sizes itself must therefore be simulated at its own size.
+
+    `day_target` / `day_loss` are that governor, and they are modelled the way
+    NinjaTrader's is: tested on EVERY TICK against realized plus UNREALIZED P&L,
+    flattening the open trade where it breaches and refusing every later entry
+    that day. Testing it only on closed trades would be a different, kinder
+    strategy -- the real one exits mid-trade, which is why a $3,000 target books
+    $4,245 and a $2,000 limit books -$3,514. Days are counted on `gov_day`, the
+    session-boundary day, not the calendar day.
     """
     ts, px = tape["ts"], tape["px"]
     n = len(ts)
@@ -921,11 +1031,25 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
     if day is None:
         day = tp.day_index(ts)
     gap_limit = int(max_gap_s * tp.TPS)
+    nc = float(contracts)
+    governed = day_target > 0 or day_loss > 0
+    if governed and gov_day is None:
+        gov_day = day
+    gov_d, day_pnl, locked = None, 0.0, False
 
     for k in range(len(entry_idx)):
         i0 = int(entry_idx[k])
         if i0 >= n or ts[i0] < free_at:
             continue
+        if governed:
+            # A NEW SESSION CLEARS BOTH THE RUNNING TOTAL AND THE LOCKOUT, which
+            # is the whole of NinjaTrader's `ResetSession`. Reading it off the
+            # entry tick means a day with no entries never needs a reset at all.
+            gd = int(gov_day[i0])
+            if gd != gov_d:
+                gov_d, day_pnl, locked = gd, 0.0, False
+            if locked:
+                continue           # locked out: NT8 does not arm the next window
         d = int(direc[k])
         if limit_px is None:
             fill = float(px[i0]) + d * slip      # market order pays the spread
@@ -974,7 +1098,7 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
             # trigger the old stop is far behind and cannot fire, and the target
             # -- if this same tick reached it too -- still wins below.
             if be is not None and (p >= be if d > 0 else p <= be):
-                st, be, moved = fill, None, True
+                st, be, moved = fill + d * be_offset_ticks * costs.tick_size, None, True
             hit_stop = (p <= st) if d > 0 else (p >= st)
             hit_targ = (p >= tg) if d > 0 else (p <= tg)
             if hit_stop:                          # stop wins a tie, on purpose
@@ -989,21 +1113,40 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
                 exit_i, why = i, ("be" if moved else "stop"); break
             if hit_targ:
                 exit_i, exit_px, why = i, tg, "target"; break
+            # THE GOVERNOR IS TESTED LAST ON THE TICK, so a tick that also
+            # breached a bracket books the bracket. The brackets are resting
+            # orders sitting at the exchange; the governor is a market order
+            # this program sends after seeing the print, and it cannot beat an
+            # order that was already there.
+            if governed:
+                total = day_pnl + (p - fill) * d * costs.point_value * nc
+                if ((day_target > 0 and total >= day_target)
+                        or (day_loss > 0 and total <= -day_loss)):
+                    exit_i, exit_px, why = i, p, "governor"; break
         if exit_i is None:
             exit_i = min(stop_end, n) - 1
             exit_px = float(px[exit_i])
         exit_px -= d * slip                       # and again on exit
-        gross = (exit_px - fill) * d * costs.point_value
+        gross = (exit_px - fill) * d * costs.point_value * nc
         adverse = (lo if d > 0 else hi)
         favorable = (hi if d > 0 else lo)
+        pnl = gross - costs.commission * nc       # a broker bills per contract
         out.append(Trade(
             entry_time=tp.to_datetime(ts[i0]), exit_time=tp.to_datetime(ts[exit_i]),
             direction=d, entry_price=fill, exit_price=exit_px,
-            pnl=gross - costs.commission,
-            mae=min((adverse - fill) * d * costs.point_value, 0.0),
-            mfe=max((favorable - fill) * d * costs.point_value, 0.0),
-            reason=why, intra_mdd=mdd * costs.point_value))
+            pnl=pnl,
+            mae=min((adverse - fill) * d * costs.point_value * nc, 0.0),
+            mfe=max((favorable - fill) * d * costs.point_value * nc, 0.0),
+            reason=why, intra_mdd=mdd * costs.point_value * nc))
         free_at = ts[exit_i] + cool
+        if governed:
+            day_pnl += pnl
+            # Either the governor fired inside the trade, or a bracket exit left
+            # the day past a threshold -- NinjaTrader's next tick sees the same
+            # total and locks out just the same. Both end the trading day.
+            locked = (why == "governor"
+                      or (day_target > 0 and day_pnl >= day_target)
+                      or (day_loss > 0 and day_pnl <= -day_loss))
     return out
 
 
@@ -1078,8 +1221,20 @@ def backtest(contract, strategy_name, tf_secs=300, start=None, end=None,
     # returns four arrays and is unaffected.
     bet = res[5] if len(res) > 5 else None
     cd = p.get("cooldown_min", 0.0)
+    # `.get` with the neutral default throughout: a strategy that declares none
+    # of these is resolved exactly as it was before they existed.
+    tgt = float(p.get("daily_profit_target", 0.0))
+    dl = float(p.get("daily_loss_limit", 0.0))
+    gd = None
+    if (tgt > 0 or dl > 0) and strat.session_offset_s:
+        # The governor's day, not the calendar's. Shifting the tape back by the
+        # session offset and reusing `day_index` keeps one definition of a day.
+        gd = tp.day_index(t["ts"] - strat.session_offset_s * tp.TPS)
     trades = resolve(t, ei, dr, st, tg, costs, cooldown_min=cd, limit_px=lim,
-                     day=ctx["dayi"], be_trigger=bet)
+                     day=ctx["dayi"], be_trigger=bet,
+                     contracts=p.get("contracts", 1),
+                     be_offset_ticks=p.get("breakeven_offset_ticks", 0.0),
+                     day_target=tgt, day_loss=dl, gov_day=gd)
 
     # Data quality, reported rather than assumed: a silence longer than MAX_GAP_S
     # inside a session means hourly files are missing, and every bar spanning one
@@ -1092,7 +1247,13 @@ def backtest(contract, strategy_name, tf_secs=300, start=None, end=None,
                 signals=len(ei), trades=len(trades),
                 data_holes=ctx["n_holes"], hole_days=ctx["hole_days"],
                 gap_exits=sum(1 for x in trades if x.reason == "gap"),
-                commission=costs.commission, slippage_ticks=costs.slippage_ticks)
+                # THE EFFECTIVE CHARGE PER TRADE, not the per-contract rate. The
+                # report reconstructs gross by adding this back to a net that was
+                # already booked at size, so a four-lot run reporting the one-lot
+                # rate understates both its gross and its commission while still
+                # balancing -- self-consistent and wrong, the worst kind.
+                commission=costs.commission * float(p.get("contracts", 1)),
+                slippage_ticks=costs.slippage_ticks)
     return trades, meta
 
 
@@ -1316,6 +1477,75 @@ def selfcheck():
         "hold=0, extension=0 did not reproduce the naive chase")
     assert not set(t.entry_time for t in naive) & set(t.entry_time for t in lb), (
         "the whipsaw filter changed nothing: same entries as the naive chase")
+    # 10c. SIZE IS EXACTLY LINEAR WHILE NOTHING GOVERNS IT. Four contracts must
+    #      be four times one contract, trade for trade, commission included --
+    #      any drift means a currency figure was left un-scaled, and a partly
+    #      scaled trade is worse than an unscaled one because it looks right.
+    #      Governed OFF here on purpose: linearity is a claim about the fill
+    #      model, and a dollar threshold is exactly what makes size non-linear.
+    ungov = {"daily_profit_target": 0, "daily_loss_limit": 0}
+    one, _ = backtest(c, "latigo_break", 300, params={**ungov, "contracts": 1})
+    four, _ = backtest(c, "latigo_break", 300, params={**ungov, "contracts": 4})
+    assert len(one) == len(four), "size changed the trade set with no governor on"
+    for a4, a1 in zip(four, one):
+        for f in ("pnl", "mae", "mfe", "intra_mdd"):
+            assert abs(getattr(a4, f) - 4 * getattr(a1, f)) < 0.01, (
+                f"contracts did not scale {f}: {getattr(a4, f):.2f} vs "
+                f"4 x {getattr(a1, f):.2f}")
+    # 10d. THE DAILY GOVERNOR ENDS THE DAY, and it is checked on the running
+    #      total rather than on the exit reason: a lockout that leaks lets a
+    #      later window trade a day NinjaTrader had already closed, which is the
+    #      failure that makes a PropSim day look better than a Replay day.
+    #      Thresholds sized off this tape so both sides actually fire.
+    gov, gm = backtest(c, "latigo_break", 300, params={
+        "contracts": 4, "daily_profit_target": 3000, "daily_loss_limit": 2000})
+    assert any(t.reason == "governor" for t in gov), "the governor never fired"
+    day_of, run = {}, {}
+    for t in gov:
+        # Same definition the engine used: the day starts at the 18:00 reopen.
+        k = (t.entry_time - __import__("datetime").timedelta(
+            seconds=LatigoBreak.session_offset_s)).date()
+        assert not day_of.get(k), (
+            f"traded {t.entry_time} after {k} was already locked out")
+        run[k] = run.get(k, 0.0) + t.pnl
+        if run[k] >= 3000 or run[k] <= -2000:
+            day_of[k] = True
+    assert len(gov) < len(four), "the governor removed no trades at all"
+    # 10e. A BREAKEVEN OFFSET IS IN THE TRADE'S FAVOUR. Moving the stop past the
+    #      entry can only improve a `be` exit; if it does not, the offset is
+    #      being applied on the wrong side, which silently costs money.
+    be0 = [t for t in backtest(c, "latigo_break", 300, params={
+        **ungov, "use_breakeven": 1, "breakeven_offset_ticks": 0})[0]
+        if t.reason == "be"]
+    be5 = [t for t in backtest(c, "latigo_break", 300, params={
+        **ungov, "use_breakeven": 1, "breakeven_offset_ticks": 5})[0]
+        if t.reason == "be"]
+    assert be0, "breakeven never triggered on latigo_break"
+    assert sum(t.pnl for t in be5) > sum(t.pnl for t in be0), (
+        "a breakeven offset did not help: applied on the wrong side")
+    # 10f. THE BAR IN FORMATION MUST NOT SEE ITS OWN FUTURE. Folding the forming
+    #      bar into the ATR is what matches NinjaTrader, and it is also the one
+    #      change here that could quietly become lookahead -- reading the bar's
+    #      finished high and low instead of the part that had printed. So the
+    #      test is the definition: cut the tape one tick after an entry, so the
+    #      rest of that bar does not exist, and demand the SAME stop and target.
+    #      An off-by-one in the slice or a previous close read off the wrong bar
+    #      moves them; nothing else does.
+    lbs = LatigoBreak()
+    pl = {k: v.default for k, v in lbs.params.items()}
+    lctx = prepare(c, 300, strategy="latigo_break")
+    ei, _, lst, ltg = lbs.entries(lctx["bars"], lctx["tape"], pl)[:4]
+    assert len(ei) > 2, "latigo_break emitted nothing to test for lookahead"
+    k = len(ei) // 2
+    e = int(ei[k])
+    cut = {kk: vv[:e + 1] for kk, vv in lctx["tape"].items()}
+    ei2, _, lst2, ltg2 = lbs.entries(tp.build_bars(cut, 300), cut, pl)[:4]
+    hit = np.flatnonzero(ei2 == e)
+    assert len(hit), f"the entry at tick {e} vanished when its bar was truncated"
+    j = int(hit[0])
+    assert abs(lst2[j] - lst[k]) < 1e-9 and abs(ltg2[j] - ltg[k]) < 1e-9, (
+        f"ATR read the future: stop/target {lst[k]:.2f}/{ltg[k]:.2f} on the full "
+        f"tape, {lst2[j]:.2f}/{ltg2[j]:.2f} with the bar cut at the entry")
 
     print(f"selfcheck OK: ORB timeframe-invariant (${pnls[300]:,.0f} at 30s/1m/5m/15m); "
           f"MA cross varies ({ma[30]['trades']} vs {ma[900]['trades']} trades); "

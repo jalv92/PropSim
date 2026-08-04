@@ -60,9 +60,13 @@ pip install numpy
 python3 dashboard.py --open
 ```
 
-That opens `http://127.0.0.1:8765` in your browser. If PropSim cannot find your
-NinjaTrader folder, open the **Data** tab and paste the path (the folder that
-contains `db/`, normally `Documents\NinjaTrader 8`).
+On Windows, **double-click `PropSim.bat`** instead: it finds Python, installs
+numpy the first time, and opens the browser for you.
+
+That opens `http://127.0.0.1:8765` in your browser — or the next free port above
+it, printed on startup, if something else already holds 8765. If PropSim cannot
+find your NinjaTrader folder, open the **Data** tab and paste the path (the
+folder that contains `db/`, normally `Documents\NinjaTrader 8`).
 
 No binary release is published yet. To build the Windows installer yourself you
 need [Inno Setup 6](https://jrsoftware.org/isdl.php) and PyInstaller:

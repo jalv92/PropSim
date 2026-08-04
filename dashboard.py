@@ -257,7 +257,17 @@ def analyzer_stream(q, write):
     LAST_BACKTEST = dict(trades=trades, meta=meta, summary=summary)
 
     write("progress", dict(stage="scoring against the account"))
-    rep = report.build(trades, meta, rules, contracts=contracts, sims=20_000,
+    # A STRATEGY THAT SIZES ITSELF IS NOT RESIZED HERE. `contracts` on this
+    # screen scales a per-contract trade list; a strategy declaring its own
+    # `contracts` has already been simulated at that size -- its daily governor
+    # had to be, since the thresholds are dollars -- so multiplying again would
+    # book four lots of a four-lot run. The strategy's number wins, and the
+    # account cap is checked against it rather than against the dial.
+    acct_contracts = contracts
+    if "contracts" in engine.LIBRARY[strategy].params:
+        acct_contracts = 1
+        contracts = int(meta["params"].get("contracts", 1))
+    rep = report.build(trades, meta, rules, contracts=acct_contracts, sims=20_000,
                        rng=np.random.default_rng(7))
     rep["t_daily"] = (None if summary["t_daily"] != summary["t_daily"]
                       else round(summary["t_daily"], 3))

@@ -391,6 +391,11 @@ def sweep(contract, strategy, tf_secs=300, start=None, end=None, ranges=None,
           costs: engine.Costs | None = None, on_progress=None,
           log_to_ledger=True, rules=None, contracts=1) -> dict:
     """Run every combination, rank by the daily t-statistic, charge the ledger."""
+    # Same rule as the backtest screen: a strategy carrying its own `contracts`
+    # was already simulated at that size, so the account layer must not scale it
+    # a second time. See the note beside `report.build` in dashboard.py.
+    if "contracts" in engine.LIBRARY[strategy].params:
+        contracts = 1
     ranges = ranges or default_ranges(strategy)
     combos = grid(ranges)
     if not combos:
