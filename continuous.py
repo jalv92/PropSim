@@ -476,10 +476,32 @@ def selfcheck():
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--build", action="store_true", help="stitch ALL from the caches")
+    ap.add_argument("--status", action="store_true")
     ap.add_argument("--selfcheck", action="store_true")
     args = ap.parse_args()
+
     if args.selfcheck:
         return selfcheck()
+    if args.status:
+        m = load_meta()
+        print(f"cached {ROOT} contracts: {', '.join(contracts_on_disk()) or 'none'}")
+        if not m:
+            return print("ALL: not built")
+        print(f"ALL: {m['ticks']:,} ticks, {m['sessions']} sessions "
+              f"{m['first']}..{m['last']}")
+        for r in m["rolls"]:
+            sp = "unmeasured" if r["spread"] is None else f"{r['spread']:+.2f} pts"
+            print(f"  {r['date']}  {r['from']} -> {r['to']}  {sp}  (n={r['n']})")
+        return
+    if args.build:
+        def prog(done, total, ticks):
+            print(f"\r  {done}/{total}  {ticks:,} ticks", end="", flush=True)
+        m = build(on_progress=prog)
+        print(f"\rALL: {m['ticks']:,} ticks, {m['sessions']} sessions "
+              f"{m['first']}..{m['last']}, {len(m['rolls'])} rolls "
+              f"-> {cache_path()}")
+        return
     ap.print_help()
 
 
