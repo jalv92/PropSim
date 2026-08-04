@@ -44,9 +44,7 @@ from __future__ import annotations
 
 import argparse
 import collections
-import shutil
 import sqlite3
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -98,15 +96,48 @@ def _dt(net_ticks: int) -> datetime:
 
 
 def _open_readonly(db_path: Path):
-    """Copy first, then open read-only.
+    """Snapshot the live database into memory, then read that.
 
-    NinjaTrader holds this database open while it runs; querying the live file
-    risks lock contention and a partially-written page. A copy costs a few MB
-    and removes any chance of touching the user's data.
+    NinjaTrader holds this file open and writes to it while it runs, so the
+    snapshot has to be taken in a way that survives a concurrent writer.
+
+    THIS WAS A BYTE COPY AND THAT IS NOT SAFE. `shutil.copy2` reads six
+    megabytes while NinjaTrader is rewriting pages inside it, so the result can
+    hold pages from two different transactions -- a file that opens fine and
+    then fails somewhere else entirely with "database disk image is malformed",
+    three frames deep in whatever query happened to touch a torn page. The same
+    race, caught a moment earlier, surfaced instead as `PermissionError`
+    [WinError 32] when Windows had the file locked and `CopyFile2` could not
+    start at all. Both were observed in the wild, and the database itself was
+    healthy each time.
+
+    SQLite's own backup API is the fix: it reads under a shared lock and
+    restarts if the source changes underneath it, so what comes out is a
+    consistent snapshot rather than a smear of one. `timeout` covers the case
+    where NinjaTrader is mid-transaction and the read lock has to wait.
+
+    The destination is memory, not a temp file, for a second reason: the old
+    code reused one fixed path, and this server is threaded, so two requests
+    arriving together wrote the same snapshot on top of each other. Six
+    megabytes in memory has no such race and leaves nothing behind on disk.
     """
-    tmp = Path(tempfile.gettempdir()) / "propsim_nt8_snapshot.sqlite"
-    shutil.copy2(db_path, tmp)
-    con = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
+    try:
+        src = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        try:
+            con = sqlite3.connect(":memory:")
+            src.backup(con)
+        finally:
+            src.close()
+        # Prove the snapshot before handing it out. A snapshot that is going to
+        # fail should fail HERE, where the message can say what happened and the
+        # caller already knows how to report it -- not later, inside an
+        # unrelated query that has no idea the data came from a live file.
+        con.execute("SELECT count(*) FROM Instruments").fetchone()
+    except sqlite3.Error as exc:
+        raise SystemExit(
+            f"Could not read NinjaTrader's database: {exc}. The usual cause is "
+            f"NinjaTrader writing to it at that moment — try again, or close "
+            f"NinjaTrader if it keeps happening.") from exc
     con.row_factory = sqlite3.Row
     return con
 
@@ -406,8 +437,73 @@ def detected_accounts(nt_root=None) -> list[dict]:
     return sorted(out, key=lambda d: -d["n"])
 
 
+def selfcheck():
+    """The snapshot, and the two ways reading a live database goes wrong.
+
+    Scoped to `_open_readonly` on purpose: the rest of this module was covered
+    by the calibration work in the docstring, and this is the part that reads a
+    file another process is writing.
+    """
+    import tempfile, threading
+
+    root = ntdata.resolve_root()
+    if root is None:
+        print("no NinjaTrader folder found — nothing to check")
+        return
+    db = Path(root) / "db" / "NinjaTrader.sqlite"
+    if not db.exists():
+        print(f"{db} not found — nothing to check")
+        return
+
+    con = _open_readonly(db)
+    assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok", \
+        "the snapshot must be a consistent database"
+    n_instr = con.execute("SELECT count(*) FROM Instruments").fetchone()[0]
+    assert n_instr > 0, "a snapshot with no instruments is not a NinjaTrader database"
+    con.close()
+
+    # A TORN SNAPSHOT MUST FAIL HERE, NOT THREE FRAMES LATER. This is the whole
+    # point of the change: a byte copy of a live database yields a file that
+    # opens fine and then raises "database disk image is malformed" inside some
+    # unrelated query, where nothing knows to blame the copy.
+    torn = Path(tempfile.gettempdir()) / "propsim_selfcheck_torn.sqlite"
+    raw = db.read_bytes()
+    torn.write_bytes(raw[:len(raw) // 2] + b"\x00" * (len(raw) // 2))
+    try:
+        _open_readonly(torn)
+        raise AssertionError("a torn database must not be accepted")
+    except SystemExit as exc:
+        assert "NinjaTrader" in str(exc), f"the message must name the cause: {exc}"
+    finally:
+        torn.unlink(missing_ok=True)
+
+    # And two requests arriving together must both get their own snapshot. The
+    # previous implementation wrote one fixed temp path from a threaded server.
+    counts, errs = [], []
+    def one():
+        try:
+            c = _open_readonly(db)
+            counts.append(c.execute("SELECT count(*) FROM Instruments").fetchone()[0])
+            c.close()
+        except Exception as e:                       # noqa: BLE001 -- reported below
+            errs.append(f"{type(e).__name__}: {e}")
+    threads = [threading.Thread(target=one) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errs, f"concurrent snapshots failed: {errs[:3]}"
+    assert len(set(counts)) == 1, f"concurrent snapshots disagreed: {set(counts)}"
+
+    trades = read_trades()
+    print(f"selfcheck OK: snapshot of a live database is consistent "
+          f"({n_instr:,} instruments, {len(trades)} trades); a torn one is "
+          f"refused by name; 8 concurrent snapshots agree")
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--selfcheck", action="store_true")
     ap.add_argument("--root", help="NinjaTrader 8 folder")
     ap.add_argument("--account", help="account name or fragment")
     ap.add_argument("--list", action="store_true", help="per-account summary")
@@ -423,6 +519,8 @@ def main():
     ap.add_argument("--strategy", help="restrict to one NinjaScript strategy")
     args = ap.parse_args()
 
+    if args.selfcheck:
+        return selfcheck()
     if args.strategies:
         rows = detected_strategies(args.root)
         if not rows:
