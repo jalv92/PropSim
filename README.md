@@ -1,4 +1,31 @@
-# PropSim
+<div align="center">
+
+<h1>PropSim</h1>
+
+<p>
+  <b>Score your real NinjaTrader 8 trades against the published rules of five prop firms — before you pay for an evaluation.</b><br>
+  It reads <code>NinjaTrader.sqlite</code> directly and separates the two axes of drawdown, which is the thing most pass-rate calculators quietly merge.
+</p>
+
+<p>
+  <a href="#install">Install</a> ·
+  <a href="#use">Use</a> ·
+  <a href="#what-it-does-that-other-calculators-do-not">Why it differs</a> ·
+  <a href="#limits-stated-plainly">Limits</a> ·
+  <a href="#development">Development</a>
+</p>
+
+<p>
+  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT license">
+  <img src="https://img.shields.io/badge/platform-Windows-0078d4?style=flat-square" alt="Windows">
+  <img src="https://img.shields.io/badge/python-3.9%2B-3776ab?style=flat-square" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/dependencies-numpy-lightgrey?style=flat-square" alt="numpy only">
+  <img src="https://img.shields.io/badge/rules-148%20variants%20%C2%B7%205%20firms-f7931a?style=flat-square" alt="148 account variants across 5 firms">
+</p>
+
+<img src="docs/assets/hero.png" width="100%" alt="PropSim verdict: the account broke on day 5, with the equity curve drawn against the drawdown floor that climbs underneath it">
+
+</div>
 
 Answer two questions about your NinjaTrader 8 trading, using your own data and
 the real published rules of five prop firms:
@@ -10,10 +37,6 @@ Point it at your NinjaTrader folder. That is the entire configuration.
 
 Everything runs on your machine. There is no account, no upload, and no network
 call except an optional check for a newer rule file.
-
-```
-Backtesting   Prop Firm   Verdict   Risk & Monte Carlo   Backtest (legacy)   Optimize   AI author   Imported   Trials   Data
-```
 
 ---
 
@@ -79,6 +102,11 @@ the t-statistic rather than on another screen.
 
 The older **Backtest (legacy)** tab still works and is on its way out.
 
+<img src="docs/assets/summary.png" width="100%" alt="The Backtesting tab: a NinjaTrader-style performance report split into all trades, long and short, with the selected firm's rule set and its unmodelled rules alongside">
+
+Read the same run as `Prop-firm reality` and the report above becomes the verdict
+at the top of this page: which rule died, on which day, and by how much.
+
 ### 1. Data — point it at NinjaTrader once
 
 The **Data** tab inventories what you have: the tick tape it can backtest on, and
@@ -100,6 +128,8 @@ from, and press **Run 10,000 sims**.
 You get P(pass), P(bust), days-to-pass, 1,000 simulated equity paths with the
 target and drawdown floor drawn on, the distribution of outcomes, and — on the
 **Funded** toggle — what the account actually pays out.
+
+<img src="docs/assets/montecarlo.png" width="100%" alt="Risk and Monte Carlo: 10,000 simulated evaluations giving a 31.94% pass rate, net expected value, payout probability and days to first payout, over 1,000 plotted equity paths">
 
 Any account matched to a firm preselects the **firm and phase only**. Size and
 variant are not derivable from an account name, so you still pick those: putting
@@ -428,4 +458,6 @@ marketing page understated a payout cap by 2.5×.
 
 A simulated pass rate is not a prediction about your account.
 
-MIT licensed.
+## License
+
+MIT.
