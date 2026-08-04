@@ -33,6 +33,41 @@ SESSION_GAP_LIMIT = 150.0
 # thinnest real roll on this data had 10,821.
 MIN_OVERLAP_SECONDS = 200
 
+# NQ's session runs roughly 18:00 ET one evening to 17:00 ET the next day --
+# only the maintenance halt (17:00-18:00 ET) sits in between.
+SESSION_OPEN_H = 18
+
+
+def session_day(ts: np.ndarray) -> np.ndarray:
+    """A trading-session key for audit() only: a session belongs to the day it
+    CLOSES on, not the calendar day printed on each tick.
+
+    tape.day_index buckets at midnight. Most of the time that's harmless --
+    the daily step across the maintenance halt is a few points (max observed
+    114.75 across 30.4M ticks, see the step check below). But the same
+    midnight bucketing also puts a stale pre-open filler tick (NT8 emits a
+    flat, 1-lot "last price" print every minute or so through the halt) and
+    the real reopen print in the SAME calendar-day bucket whenever the halt's
+    other side is a whole weekend rather than an hour -- every Sunday reopen.
+    That put 3 real weekend gaps (up to 354 points, every one landing at
+    exactly 18:00:00 ET) inside single day_index buckets on the first
+    5-contract build of ALL, tripping the intraday-step check on real, correct
+    prices. Measured over all five NQ caches (109M ticks): 3 offenders under
+    plain day_index, 0 under this session-anchored key -- and it isn't
+    weakening the check, it's asking it the right question. A future reader
+    tempted to "simplify" this back to day_index(ts) would reintroduce all 3.
+
+    Deliberately local to audit(): tape.day_index itself stays calendar-day,
+    because the engine also uses it for the daily governor and for flattening
+    at session close, where "day" has to mean calendar day.
+
+    Shifting ts forward by (24 - SESSION_OPEN_H) hours moves the day_index
+    floor boundary from midnight to SESSION_OPEN_H:00 ET, so an 18:00 tick
+    lands in the next calendar day's bucket -- joining the overnight session
+    it actually opens instead of the one it happened to print on.
+    """
+    return tape.day_index(ts + (24 - SESSION_OPEN_H) * 3600 * tape.TPS)
+
 
 def month_key(contract: str) -> int:
     """'NQ 12-25' -> 2512, so contract months sort in calendar order."""
@@ -118,7 +153,7 @@ def audit(ts: np.ndarray, px: np.ndarray, rolls: list) -> list:
     if not (np.diff(ts) >= 0).all():
         bad.append("timestamps are not sorted")
 
-    day = tape.day_index(ts)
+    day = session_day(ts)
     lo, hi = ROLL_BAND
 
     # An intraday step of 150 points or more is either a contract change or
@@ -126,7 +161,13 @@ def audit(ts: np.ndarray, px: np.ndarray, rolls: list) -> list:
     # between prints inside a session. Real data: max observed 114.75 over 30.4M
     # ticks, zero above 150. So an unbounded check costs nothing in false
     # positives and catches everything suspicious.
-    step = np.abs(np.diff(px.astype(np.float64)))
+    #
+    # No float64 here: px is already exact float32 (see build()'s comment on
+    # why), and this was measured as the single largest allocation in the
+    # real 107.7M-tick build -- diff+abs on a float64 up-cast of the whole
+    # tape cost over 1 GB more than doing the identical, still-exact
+    # arithmetic directly in float32.
+    step = np.abs(np.diff(px))
     same = np.diff(day) == 0
     n_mid = int((same & (step >= lo)).sum())
     if n_mid:
@@ -278,11 +319,25 @@ def build(on_progress=None) -> dict:
         del z, ts, px
 
     ts = np.concatenate(parts_ts); parts_ts.clear()
-    px = np.concatenate(parts_px).astype(np.float64); parts_px.clear()
+    # Stays float32 -- cache stores px that way already, and NQ prices are
+    # quarter-point multiples well under float32's 2^24 exact-integer bound
+    # (need price*4 <= 16,777,216, real range is ~25,000), so every add below
+    # is exact. A float64 round-trip here was the single largest allocation
+    # in the real 92M-tick build (~740 MB just for the up-cast, held for the
+    # rest of the function) for no precision this data needs.
+    px = np.concatenate(parts_px); parts_px.clear()
     vol = np.concatenate(parts_vol); parts_vol.clear()
     side = np.concatenate(parts_side); parts_side.clear()
     order = np.argsort(ts, kind="stable")
-    ts, px, vol, side = ts[order], px[order], vol[order], side[order]
+    # One array at a time, not `a, b, c, d = a[o], b[o], c[o], d[o]` -- that
+    # form builds all four reordered copies before any of the four originals
+    # is freed (the whole right-hand tuple evaluates first), doubling peak
+    # for the full set at once. Reassigning one name at a time lets each old
+    # array drop to refcount 0 -- and get freed -- before the next copy is made.
+    ts = ts[order]
+    px = px[order]
+    vol = vol[order]
+    side = side[order]
     del order
 
     # Back-adjust. The deferred contract trades ABOVE the front, so each roll is
@@ -301,7 +356,6 @@ def build(on_progress=None) -> dict:
         roll_cum.append(run)
     roll_cum.reverse()
 
-    px = px.astype(np.float32)
     fails = audit(ts, px, rolls)
     if fails:
         raise SystemExit("ALL was NOT written — the stitch failed its audit:\n  "
@@ -454,6 +508,31 @@ def selfcheck():
     mon_tue_ts, mon_tue_px = _tape_at([(20003, 23000.0), (20004, 23300.0)])
     fails = audit(mon_tue_ts, mon_tue_px, [])
     assert any("session" in f for f in fails), fails
+
+    # The actual bug: a stale pre-open tick and the real Sunday reopen print
+    # both land in the SAME calendar day, so a genuine weekend price move
+    # used to look like an intraday corruption. 13:00 and 18:00 on the same
+    # calendar day straddle the session boundary (18:00 opens the NEXT
+    # session) -- a 300-point gap between them is a normal session-open gap,
+    # not a same-session jump, and must not trip the intraday check.
+    day0 = 20002
+    s0 = (np.int64(day0) * 86400 + tape.NET_EPOCH_S) * tape.TPS
+    straddle_ts = np.array([s0 + 13 * 3600 * tape.TPS, s0 + 18 * 3600 * tape.TPS], np.int64)
+    straddle_px = np.array([23000.0, 23300.0], np.float32)
+    fails = audit(straddle_ts, straddle_px, [])
+    assert not any("intraday" in f for f in fails), fails
+
+    # The same 300-point gap between two ticks that are BOTH inside one
+    # 18:00-17:00 session (19:00 one evening, 10:00 the next morning -- one
+    # session, spanning midnight) must still be caught. This is the case that
+    # got through before the fix: a same-session corruption must not become
+    # invisible just because fixing the false positive above also had to
+    # treat 19:00 and next-morning 10:00 as the same trading day.
+    s1 = (np.int64(day0 + 1) * 86400 + tape.NET_EPOCH_S) * tape.TPS
+    within_ts = np.array([s0 + 19 * 3600 * tape.TPS, s1 + 10 * 3600 * tape.TPS], np.int64)
+    within_px = np.array([23000.0, 23300.0], np.float32)
+    fails = audit(within_ts, within_px, [])
+    assert any("intraday" in f for f in fails), fails
 
     # to_raw undoes the back-adjustment. Adjustment is POSITIVE going back in
     # time -- the deferred contract trades above the front, so each roll puts an
