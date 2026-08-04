@@ -732,7 +732,8 @@ class Handler(BaseHTTPRequestHandler):
                 lib.append(dict(name=name, label=S.label, uses_ticks=S.uses_ticks,
                                 mine=name in mine,
                                 params=[dict(key=k, default=v.default, lo=v.lo,
-                                             hi=v.hi, desc=v.desc)
+                                             hi=v.hi, desc=v.desc,
+                                             fixed=getattr(v, "fixed", False))
                                         for k, v in S.params.items()]))
             return self._send(200, json.dumps(
                 dict(strategies=lib, plugins=PLUGIN_REPORT,

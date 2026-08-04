@@ -53,6 +53,12 @@ class Param:
     lo: float
     hi: float
     desc: str
+    # A DECISION, NOT A DIAL. A session window is a statement about when you are
+    # willing to trade; sweeping it answers "which hours of these 27 days paid
+    # best", which is fitting the calendar and charges the ledger for the
+    # privilege. The optimizer leaves these at their default and says so, the
+    # same way it already does for a flag.
+    fixed: bool = False
 
 
 class Strategy:
@@ -223,8 +229,13 @@ class RangeBreak(Strategy):
         "max_range_ticks": Param(140, 4, 400, "widest range still a consolidation, ticks"),
         "buffer_ticks": Param(4, 0, 40, "stop beyond the far side, ticks"),
         "rr": Param(2.0, 0.5, 6.0, "target as a multiple of the risk"),
-        "start_hhmm": Param(930, 0, 2359, "no entries before this time"),
-        "end_hhmm": Param(1500, 0, 2359, "no entries after this time"),
+        # Minutes after midnight, the same unit the session parameters already
+        # use elsewhere. HHMM reads nicer and is a trap: a step of 465 turns 930
+        # into 1395, and 13:95 is not a time.
+        "session_start": Param(570, 0, 1439, "no entries before this minute "
+                                             "(570 = 09:30)", fixed=True),
+        "last_entry": Param(900, 1, 1440, "no entries after this minute "
+                                          "(900 = 15:00)", fixed=True),
         "one_per_day": Param(0, 0, 1, "at most one trade per day"),
     }
 
@@ -240,7 +251,7 @@ class RangeBreak(Strategy):
             return _empty()
         day = tp.day_index(bars["t"])
         px, ts = tape["px"], tape["ts"]
-        t0, t1 = _hhmm_s(p["start_hhmm"]), _hhmm_s(p["end_hhmm"])
+        t0, t1 = int(p["session_start"]) * 60, int(p["last_entry"]) * 60
         lo_w = p["min_range_ticks"] * TICK_SIZE
         hi_w = p["max_range_ticks"] * TICK_SIZE
         buf = p["buffer_ticks"] * TICK_SIZE
@@ -509,12 +520,6 @@ def _roll(x, n, fn):
     out = np.full(len(x), np.nan)
     out[n - 1:] = fn(np.lib.stride_tricks.sliding_window_view(x, n), axis=1)
     return out
-
-
-def _hhmm_s(v) -> int:
-    """930 -> 34200. A sweep steps a parameter linearly, so it will hand this
-    1170; 11h70m is 12:10, which is a real time and not worth rejecting over."""
-    return (int(v) // 100) * 3600 + (int(v) % 100) * 60
 
 
 def _sma(x, n):
@@ -900,8 +905,8 @@ def selfcheck():
     # 9. THE TIME WINDOW IS A CONSTRAINT, NOT A LABEL. It is tested on the entry
     #    tick rather than on the signal bar, so the check is on entry times: a
     #    window read off the bar would let a 14:59 bar enter at 15:00:20.
-    rb, rbm = backtest(c, "range_break", 1, params={"start_hhmm": 1000,
-                                                    "end_hhmm": 1200})
+    rb, rbm = backtest(c, "range_break", 1, params={"session_start": 600,
+                                                    "last_entry": 720})
     for t in rb:
         s = t.entry_time.hour * 60 + t.entry_time.minute
         assert 600 <= s < 720, f"range_break entered at {t.entry_time}"

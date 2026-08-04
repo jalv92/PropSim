@@ -1694,13 +1694,21 @@ function opParams(){
   // every cell it visits is charged to the ledger.
   $("#op_params").innerHTML = s.params.map(p=>{
     const flag = (p.hi - p.lo) <= 1;
+    // `fixed` is the strategy saying this parameter is a decision rather than a
+    // dial -- a session window, typically. Prefilling a grid over it invites a
+    // sweep of "which hours of this sample paid best", and the grid it prefilled
+    // was nonsense besides: stepping 930 by 465 lands on 1395, and 13:95 is not
+    // a time. Left blank and labelled, exactly like a flag.
+    const held = flag || p.fixed;
     const lo = Math.max(p.lo, p.default/2), hi = Math.min(p.hi, p.default*2 || p.hi);
     const step = Math.max((hi-lo)/3, (p.default % 1) ? 0.1 : 1);
-    const val = flag ? "" : `${+lo.toFixed(2)}:${+hi.toFixed(2)}:${+step.toFixed(2)}`;
+    const val = held ? "" : `${+lo.toFixed(2)}:${+hi.toFixed(2)}:${+step.toFixed(2)}`;
+    const note = p.fixed ? " — a session window, left fixed"
+               : flag ? " — a flag, left fixed" : "";
     return `<label>${p.key.replace(/_/g," ")}
       <input type="text" id="op_r_${p.key}" value="${val}"
-             placeholder="from:to:step" style="width:130px">
-      <span class="d">${p.desc}${flag?" — a flag, left fixed":""}</span></label>`;
+             placeholder="${held?"held at "+(+p.default):"from:to:step"}" style="width:130px">
+      <span class="d">${p.desc}${note}</span></label>`;
   }).join("");
   opCount();
 }
