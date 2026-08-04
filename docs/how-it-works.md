@@ -185,9 +185,9 @@ Three inputs define a run, and all three change the answer:
 
 1. **Market data** — contract and date range. `Prepare this contract` builds the
    cache once (~15 s per contract).
-2. **Strategy and parameters** — `ma_cross`, `orb`, `sweep_follow`, `fvg`,
-   `vwap_revert`. The last three read the raw tape, including the true aggressor
-   side of every print.
+2. **Strategy and parameters** — `ma_cross`, `orb`, `range_break`,
+   `sweep_follow`, `fvg`, `vwap_revert`. The last four read the raw tape,
+   including the true aggressor side of every print.
 3. **Timeframe** — bars are rebuilt from the same ticks, so 1m and 5m runs are
    measured against *identical* market data. In NinjaTrader the timeframe is
    chosen when you apply a strategy, not in its code: it is a property of the run.

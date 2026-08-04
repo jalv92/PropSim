@@ -116,6 +116,13 @@ def default_ranges(strategy: str, points=4) -> dict[str, list]:
     for k, p in S.params.items():
         if p.hi - p.lo <= 1:                      # a flag, not a dial
             continue
+        # A session window is a decision about when you are willing to trade, not
+        # a dial to be optimised. Sweeping it costs a factor of `points` per
+        # bound and answers "which two hours of these 27 days paid best", which
+        # is the definition of fitting the calendar. Give it an explicit --range
+        # if you really mean to.
+        if k.endswith("_hhmm"):
+            continue
         lo = max(p.lo, p.default / 2)
         hi = min(p.hi, p.default * 2 if p.default else p.hi)
         if hi <= lo:

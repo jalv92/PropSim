@@ -74,6 +74,15 @@ class Strategy:
     def entries(self, bars, tape, p):
         raise NotImplementedError
 
+    def risk_ticks(self, p) -> float:
+        """Widest this setup may place its stop from the entry, ticks.
+
+        The selfcheck bounds every stop-out against it, so a strategy whose stop
+        is structural rather than a fixed distance has to say how wide that can
+        get -- otherwise the check either crashes or silently stops checking.
+        """
+        return p.get("stop_ticks", 200)
+
 
 class MACross(Strategy):
     name, label = "ma_cross", "Moving-average cross"
@@ -167,6 +176,121 @@ class ORB(Strategy):
                 tg.append(level + direc * p["stop_ticks"] * p["rr"] * TICK_SIZE)
                 if p["one_per_day"]:
                     break
+        if not et:
+            return _empty()
+        return (np.array(et, np.int64), np.array(dr, np.int8),
+                np.array(st), np.array(tg))
+
+
+class RangeBreak(Strategy):
+    """Break out of a consolidation: a tight range, then the first tick through it.
+
+    The range is the last `lookback_bars` CLOSED bars, and it only counts as an
+    accumulation if its width sits between `min_range_ticks` and
+    `max_range_ticks` -- a floor as well as a ceiling, because a two-tick range
+    in dead tape is not a coiled market, it is an empty one, and its stop is
+    thinner than the slippage it pays to get in.
+
+    An armed range is good for the NEXT bar only. That is not a restriction:
+    if price stays inside, the window slides one bar and re-arms itself with the
+    updated levels, so there is nothing for an expiry parameter to do.
+
+    THE LOOKAHEAD TRAP IS ORB'S, and the same fix. The range is known at bar i's
+    close, but the trade happens the instant price crosses the level, mid-bar.
+    Entering at the next bar's open would buy at a price chosen with knowledge of
+    where that bar ended up. So the entry is the first tick in the tape that
+    actually trades through the level.
+
+    The stop sits on the far side of the range, so risk scales with the
+    consolidation instead of being asserted, and `max_range_ticks` caps it. The
+    target is a multiple of the REAL risk (entry to stop), not of the range
+    width -- the entry lands a few ticks past the level, and pricing the target
+    off the level would quietly hand back that difference.
+    """
+    name, label = "range_break", "Consolidation breakout"
+    uses_ticks = True
+    params = {
+        # The width defaults come from the WIDTH DISTRIBUTION of the tape, not
+        # from a backtest: over 27 days of NQ 1m, a 10-bar window spans 109
+        # ticks at its 10th percentile, 146 at its 25th and 218 at its median.
+        # So "consolidation" is set at roughly the quietest quartile, and the
+        # floor sits below the 10th -- narrower than that on NQ is dead tape,
+        # not a coil. Picking these by which pair made money would be fitting
+        # the defaults to 27 days; that is what the sweep is for, on data you
+        # then hold back.
+        "lookback_bars": Param(10, 3, 60, "bars that form the range"),
+        "min_range_ticks": Param(30, 1, 200, "narrowest range worth trading, ticks"),
+        "max_range_ticks": Param(140, 4, 400, "widest range still a consolidation, ticks"),
+        "buffer_ticks": Param(4, 0, 40, "stop beyond the far side, ticks"),
+        "rr": Param(2.0, 0.5, 6.0, "target as a multiple of the risk"),
+        "start_hhmm": Param(930, 0, 2359, "no entries before this time"),
+        "end_hhmm": Param(1500, 0, 2359, "no entries after this time"),
+        "one_per_day": Param(0, 0, 1, "at most one trade per day"),
+    }
+
+    def risk_ticks(self, p) -> float:
+        # the far side of the widest range still called a consolidation
+        return p["max_range_ticks"] + p["buffer_ticks"]
+
+    def entries(self, bars, tape, p):
+        h, l = bars["h"], bars["l"]
+        n = len(h)
+        N = int(p["lookback_bars"])
+        if n < N + 2:
+            return _empty()
+        day = tp.day_index(bars["t"])
+        px, ts = tape["px"], tape["ts"]
+        t0, t1 = _hhmm_s(p["start_hhmm"]), _hhmm_s(p["end_hhmm"])
+        lo_w = p["min_range_ticks"] * TICK_SIZE
+        hi_w = p["max_range_ticks"] * TICK_SIZE
+        buf = p["buffer_ticks"] * TICK_SIZE
+
+        top = _roll(h, N, np.max)
+        bot = _roll(l, N, np.min)
+        # A window that straddles the overnight break is not a range: it spans a
+        # gap nobody traded through, which is exactly the thing this strategy is
+        # supposed to find INSIDE a session.
+        same = np.zeros(n, bool)
+        same[N - 1:] = day[N - 1:] == day[:n - N + 1]
+        armed = same & (top - bot >= lo_w) & (top - bot <= hi_w)
+
+        et, dr, st, tg = [], [], [], []
+        used_days = set()
+        i = N - 1
+        while i < n - 1:
+            j = i + 1                       # the bar the breakout may happen in
+            if not armed[i] or day[j] != day[i]:
+                i += 1
+                continue
+            a, b = int(bars["start"][j]), int(bars["end"][j])
+            seg = px[a:b]
+            up = np.flatnonzero(seg > top[i])
+            dn = np.flatnonzero(seg < bot[i])
+            # Both sides can print inside one bar; the first one is the trade.
+            k_up = int(up[0]) if len(up) else len(seg)
+            k_dn = int(dn[0]) if len(dn) else len(seg)
+            if k_up == k_dn == len(seg):
+                i += 1
+                continue
+            direc = 1 if k_up <= k_dn else -1
+            e = a + min(k_up, k_dn)
+            # The time window is tested on the ENTRY TICK, not on the bar: the
+            # entry is intrabar, and a 14:59 bar can break at 15:00:20.
+            sod = int(tp.sec_of_day(ts[e:e + 1])[0])
+            d = day[j]
+            if not (t0 <= sod < t1) or (p["one_per_day"] and d in used_days):
+                i += 1
+                continue
+            ref = float(px[e])
+            stop = (bot[i] - buf) if direc > 0 else (top[i] + buf)
+            et.append(e); dr.append(direc); st.append(stop)
+            tg.append(ref + direc * p["rr"] * abs(ref - stop))
+            used_days.add(d)
+            # Resume AFTER the breakout bar, so one consolidation fires once: the
+            # sliding window would otherwise re-detect the same range from every
+            # remaining bar of it and queue a stack of stale entries behind the
+            # first, each one opening as the previous position closed.
+            i = j + 1
         if not et:
             return _empty()
         return (np.array(et, np.int64), np.array(dr, np.int8),
@@ -371,12 +495,26 @@ class VWAPRevert(Strategy):
         return entry_tick.astype(np.int64), direc, stop, target
 
 
-LIBRARY = {s.name: s for s in (MACross, ORB, SweepFollow, FVG, VWAPRevert)}
+LIBRARY = {s.name: s for s in (MACross, ORB, RangeBreak, SweepFollow, FVG,
+                               VWAPRevert)}
 
 
 def _empty():
     return (np.array([], np.int64), np.array([], np.int8),
             np.array([]), np.array([]))
+
+
+def _roll(x, n, fn):
+    """`fn` over every window of `n`, aligned on the window's LAST bar."""
+    out = np.full(len(x), np.nan)
+    out[n - 1:] = fn(np.lib.stride_tricks.sliding_window_view(x, n), axis=1)
+    return out
+
+
+def _hhmm_s(v) -> int:
+    """930 -> 34200. A sweep steps a parameter linearly, so it will hand this
+    1170; 11h70m is 12:10, which is a real time and not worth rejecting over."""
+    return (int(v) // 100) * 3600 + (int(v) % 100) * 60
 
 
 def _sma(x, n):
@@ -750,13 +888,32 @@ def selfcheck():
         #    what resolving a fill across a hole in the tape or across the
         #    overnight break produced. The bound sits above the measured tail and
         #    far below those, so it catches the class of bug without encoding noise.
-        nominal = meta["params"]["stop_ticks"] * costs.tick_size * costs.point_value
+        nominal = (LIBRARY[name]().risk_ticks(meta["params"])
+                   * costs.tick_size * costs.point_value)
         bound = -(nominal + 100 * costs.tick_size * costs.point_value)
         for t in trades:
             if t.reason == "stop":
                 assert t.pnl >= bound, (
                     f"{name}: stop lost {t.pnl:,.0f}, bound {bound:,.0f} "
                     f"({meta['data_holes']} data holes in range)")
+
+    # 9. THE TIME WINDOW IS A CONSTRAINT, NOT A LABEL. It is tested on the entry
+    #    tick rather than on the signal bar, so the check is on entry times: a
+    #    window read off the bar would let a 14:59 bar enter at 15:00:20.
+    rb, rbm = backtest(c, "range_break", 1, params={"start_hhmm": 1000,
+                                                    "end_hhmm": 1200})
+    for t in rb:
+        s = t.entry_time.hour * 60 + t.entry_time.minute
+        assert 600 <= s < 720, f"range_break entered at {t.entry_time}"
+    wide = summarise(*backtest(c, "range_break", 1))
+    assert wide["signals"] >= len(rb), "narrowing the window added signals"
+    # And a consolidation is defined by its width: nothing wider than
+    # max_range_ticks may arm. Checked by squeezing the ceiling to the floor,
+    # which must leave strictly fewer signals than the default band.
+    tight = summarise(*backtest(c, "range_break", 1,
+                                params={"min_range_ticks": 1, "max_range_ticks": 20}))
+    assert tight["signals"] < wide["signals"], (
+        f"range width had no effect: {tight['signals']} vs {wide['signals']}")
 
     print(f"selfcheck OK: ORB timeframe-invariant (${pnls[1]:,.0f} at 1/5/15m); "
           f"MA cross varies ({ma[1]['trades']} vs {ma[15]['trades']} trades); "
