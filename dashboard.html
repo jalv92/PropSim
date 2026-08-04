@@ -510,6 +510,13 @@
 const $ = s => document.querySelector(s);
 const fmt$ = v => (v<0?"-":"")+"$"+Math.abs(Math.round(v)).toLocaleString();
 const fmtK = v => "$"+(Math.abs(v)>=1000 ? (v/1000).toFixed(1)+"K" : Math.round(v));
+// A sweep can run for hours, and "17003s" is a number you have to do arithmetic
+// on before it tells you whether to wait for it or go to lunch.
+function fmtDur(s){
+  s = Math.max(0, Math.round(s));
+  const h = Math.floor(s/3600), m = Math.floor(s%3600/60), z = n=>String(n).padStart(2,"0");
+  return h ? `${h}h ${z(m)}m ${z(s%60)}s` : m ? `${m}m ${z(s%60)}s` : `${s}s`;
+}
 const pct = v => (v*100).toFixed(2)+"%";
 let CFG=null, RES=null, META=null, ES=null, ACCOUNTS=[], NTSTRATS=[], PHASE="challenge", V=null;
 
@@ -1737,9 +1744,7 @@ function opCount(){
   // no number: it talks you out of runs that are cheap. Per strategy, because
   // the spread between them is thirtyfold.
   const rate = OP_RATE[$("#op_strategy").value];
-  const secs = n * (rate || 0.05);
-  const eta = secs < 90 ? `${Math.max(1, Math.round(secs))}s`
-            : `${(secs/60).toFixed(secs < 600 ? 1 : 0)} min`;
+  const eta = fmtDur(n * (rate || 0.05));
   $("#op_count").innerHTML = !any ? "give at least one parameter a range"
     : `<b>${n.toLocaleString()}</b> combinations ≈ ${eta}`
       // Honest in both branches. A rate timed on fifteen combinations running
@@ -1836,10 +1841,31 @@ function opRun(){
                         + "charged to the ledger.");
   es.addEventListener("meta", e=>{ const m=JSON.parse(e.data);
     $("#op_status").textContent = `${m.combos} combinations…`; });
+  // TIME LEFT, measured on THIS run rather than on the last one: the pre-run
+  // estimate is a per-strategy average, and a grid that mostly visits cheap
+  // parameter cells runs at a different rate than one that does not.
+  //
+  // `p.secs` is the server's wall clock, which keeps running while the sweep is
+  // paused. Dividing by it would let a coffee break inflate the estimate for
+  // the rest of the run, so paused time is excluded: a pause drops the mark,
+  // and the first sample after the resume picks it back up without charging the
+  // gap. What is left is time actually spent searching.
+  const clk = {active: 0, mark: 0};
   es.addEventListener("progress", e=>{ const p=JSON.parse(e.data);
-    $("#op_status").textContent = p.paused
-      ? `Paused at ${p.done}/${p.total} combinations — nothing is being searched`
-      : `${p.done}/${p.total} combinations (${p.secs}s)`; });
+    if(p.paused){
+      clk.mark = null;
+      $("#op_status").textContent =
+        `Paused at ${p.done}/${p.total} combinations — nothing is being searched`;
+      return;
+    }
+    if(clk.mark === null) clk.mark = p.secs;     // resumed; the gap is not ours
+    clk.active += p.secs - clk.mark;
+    clk.mark = p.secs;
+    const left = p.done > 0 ? (p.total - p.done) * (clk.active / p.done) : null;
+    $("#op_status").textContent =
+      `${p.done.toLocaleString()}/${p.total.toLocaleString()} combinations · `
+      + `${fmtDur(clk.active)} elapsed`
+      + (left == null ? "" : ` · ${fmtDur(left)} left`); });
   es.addEventListener("result", e=>{
     OP=JSON.parse(e.data); opRender(); finish(""); });
   es.addEventListener("error", e=>{ let m="the run failed";
