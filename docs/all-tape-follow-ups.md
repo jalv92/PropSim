@@ -40,6 +40,9 @@ sessions) and passes; the two that fail have none.
 The function passes when called directly. The CLI flag was never added, so it is
 absent from any sweep of the module selfchecks. Untouched by this branch.
 
+(`nttrades.py` had the same gap and now has both, added with the live-database
+snapshot fix — see `_open_readonly`.)
+
 ## Needs its own design
 
 ### The audit gate reads only `ts` and `px`
