@@ -426,6 +426,7 @@
         <div class="row">
           <label>Name <input id="ai_name" placeholder="range_fade" style="width:150px"></label>
           <label>Validate on <select id="ai_contract"></select></label>
+          <span id="ai_stale" class="hint"></span>
           <label>Bar type <select id="ai_bartype"></select></label>
           <label>Value <select id="ai_tf"></select><span class="hint" id="ai_tfnote"></span></label>
           <label><input type="checkbox" id="ai_install" checked>
@@ -968,6 +969,13 @@ async function anInit(){
     else if(c.stale) o.textContent += "  (new data available)";
     sel.appendChild(o);
   }
+  // ALL sits first in the list so it's easy to find, not so it's the default
+  // pick: preselecting it before it has ever been built left every first-time
+  // user staring at a dead selection that can never run. Default to it only
+  // once it is actually ready; otherwise fall through to the first real
+  // contract (there is nothing else to fall back to if none exist either way).
+  const firstReal = AN.tape.find(c => c.contract !== "ALL");
+  sel.value = (ALLROW && ALLROW.ready) ? "ALL" : (firstReal ? firstReal.contract : "ALL");
   sel.onchange = anContract; anContract();
 
   AN.strategies = {};
@@ -1049,11 +1057,21 @@ function anContract(){
   // ALL has no "raw" range of its own -- it is built FROM the other caches,
   // not parsed from a folder of its own -- so its not-ready/stale messages
   // read differently from a real contract's.
+  // ALL can only ever be built from NQ contracts (continuous.py hardcodes
+  // ROOT="NQ"). A user whose NinjaTrader folder holds no NQ at all would see
+  // a "Build it" button that fails every time it's pressed, with no NQ data
+  // to build from -- say so instead of offering a dead affordance.
+  const hasNQ = (AN.tape||[]).some(x => x.contract !== "ALL"
+                                     && x.contract.split(" ")[0] === "NQ");
   if(!c.ready)
     note.innerHTML = isAll
-      ? `<div class="warn">The continuous NQ tape has not been built yet. It
-          needs at least two prepared NQ contracts.
-          <button id="an_prepare" class="mini">Build it</button></div>`
+      ? (hasNQ
+          ? `<div class="warn">The continuous NQ tape has not been built yet. It
+              needs at least two prepared NQ contracts.
+              <button id="an_prepare" class="mini">Build it</button></div>`
+          : `<div class="warn">The continuous NQ tape needs at least two NQ
+              contracts, and there is no NQ data on disk to build it from.
+              Point PropSim at a NinjaTrader folder that has NQ tick data.</div>`)
       : `<div class="warn">This contract has ${c.raw_days} day(s) on
       disk but no tick cache yet. <button id="an_prepare" class="mini">Prepare
       it</button> — about 15 seconds.</div>`;
@@ -2052,6 +2070,10 @@ function aiInit(){
     || `<option value="">— prepare a contract on the Backtesting tab first —</option>`;
   if(keep && (keep==="ALL" ? (ALLROW && ALLROW.ready) : ready.some(c=>c.contract===keep)))
     $("#ai_contract").value = keep;
+  // opContract() says when ALL is out of date; this tab silently validated
+  // candidate strategies against a stale tape because nothing here ever did.
+  $("#ai_contract").onchange = aiStaleNote;
+  aiStaleNote();
   if(!$("#ai_tstrategy").options.length){
     $("#ai_tstrategy").innerHTML = STRATS.map(s=>
       `<option value="${s.name}">${s.label}</option>`).join("");
@@ -2076,6 +2098,11 @@ function aiInit(){
     $("#ai_write").disabled = bad;
     $("#ai_translate").disabled = bad;
   }).catch(()=>{ $("#ai_status").textContent="Could not read /api/ai."; });
+}
+
+function aiStaleNote(){
+  const stale = $("#ai_contract").value === "ALL" && ALLROW && ALLROW.stale;
+  $("#ai_stale").innerHTML = stale ? `<span class="a">out of date: ${esc(ALLROW.why)}</span>` : "";
 }
 
 function aiTemplates(){
@@ -2545,7 +2572,7 @@ $("#op_score").onclick=()=>{
     but a backtest over those same sessions would just reproduce the fit and
     print it as a result. ` + (other.length
       ? `Pick a different contract — ${esc(other.join(", "))} — and press Run.`
-      : `Prepare another contract on the Data tab, then press Run.`);
+      : `Prepare another contract on the Backtesting tab, then press Run.`);
 };
 $("#an_measure").onclick=()=>{
   const c=$("#an_contract").value;

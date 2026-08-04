@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -201,9 +202,14 @@ def audit(ts: np.ndarray, px: np.ndarray, rolls: list) -> list:
     # arithmetic directly in float32.
     step = np.abs(np.diff(px))
     same = np.diff(day) == 0
-    n_mid = int((same & (step >= lo)).sum())
-    if n_mid:
-        bad.append(f"{n_mid} intraday step(s) of {lo:g}+ points")
+    mid = np.flatnonzero(same & (step >= lo))
+    if len(mid):
+        # Name the session date(s), not the raw day index -- this message is
+        # the only thing a user sees when a refused build locks them out, and
+        # a bare integer gives them nothing to go act on.
+        dates = sorted({tape.date_str(int(day[i + 1])) for i in mid})
+        shown = ", ".join(dates[:5]) + (", …" if len(dates) > 5 else "")
+        bad.append(f"{len(mid)} intraday step(s) of {lo:g}+ points on {shown}")
 
     # The strong one: a whole session on the wrong contract. Consecutive
     # *weekdays* are separated only by the maintenance break, so the adjusted
@@ -233,7 +239,7 @@ def audit(ts: np.ndarray, px: np.ndarray, rolls: list) -> list:
 
     for r in rolls:
         if r["spread"] is None:
-            bad.append(f"roll on day {r['day']} has no measured spread")
+            bad.append(f"roll on {tape.date_str(r['day'])} has no measured spread")
         elif not lo <= r["spread"] <= hi:
             bad.append(f"roll {r['from']}->{r['to']} spread {r['spread']:.2f} "
                        f"is outside {lo:g}-{hi:g}")
@@ -318,7 +324,7 @@ def build(on_progress=None) -> dict:
     cs = contracts_on_disk()
     if len(cs) < 2:
         raise SystemExit(f"ALL needs at least two cached {ROOT} contracts, "
-                         f"found {len(cs)}. Prepare them on the Data tab first.")
+                         f"found {len(cs)}. Prepare them on the Backtesting tab first.")
 
     total = len(cs) * 2
     step = [0]
@@ -422,8 +428,25 @@ def build(on_progress=None) -> dict:
         inputs=fingerprint(),
     )
     tape.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    np.savez(cache_path(), ts=ts, px=px, vol=vol, side=side)
-    meta_path().write_text(json.dumps(meta, indent=1))
+    # Write both files fully under temp names first, THEN swap them in with
+    # os.replace -- atomic within a filesystem on both POSIX and Windows (this
+    # ships as a Windows desktop app). The 1.8 GB npz takes seconds to write;
+    # a kill mid-write used to leave a truncated npz sitting next to the OLD
+    # sidecar, which still said the build was ready because its fingerprints
+    # hadn't changed -- every ALL screen then threw, with nothing prompting a
+    # rebuild. npz goes first: if the process dies between the two replaces,
+    # the surviving pair is the new npz + the old sidecar, which is stale (a
+    # is_stale() miss, not a crash) rather than a truncated tape marked ready.
+    # np.savez appends ".npz" to a bare filename that lacks it, so the temp
+    # path is written through an open file handle instead of by name, which
+    # bypasses that renaming.
+    npz_tmp = cache_path().with_name(cache_path().name + ".tmp")
+    meta_tmp = meta_path().with_name(meta_path().name + ".tmp")
+    with open(npz_tmp, "wb") as f:
+        np.savez(f, ts=ts, px=px, vol=vol, side=side)
+    meta_tmp.write_text(json.dumps(meta, indent=1))
+    os.replace(npz_tmp, cache_path())
+    os.replace(meta_tmp, meta_path())
     return meta
 
 

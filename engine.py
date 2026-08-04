@@ -1165,8 +1165,14 @@ def prepare(contract, tf_secs=300, start=None, end=None, rth_only=True,
     # a flat, healthy-looking nothing.
     if strategy is not None and LIBRARY[strategy].full_session:
         rth_only = False
-    full = tp.load_cache(contract)
-    t = tp.slice_range(full, start, end, rth_only=rth_only)
+    # Narrow at load time (Task 5's ranged `load_cache`) so the full tape is
+    # never held alive once the request only wants a slice of it -- and drop
+    # the narrowed-but-still-whole-tape reference the moment slice_range has
+    # produced its own copy, so RTH-only trims (the common case) actually free
+    # the overnight ticks instead of keeping them pinned for the rest of prepare().
+    raw = tp.load_cache(contract, start, end)
+    t = tp.slice_range(raw, start, end, rth_only=rth_only)
+    del raw
     if not len(t["ts"]):
         raise SystemExit("no ticks in that range")
     dayi = tp.day_index(t["ts"])
