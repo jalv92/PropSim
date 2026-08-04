@@ -102,10 +102,20 @@ def load_cache(contract: str, start=None, end=None) -> dict:
     When the requested range covers the whole tape (or no range is given),
     nothing is copied -- that would just double the peak for no benefit.
     """
-    p = cache_path(contract)
-    if not p.exists():
-        raise SystemExit(f"{contract} has not been prepared yet. Open the "
-                         f"Backtest tab and press “Prepare this contract” once.")
+    # ALL is stitched from the other caches and carries a sidecar roll table.
+    # Imported here rather than at module scope: `continuous` imports `tape`,
+    # and a top-level import either way makes that circular.
+    if contract == "ALL":
+        import continuous as _c
+        p = _c.cache_path()
+        if not p.exists():
+            raise SystemExit("ALL has not been built yet. Open the Data tab "
+                             "and press “Update ALL”.")
+    else:
+        p = cache_path(contract)
+        if not p.exists():
+            raise SystemExit(f"{contract} has not been prepared yet. Open the "
+                             f"Backtest tab and press “Prepare this contract” once.")
     z = np.load(p)
     ts_full = z["ts"]
     i0, i1 = 0, len(ts_full)
@@ -129,9 +139,12 @@ def load_cache(contract: str, start=None, end=None) -> dict:
 
 
 def cached_contracts() -> list[str]:
+    """Every prepared contract, ALL first because it is the broadest sample."""
     if not CACHE_DIR.is_dir():
         return []
-    return sorted(p.stem.replace("_", " ") for p in CACHE_DIR.glob("*.npz"))
+    names = sorted(p.stem.replace("_", " ") for p in CACHE_DIR.glob("*.npz"))
+    return ([n for n in names if n == "ALL"]
+            + [n for n in names if n != "ALL"])
 
 
 # --------------------------------------------------------------------------
@@ -156,6 +169,16 @@ def date_str(day_no: int) -> str:
 
 
 def available_range(contract: str) -> tuple[str, str, int]:
+    """First session, last session, session count.
+
+    ALL answers from its sidecar. Reading it off the tape would load 1.5 GB to
+    produce three values, and the Data tab asks on every refresh.
+    """
+    if contract == "ALL":
+        import continuous as _c
+        m = _c.load_meta()
+        if m:
+            return m["first"], m["last"], m["sessions"]
     t = load_cache(contract)["ts"]
     d = day_index(t)
     days = np.unique(d)
@@ -310,6 +333,26 @@ def selfcheck():
     print(f"selfcheck OK: {c} {len(tape['ts']):,} ticks, {nd} days {lo}..{hi}; "
           f"bars 15s={len(b15s['t']):,} 1m={len(b1['t']):,} 5m={len(b5['t']):,}, "
           f"volume conserved")
+
+    # ALL is a VALUE in the contract slot, not a new type: everything
+    # downstream -- slice_range, build_bars, engine.prepare, optimize.sweep --
+    # must keep working without knowing it exists.
+    import continuous as cont
+    if cont.cache_path().exists():
+        a = load_cache(cont.ALL)
+        assert set(a) == {"ts", "px", "vol", "side"}, sorted(a)
+        assert (np.diff(a["ts"]) >= 0).all(), "ALL must be time-ordered"
+        lo_a, hi_a, nd_a = available_range(cont.ALL)
+        # 79 sessions are on disk as of the current cache (full stitch of all
+        # NQ contracts is Task 7's job) -- 50 is a floor well under that,
+        # not the target session count.
+        assert nd_a > 50, f"ALL should span many sessions, got {nd_a}"
+        assert cached_contracts()[0] == cont.ALL, "ALL must sort first"
+        b = build_bars(slice_range(a, rth_only=True), 300)
+        assert len(b["t"]) > 0, "ALL must bar like any other contract"
+        print(f"  ALL: {len(a['ts']):,} ticks, {nd_a} sessions {lo_a}..{hi_a}")
+    else:
+        print("  ALL not built yet — run: python3 continuous.py --build")
 
 
 def main():
