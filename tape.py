@@ -88,34 +88,43 @@ def build_cache(contract: str, nt_root=None, force=False, on_progress=None) -> d
 def load_cache(contract: str, start=None, end=None) -> dict:
     """The tape, optionally narrowed to a date range as it loads.
 
-    The tape is sorted by time, so a DATE RANGE IS A CONTIGUOUS SLICE and can be
-    resolved with two searchsorted calls on `ts` before the other three arrays
-    are touched. `slice_range` still exists for the RTH filter, which is not
-    contiguous -- but it then runs on the narrowed result rather than on the
-    whole tape. The difference matters at ALL's scale: loading everything and
-    then copying the wanted part peaks at twice 1.5 GB.
+    An .npz member has no seek-a-slice path: np.load always decompresses a
+    key into a full ndarray, so narrowing does not save anything on the read
+    itself. What it saves is what happens after. The tape is sorted by time,
+    so a date range is a CONTIGUOUS SLICE, found with two searchsorted calls
+    on `ts`. A numpy slice is a view backed by the full buffer, so each key's
+    slice is `.copy()`-ed into just the wanted rows -- one key at a time, so
+    the full array is freed before the next key is read -- which lets the
+    full buffer be released instead of held alive by the view. `slice_range`
+    still owns the RTH filter, since that one is not contiguous, but it now
+    runs on this narrowed result rather than on the whole tape, so the
+    boolean-mask copy it used to build on top of the full arrays is gone too.
+    When the requested range covers the whole tape (or no range is given),
+    nothing is copied -- that would just double the peak for no benefit.
     """
     p = cache_path(contract)
     if not p.exists():
         raise SystemExit(f"{contract} has not been prepared yet. Open the "
                          f"Backtest tab and press “Prepare this contract” once.")
     z = np.load(p)
-    ts = z["ts"]
-    i0, i1 = 0, len(ts)
+    ts_full = z["ts"]
+    i0, i1 = 0, len(ts_full)
     if start or end:
         epoch = datetime(1970, 1, 1).date()
         if start:
             d0 = (datetime.fromisoformat(start).date() - epoch).days
             i0 = int(np.searchsorted(
-                ts, (np.int64(d0) * 86400 + NET_EPOCH_S) * TPS, "left"))
+                ts_full, (np.int64(d0) * 86400 + NET_EPOCH_S) * TPS, "left"))
         if end:
             d1 = (datetime.fromisoformat(end).date() - epoch).days + 1
             i1 = int(np.searchsorted(
-                ts, (np.int64(d1) * 86400 + NET_EPOCH_S) * TPS, "left"))
-    out = {"ts": ts[i0:i1]}
-    del ts
+                ts_full, (np.int64(d1) * 86400 + NET_EPOCH_S) * TPS, "left"))
+    narrow = (i0, i1) != (0, len(ts_full))
+    out = {"ts": ts_full[i0:i1].copy() if narrow else ts_full}
+    del ts_full
     for k in ("px", "vol", "side"):
-        out[k] = z[k][i0:i1]
+        full = z[k]
+        out[k] = full[i0:i1].copy() if narrow else full
     return out
 
 
