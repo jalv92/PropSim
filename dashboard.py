@@ -44,6 +44,7 @@ import optimize
 import plugins
 import slippage
 import tape as tp
+import continuous
 import engine
 import report
 import branding
@@ -126,6 +127,37 @@ def prepare_stream(q, write):
     def prog(done, total, ticks):
         write("progress", dict(done=done, total=total, ticks=ticks,
                                pct=round(100 * done / max(total, 1), 1)))
+
+    # ALL is stitched from the other caches rather than parsed from .ncd, and
+    # the expensive half is re-parsing the contracts whose files changed --
+    # concatenating what is already cached is seconds. So: refresh only what
+    # moved, then restitch whole. No incremental state to go quietly wrong.
+    # continuous.build() raises SystemExit with the audit's findings if the
+    # stitch fails (e.g. a wrong-contract session, an unmeasurable roll) --
+    # that propagates out of here uncaught, and _sse() turns it into an
+    # "error" event the page renders, rather than a stack trace nobody sees.
+    if contract == continuous.ALL:
+        inv = ntdata.inventory(ntdata.resolve_root() or Path("."), force=True)
+        for name, v in (inv.get("tick") or {}).items():
+            if name.split()[0] != continuous.ROOT:
+                continue
+            p = tp.cache_path(name)
+            fresh = p.exists()
+            if fresh:
+                try:
+                    _, hi, _ = tp.available_range(name)
+                    fresh = _fmt_day(v["last"]) <= hi
+                except Exception:
+                    fresh = False
+            if not fresh:
+                write("stage", dict(text=f"parsing {name}"))
+                tp.build_cache(name, force=True, on_progress=prog)
+        write("stage", dict(text="stitching ALL"))
+        m = continuous.build(on_progress=prog)
+        write("result", dict(contract=contract, first=m["first"], last=m["last"],
+                             days=m["sessions"], ticks=m["ticks"]))
+        return
+
     tp.build_cache(contract, force=bool(q.get("force")), on_progress=prog)
     lo, hi, days = tp.available_range(contract)
     write("result", dict(contract=contract, first=lo, last=hi, days=days,
@@ -737,7 +769,26 @@ class Handler(BaseHTTPRequestHandler):
                                  raw_first=raw_first, raw_last=raw_last,
                                  raw_days=v["days"], stale=stale,
                                  mb=v["mb"], est_ticks=v["est_ticks"]))
-            return self._send(200, json.dumps(dict(contracts=rows)).encode(),
+            # ALL is not a file under db/tick, so it never appears in `rows` --
+            # it is reported separately, from its own sidecar (continuous.py),
+            # with the coverage holes that a stitch across missing months
+            # leaves. Buried holes are how someone backtests April-June and
+            # gets a fraction of the trades they expect with nothing on
+            # screen saying why.
+            stale, why = continuous.is_stale()
+            m = continuous.load_meta()
+            allrow = dict(
+                ready=bool(m and continuous.cache_path().exists()),
+                stale=stale, why=why,
+                sessions=(m or {}).get("sessions", 0),
+                first=(m or {}).get("first"), last=(m or {}).get("last"),
+                ticks=(m or {}).get("ticks", 0),
+                rolls=(m or {}).get("rolls", []),
+                holes=(m or {}).get("holes", []),
+                sources=[dict(contract=c, truncated=tp.truncated_hours(c))
+                         for c in continuous.contracts_on_disk()])
+            return self._send(200, json.dumps(dict(contracts=rows,
+                                                   all=allrow)).encode(),
                               "application/json")
         if u.path == "/api/strategies":
             lib = []

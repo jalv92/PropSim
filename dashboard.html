@@ -496,6 +496,14 @@
         <button id="scan" class="primary">Scan</button>
       </div>
       <div id="dataBody"></div>
+
+      <div class="sec">
+        <h3>ALL — the continuous NQ tape</h3>
+        <p class="hint">Every cached NQ contract stitched into one back-adjusted
+        series, rolls measured and removed. This is what "ALL" means in the
+        Market data pickers on the other tabs.</p>
+        <div id="allBody"><p class="hint">Loading…</p></div>
+      </div>
     </div>
   </div>
 </div>
@@ -898,6 +906,10 @@ function render(){
 // Backtest tab, which meant deleting that tab silently emptied the other two.
 // One loader owns them now, and it touches no tab's DOM.
 let TAPE = [], STRATS = [], PLUGINS = [];
+// ALLROW is the continuous NQ tape's own status object, from /api/tape's
+// `all` key -- it never appears as a row in TAPE because it has no .ncd
+// folder of its own to be discovered from.
+let ALLROW = null;
 let LIBRARY_LOADED = null;
 
 function loadLibrary(force){
@@ -910,13 +922,36 @@ function loadLibrary(force){
     STRATS = st.strategies || [];
     PLUGINS = st.plugins || [];
     TAPE = tp.contracts || [];
+    ALLROW = tp.all || null;
     return {dir: st.dir};
   }).catch(e=>{ LIBRARY_LOADED = null; throw e; });
   return LIBRARY_LOADED;
 }
 
+// Gaps in ALL's coverage, formatted once and reused everywhere a range is
+// shown (Backtesting, Optimize, the Data tab) -- a hole doesn't corrupt a
+// price, it just makes a backtest run on far fewer sessions than the
+// calendar between `first` and `last` implies, with nothing saying why.
+function holesNote(holes){
+  if(!holes || !holes.length) return "";
+  return holes.map(h=>` <span class="a">— gap ${h.from} to ${h.to}
+    (${h.sessions_missing} session${h.sessions_missing===1?"":"s"} missing)</span>`).join("");
+}
+
 /* ---------- analyzer tab (Backtesting) ---------- */
 let AN = {combos:[], rules:null, ready:false, view:"raw"};
+
+// ALL, reshaped to fit alongside a real contract row in AN.tape -- same
+// .ready/.stale/.contract fields the option-builder and anContract() below
+// already know how to read, so the "every contract, cached or not" list
+// gets ALL for free instead of a parallel render path just for it.
+function anTapeList(){
+  const list = TAPE.slice();
+  if(ALLROW) list.unshift({contract: "ALL", ready: ALLROW.ready,
+    stale: ALLROW.stale, first: ALLROW.first, last: ALLROW.last,
+    holes: ALLROW.holes, why: ALLROW.why});
+  return list;
+}
 
 async function anInit(){
   if(AN.ready) return; AN.ready = true;
@@ -924,7 +959,7 @@ async function anInit(){
   // EVERY contract is offered, cached or not. Hiding the uncached ones was how a
   // contract the user had just downloaded simply failed to exist on this page,
   // with nothing saying why. An uncached one disables Run and offers to build.
-  AN.tape = TAPE;
+  AN.tape = anTapeList();
   const sel = $("#an_contract"); sel.innerHTML = "";
   for(const c of AN.tape){
     const o = document.createElement("option");
@@ -1005,16 +1040,28 @@ function anContract(){
   if(external){ note.innerHTML = ""; $("#an_range").textContent =
       c ? (c.ready ? `${c.first} .. ${c.last}` : "—") : "—"; return; }
   if(!c){ $("#an_range").textContent = "—"; note.innerHTML = ""; return; }
-  $("#an_range").textContent = c.ready ? `${c.first} .. ${c.last}`
-                                       : `${c.raw_first} .. ${c.raw_last}, not prepared`;
+  const isAll = c.contract === "ALL";
+  $("#an_range").innerHTML = c.ready
+    ? `${c.first} .. ${c.last}` + (isAll ? holesNote(c.holes) : "")
+    : (isAll ? "not built yet" : `${c.raw_first} .. ${c.raw_last}, not prepared`);
   // The two ranges are stated side by side whenever they disagree. A backtester
   // that quietly covers less than the data on disk is the failure this reports.
+  // ALL has no "raw" range of its own -- it is built FROM the other caches,
+  // not parsed from a folder of its own -- so its not-ready/stale messages
+  // read differently from a real contract's.
   if(!c.ready)
-    note.innerHTML = `<div class="warn">This contract has ${c.raw_days} day(s) on
+    note.innerHTML = isAll
+      ? `<div class="warn">The continuous NQ tape has not been built yet. It
+          needs at least two prepared NQ contracts.
+          <button id="an_prepare" class="mini">Build it</button></div>`
+      : `<div class="warn">This contract has ${c.raw_days} day(s) on
       disk but no tick cache yet. <button id="an_prepare" class="mini">Prepare
       it</button> — about 15 seconds.</div>`;
   else if(c.stale)
-    note.innerHTML = `<div class="warn">The cache covers <b>${c.last}</b> but you
+    note.innerHTML = isAll
+      ? `<div class="warn">${esc(c.why)}.
+          <button id="an_prepare" class="mini">Rebuild it</button></div>`
+      : `<div class="warn">The cache covers <b>${c.last}</b> but you
       have data through <b>${c.raw_last}</b> (${c.raw_days} days on disk). The
       backtest can only use what the cache holds.
       <button id="an_prepare" class="mini">Rebuild it</button></div>`;
@@ -1027,16 +1074,27 @@ function anPrepare(c){
   const q = "contract=" + encodeURIComponent(c.contract) + (c.stale ? "&force=1" : "");
   note.innerHTML = '<div class="hint">Reading your .ncd files…</div>';
   const es = new EventSource("/api/tape/prepare?" + q);
+  es.addEventListener("stage", e=>{
+    const d = JSON.parse(e.data);
+    note.innerHTML = `<div class="hint">${esc(d.text)}…</div>`; });
   es.addEventListener("progress", e=>{
     const d = JSON.parse(e.data);
     note.innerHTML = `<div class="hint">Reading your .ncd files… ${d.pct}%
       (${d.ticks.toLocaleString()} ticks)</div>`; });
   es.addEventListener("result", e=>{
     es.close();
-    loadLibrary(true).then(()=>{ AN.tape = TAPE; anContract(); });
+    loadLibrary(true).then(()=>{ AN.tape = anTapeList(); anContract(); });
   });
-  es.addEventListener("error", ()=>{ es.close();
-    note.innerHTML = '<div class="warn">Could not prepare this contract.</div>'; });
+  // A refused build (continuous.build()'s audit failing) arrives as this same
+  // named "error" event carrying the real reason in .data -- read it before
+  // falling back, or the one message this task exists to surface never
+  // reaches the screen.
+  es.addEventListener("error", e=>{
+    es.close();
+    let m = "Could not prepare this contract.";
+    try{ m = JSON.parse(e.data).message; }catch(err){}
+    note.innerHTML = `<div class="warn">${esc(m).replace(/\n/g,"<br>")}</div>`;
+  });
 }
 
 /* ---------- the account picker, one definition, two mounts ----------------
@@ -1698,14 +1756,29 @@ function opInit(){
   }
   const ready = TAPE.filter(c=>c.ready).sort((a,b)=>a.contract.localeCompare(b.contract));
   const keep = $("#op_contract").value;
-  $("#op_contract").innerHTML = ready.map(c=>
-    `<option value="${c.contract}">${c.contract}</option>`).join("")
+  // ALL is not in TAPE (it has no db/tick folder of its own -- see ALLROW),
+  // so it is prepended here rather than filtered in with the rest.
+  const opts = [];
+  if(ALLROW && ALLROW.ready)
+    opts.push(`<option value="ALL">ALL — every NQ contract</option>`);
+  $("#op_contract").innerHTML = (opts.join("") + ready.map(c=>
+    `<option value="${c.contract}">${c.contract}</option>`).join(""))
     || `<option value="">— prepare a contract on the Backtesting tab first —</option>`;
-  if(keep && ready.some(c=>c.contract===keep)) $("#op_contract").value = keep;
+  if(keep && (keep==="ALL" ? (ALLROW && ALLROW.ready) : ready.some(c=>c.contract===keep)))
+    $("#op_contract").value = keep;
   opContract(); opCount();
 }
 
 function opContract(){
+  if($("#op_contract").value === "ALL" && ALLROW){
+    $("#op_range").innerHTML = `${ALLROW.sessions} sessions, ${ALLROW.first} to
+      ${ALLROW.last} · ${ALLROW.rolls.length} roll${ALLROW.rolls.length===1?"":"s"}`
+      + (ALLROW.stale ? ` · <span class="a">out of date: ${esc(ALLROW.why)}</span>` : "")
+      + holesNote(ALLROW.holes);
+    for(const id of ["#op_start","#op_end"]){ $(id).min=ALLROW.first; $(id).max=ALLROW.last; }
+    $("#op_start").value=ALLROW.first; $("#op_end").value=ALLROW.last;
+    return;
+  }
   const c = TAPE.find(x=>x.contract===$("#op_contract").value);
   if(!c) return;
   $("#op_range").textContent = `${c.days} sessions, ${c.first} to ${c.last}`;
@@ -1971,10 +2044,14 @@ function aiInit(){
   aiTries=0;
   const ready = TAPE.filter(c=>c.ready).sort((a,b)=>a.contract.localeCompare(b.contract));
   const keep = $("#ai_contract").value;
-  $("#ai_contract").innerHTML = ready.map(c=>
-    `<option value="${c.contract}">${c.contract}</option>`).join("")
+  const opts = [];
+  if(ALLROW && ALLROW.ready)
+    opts.push(`<option value="ALL">ALL — every NQ contract</option>`);
+  $("#ai_contract").innerHTML = (opts.join("") + ready.map(c=>
+    `<option value="${c.contract}">${c.contract}</option>`).join(""))
     || `<option value="">— prepare a contract on the Backtesting tab first —</option>`;
-  if(keep && ready.some(c=>c.contract===keep)) $("#ai_contract").value = keep;
+  if(keep && (keep==="ALL" ? (ALLROW && ALLROW.ready) : ready.some(c=>c.contract===keep)))
+    $("#ai_contract").value = keep;
   if(!$("#ai_tstrategy").options.length){
     $("#ai_tstrategy").innerHTML = STRATS.map(s=>
       `<option value="${s.name}">${s.label}</option>`).join("");
@@ -2336,7 +2413,7 @@ document.querySelectorAll(".tab[data-p]").forEach(t=>t.onclick=()=>{
   for(const p of ["analyzer","mc","data","optimize","ai","imported","trials"])
     $("#pane-"+p).hidden = (p!==t.dataset.p);
   if(t.dataset.p==="analyzer") anInit();
-  if(t.dataset.p==="data") loadData();
+  if(t.dataset.p==="data"){ loadData(); loadAll(); }
   if(t.dataset.p==="optimize") opInit();
   if(t.dataset.p==="ai") aiInit();
   if(t.dataset.p==="imported") loadImports();
@@ -2529,6 +2606,72 @@ function loadData(root, force){
     $("#dataBody").innerHTML = html || "<p>Nothing found under that folder.</p>";
   }).catch(e=>{ $("#dataBody").innerHTML="<p class='r'>Scan failed.</p>"; });
 }
-$("#scan").onclick=()=>{ loadData($("#ntroot").value.trim(), true); loadAccounts(); };
+$("#scan").onclick=()=>{ loadData($("#ntroot").value.trim(), true); loadAccounts(); loadAll(); };
+
+/* ---------- Data tab: ALL, the continuous NQ tape ---------- */
+function allStatusHtml(a){
+  if(!a.ready){
+    const have = a.sources.map(s=>esc(s.contract)).join(", ") || "none";
+    return `<p class="hint">Not built yet — needs at least two prepared NQ
+      contracts. Currently prepared: ${have}.</p>`;
+  }
+  let html = `<p><b class="g">${a.sessions.toLocaleString()} sessions</b>,
+    ${a.first} to ${a.last} · ${a.rolls.length}
+    roll${a.rolls.length===1?"":"s"} · ${a.ticks.toLocaleString()} ticks</p>`;
+  if(a.stale) html += `<div class="warn">Out of date: ${esc(a.why)}.
+    Update to include what changed.</div>`;
+  if(a.holes.length) html += `<div class="warn"><b>Coverage gaps</b> — a
+    backtest across these dates sees far fewer sessions than the calendar
+    between ${a.first} and ${a.last} implies:
+    <ul style="margin:6px 0 0 18px">` + a.holes.map(h=>
+      `<li>${h.from} to ${h.to} — ${h.sessions_missing}
+        session${h.sessions_missing===1?"":"s"} missing</li>`).join("") + `</ul></div>`;
+  const trunc = a.sources.filter(s=>s.truncated>0);
+  if(trunc.length) html += `<p class="hint">Truncated while parsing: ` +
+    trunc.map(s=>`${esc(s.contract)} (${s.truncated}
+      hour${s.truncated===1?"":"s"})`).join(", ") + `.</p>`;
+  html += `<table class="kv"><tr><td><b>source contracts</b></td></tr>` +
+    a.sources.map(s=>`<tr><td>${esc(s.contract)}</td></tr>`).join("") + `</table>`;
+  return html;
+}
+
+function loadAll(){
+  fetch("/api/tape").then(r=>r.json()).then(d=>{
+    ALLROW = d.all || null;
+    if(!ALLROW){ $("#allBody").innerHTML = "<p class='r'>Could not read ALL's status.</p>"; return; }
+    $("#allBody").innerHTML = allStatusHtml(ALLROW) +
+      `<button id="all_update" class="primary" style="margin-top:10px">Update ALL</button>
+       <div id="all_status" class="hint" style="margin-top:8px"></div>`;
+    $("#all_update").onclick = allUpdate;
+  }).catch(()=>{ $("#allBody").innerHTML = "<p class='r'>Could not read ALL's status.</p>"; });
+}
+
+function allUpdate(){
+  const btn = $("#all_update"); btn.disabled = true;
+  const status = $("#all_status");
+  status.innerHTML = '<div class="hint">Starting…</div>';
+  const es = new EventSource("/api/tape/prepare?contract=ALL");
+  es.addEventListener("stage", e=>{
+    const d = JSON.parse(e.data);
+    status.innerHTML = `<div class="hint">${esc(d.text)}…</div>`; });
+  es.addEventListener("progress", e=>{
+    const d = JSON.parse(e.data);
+    status.innerHTML = `<div class="hint">${d.pct}%
+      (${d.ticks.toLocaleString()} ticks)</div>`; });
+  es.addEventListener("result", e=>{
+    es.close();
+    loadAll();
+    loadLibrary(true);   // ALL just changed for every picker on the other tabs too
+  });
+  // A refused build (continuous.build()'s stitch audit failing) is the safety
+  // mechanism working, not a crash -- the reason it refused arrives here in
+  // .data and has to reach the screen, not vanish into the server console.
+  es.addEventListener("error", e=>{
+    es.close(); btn.disabled = false;
+    let m = "Could not update ALL.";
+    try{ m = JSON.parse(e.data).message; }catch(err){}
+    status.innerHTML = `<div class="warn">${esc(m).replace(/\n/g,"<br>")}</div>`;
+  });
+}
 addEventListener("resize", ()=>{ if(RES) render(); });
 </script>
