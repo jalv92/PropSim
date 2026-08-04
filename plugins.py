@@ -221,9 +221,12 @@ def check_output(res, tape, bars) -> list[str]:
     a stop on the wrong side of the entry (which the engine would silently skip,
     so the strategy would appear to take no trades for no visible reason).
     """
-    if not isinstance(res, tuple) or len(res) not in (4, 5):
-        return [f"entries() must return 4 or 5 arrays, got {type(res).__name__}"]
-    arrs = [np.asarray(a) for a in res]
+    if not isinstance(res, tuple) or len(res) not in (4, 5, 6):
+        return [f"entries() must return 4 to 6 arrays, got {type(res).__name__}"]
+    # The optional fifth (limit price) and sixth (breakeven trigger) may be None,
+    # which is how a strategy says "not this one" for the fifth while still
+    # returning the sixth. Only the four required arrays are checked here.
+    arrs = [np.asarray(a) for a in res if a is not None]
     n = len(arrs[0])
     problems = []
     if any(len(a) != n for a in arrs):

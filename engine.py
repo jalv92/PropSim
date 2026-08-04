@@ -207,11 +207,16 @@ class RangeBreak(Strategy):
     where that bar ended up. So the entry is the first tick in the tape that
     actually trades through the level.
 
-    The stop sits on the far side of the range, so risk scales with the
-    consolidation instead of being asserted, and `max_range_ticks` caps it. The
-    target is a multiple of the REAL risk (entry to stop), not of the range
-    width -- the entry lands a few ticks past the level, and pricing the target
-    off the level would quietly hand back that difference.
+    STOP, TARGET AND BREAKEVEN ARE ALL IN ATR, so the trade is priced in what
+    the market is currently doing rather than in a tick count that was right on
+    some other week. ATR is read at the SIGNAL bar, which has closed; the entry
+    happens in the next one.
+
+    `max_stop_ticks` is not a preference. An ATR stop has no upper bound of its
+    own, and on NQ 1m the ATR(14) runs 45 ticks at its 10th percentile and 398
+    at its worst -- a volatility spike would otherwise silently size a $2,000
+    stop into a $50K evaluation. A trade whose stop would exceed it is skipped,
+    not shrunk: shrinking it would keep the trade and quietly change the setup.
     """
     name, label = "range_break", "Consolidation breakout"
     uses_ticks = True
@@ -227,8 +232,15 @@ class RangeBreak(Strategy):
         "lookback_bars": Param(10, 3, 60, "bars that form the range"),
         "min_range_ticks": Param(30, 1, 200, "narrowest range worth trading, ticks"),
         "max_range_ticks": Param(140, 4, 400, "widest range still a consolidation, ticks"),
-        "buffer_ticks": Param(4, 0, 40, "stop beyond the far side, ticks"),
-        "rr": Param(2.0, 0.5, 6.0, "target as a multiple of the risk"),
+        "atr_period": Param(14, 2, 100, "bars in the ATR"),
+        "atr_stop": Param(1.0, 0.1, 5.0, "stop distance, in ATRs"),
+        "atr_target": Param(2.0, 0.2, 10.0, "target distance, in ATRs"),
+        "max_stop_ticks": Param(160, 8, 800, "skip the trade if the ATR stop is wider"),
+        # Percent of the run from the entry to the TARGET, not of the risk: at
+        # the defaults (stop 1 ATR, target 2) half the run is 1 ATR, which is
+        # exactly 1R. Zero turns it off.
+        "be_trigger_pct": Param(50, 0, 100, "move the stop to breakeven after "
+                                            "this % of the way to the target"),
         # Minutes after midnight, the same unit the session parameters already
         # use elsewhere. HHMM reads nicer and is a trap: a step of 465 turns 930
         # into 1395, and 13:95 is not a time.
@@ -240,8 +252,7 @@ class RangeBreak(Strategy):
     }
 
     def risk_ticks(self, p) -> float:
-        # the far side of the widest range still called a consolidation
-        return p["max_range_ticks"] + p["buffer_ticks"]
+        return p["max_stop_ticks"]          # the trade is skipped past this
 
     def entries(self, bars, tape, p):
         h, l = bars["h"], bars["l"]
@@ -254,7 +265,9 @@ class RangeBreak(Strategy):
         t0, t1 = int(p["session_start"]) * 60, int(p["last_entry"]) * 60
         lo_w = p["min_range_ticks"] * TICK_SIZE
         hi_w = p["max_range_ticks"] * TICK_SIZE
-        buf = p["buffer_ticks"] * TICK_SIZE
+        atr = _atr(bars, int(p["atr_period"]), day)
+        max_stop = p["max_stop_ticks"] * TICK_SIZE
+        be_pct = p["be_trigger_pct"] / 100.0
 
         top = _roll(h, N, np.max)
         bot = _roll(l, N, np.min)
@@ -265,12 +278,12 @@ class RangeBreak(Strategy):
         same[N - 1:] = day[N - 1:] == day[:n - N + 1]
         armed = same & (top - bot >= lo_w) & (top - bot <= hi_w)
 
-        et, dr, st, tg = [], [], [], []
+        et, dr, st, tg, be = [], [], [], [], []
         used_days = set()
         i = N - 1
         while i < n - 1:
             j = i + 1                       # the bar the breakout may happen in
-            if not armed[i] or day[j] != day[i]:
+            if not armed[i] or not np.isfinite(atr[i]) or day[j] != day[i]:
                 i += 1
                 continue
             a, b = int(bars["start"][j]), int(bars["end"][j])
@@ -292,10 +305,16 @@ class RangeBreak(Strategy):
             if not (t0 <= sod < t1) or (p["one_per_day"] and d in used_days):
                 i += 1
                 continue
+            risk = p["atr_stop"] * float(atr[i])
+            if risk > max_stop:             # a spike-wide stop is not this setup
+                i += 1
+                continue
             ref = float(px[e])
-            stop = (bot[i] - buf) if direc > 0 else (top[i] + buf)
-            et.append(e); dr.append(direc); st.append(stop)
-            tg.append(ref + direc * p["rr"] * abs(ref - stop))
+            reward = p["atr_target"] * float(atr[i])
+            et.append(e); dr.append(direc)
+            st.append(ref - direc * risk)
+            tg.append(ref + direc * reward)
+            be.append(ref + direc * be_pct * reward if be_pct > 0 else ref)
             used_days.add(d)
             # Resume AFTER the breakout bar, so one consolidation fires once: the
             # sliding window would otherwise re-detect the same range from every
@@ -304,8 +323,11 @@ class RangeBreak(Strategy):
             i = j + 1
         if not et:
             return _empty()
+        # Sixth array: the breakeven trigger. Fifth is the limit price, which
+        # this setup does not use -- it crosses the spread on a breakout -- so
+        # `None` there says "market order" and keeps the positions meaningful.
         return (np.array(et, np.int64), np.array(dr, np.int8),
-                np.array(st), np.array(tg))
+                np.array(st), np.array(tg), None, np.array(be))
 
 
 class SweepFollow(Strategy):
@@ -515,6 +537,27 @@ def _empty():
             np.array([]), np.array([]))
 
 
+def _atr(bars, n, day):
+    """Average true range over `n` closed bars, aligned on the last one.
+
+    A simple mean rather than Wilder's smoothing: the difference is a lag
+    constant, and this one can be read off the chart you are looking at.
+
+    THE TRUE RANGE RESETS AT THE SESSION BOUNDARY. Reaching for "the previous
+    close" across the overnight break measures the gap, not the bar, and the
+    first bar of the morning would carry the whole of last night into the stop
+    it sizes.
+    """
+    h, l, c = bars["h"], bars["l"], bars["c"]
+    prev = np.concatenate(([c[0]], c[:-1]))
+    tr = np.maximum(h - l, np.maximum(np.abs(h - prev), np.abs(l - prev)))
+    new_day = np.empty(len(c), bool)
+    new_day[0] = True
+    new_day[1:] = day[1:] != day[:-1]
+    tr[new_day] = (h - l)[new_day]
+    return _roll(tr, n, np.mean)
+
+
 def _roll(x, n, fn):
     """`fn` over every window of `n`, aligned on the window's LAST bar."""
     out = np.full(len(x), np.nan)
@@ -582,7 +625,7 @@ MAX_GAP_S = 120.0           # a longer silence inside a session is missing data
 
 def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
             cooldown_min=0.0, timeout_min=240.0, limit_px=None,
-            max_gap_s=MAX_GAP_S, day=None) -> list[Trade]:
+            max_gap_s=MAX_GAP_S, day=None, be_trigger=None) -> list[Trade]:
     """Walk ticks from each entry to its exit. One position at a time.
 
     Bounded forward scans, deliberately: an unbounded per-trade scan to the end
@@ -595,6 +638,18 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
     the touched tick in a fast move puts the entry far past the level the stop
     was measured from, which is how a stop-out came to book a +$17,635 profit
     before this existed.
+
+    `be_trigger` is a price per trade: the first tick to reach it moves the stop
+    to the entry fill, once, and an exit there is reported as `be` rather than
+    `stop`. The engine holds the mechanism and the strategy chooses the price,
+    the same split as `limit_px` -- and the separate reason matters because a
+    stop-out ends at the worst price the trade ever saw while a breakeven exit
+    does not, so several of the selfcheck's tightest invariants are true of one
+    and false of the other.
+
+    A breakeven exit still LOSES: it gives back the exit slippage and the
+    commission. Modelling it as flat would be the same kind of free money the
+    rest of this function exists to refuse.
     """
     ts, px = tape["ts"], tape["px"]
     n = len(ts)
@@ -640,6 +695,10 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
             continue
         stop_end = min(int(np.searchsorted(ts, ts[i0] + horizon, "right")),
                        session_end)
+        be = None if be_trigger is None else float(be_trigger[k])
+        if be is not None and (be <= fill if d > 0 else be >= fill):
+            be = None               # a trigger the entry is already past is not one
+        moved = False
         lo = hi = fill
         mdd = 0.0                   # running fall from the running peak
         exit_i, exit_px, why = None, None, ("close" if stop_end == session_end
@@ -663,6 +722,11 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
             # that an intraday floor would have been tested against.
             drop = (hi - p) if d > 0 else (p - lo)
             if drop > mdd: mdd = drop
+            # Move the stop BEFORE the exit tests. On the tick that reaches the
+            # trigger the old stop is far behind and cannot fire, and the target
+            # -- if this same tick reached it too -- still wins below.
+            if be is not None and (p >= be if d > 0 else p <= be):
+                st, be, moved = fill, None, True
             hit_stop = (p <= st) if d > 0 else (p >= st)
             hit_targ = (p >= tg) if d > 0 else (p <= tg)
             if hit_stop:                          # stop wins a tie, on purpose
@@ -674,7 +738,7 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
                 # and the tick-gap distribution says the fastest 10% of moves jump
                 # 5 ticks between prints.
                 exit_px = min(st, p) if d > 0 else max(st, p)
-                exit_i, why = i, "stop"; break
+                exit_i, why = i, ("be" if moved else "stop"); break
             if hit_targ:
                 exit_i, exit_px, why = i, tg, "target"; break
         if exit_i is None:
@@ -750,9 +814,13 @@ def backtest(contract, strategy_name, timeframe=5, start=None, end=None,
     # array, so the fill model is a property of the setup rather than an accident
     # of who wrote the entry function.
     lim = res[4] if len(res) > 4 else None
+    # And a sixth for a breakeven trigger, on the same principle: the engine owns
+    # the mechanism, the strategy owns the price, and a setup that wants neither
+    # returns four arrays and is unaffected.
+    bet = res[5] if len(res) > 5 else None
     cd = p.get("cooldown_min", 0.0)
     trades = resolve(t, ei, dr, st, tg, costs, cooldown_min=cd, limit_px=lim,
-                     day=ctx["dayi"])
+                     day=ctx["dayi"], be_trigger=bet)
 
     # Data quality, reported rather than assumed: a silence longer than MAX_GAP_S
     # inside a session means hourly files are missing, and every bar spanning one
@@ -826,7 +894,8 @@ def selfcheck():
 
     # 5. Every trade must resolve to a real exit reason.
     tr, _ = backtest(c, "orb", 5)
-    assert all(t.reason in ("stop", "target", "timeout", "close", "gap") for t in tr)
+    assert all(t.reason in ("stop", "be", "target", "timeout", "close", "gap")
+               for t in tr)
     assert all(t.mae <= 0 <= t.mfe for t in tr), "MAE/MFE signs"
 
     # 6. THE INVARIANT THAT CAUGHT A REAL BUG. A stop-out cannot make money and a
@@ -858,6 +927,15 @@ def selfcheck():
                 want = t.mae - slip_cost - costs.commission
                 assert abs(t.pnl - want) < 0.01, (
                     f"{name}: stop paid {t.pnl:.2f}, excursion implies {want:.2f}")
+            elif t.reason == "be":
+                # A BREAKEVEN EXIT IS NOT FLAT. The stop moved to the entry
+                # fill, so the exit gives back the exit slippage and the
+                # commission and can only be worse than that -- a stop is a
+                # market order and may still slip through its level. Anything
+                # at or above zero here means breakeven was modelled as free.
+                assert t.pnl <= -(slip_cost + costs.commission) + 0.01, (
+                    f"{name}: breakeven exit booked {t.pnl:+.2f}, at best it "
+                    f"costs {-(slip_cost + costs.commission):.2f}")
             elif t.reason == "target":
                 assert t.pnl > 0, f"{name}: losing target exit {t.pnl:+.0f}"
         # 8b. THE FALL FROM THE RUNNING PEAK is what an intraday trailing floor
@@ -912,6 +990,18 @@ def selfcheck():
         assert 600 <= s < 720, f"range_break entered at {t.entry_time}"
     wide = summarise(*backtest(c, "range_break", 1))
     assert wide["signals"] >= len(rb), "narrowing the window added signals"
+    # 9b. BREAKEVEN MUST DO SOMETHING, AND ONLY WHAT IT SAYS. Arming it can only
+    #     turn winners-that-came-back into small losses and losers into smaller
+    #     ones, so it must produce `be` exits that the same run without it does
+    #     not have -- and it must never touch a trade that went straight to its
+    #     target, which is the mistake a trigger tested on the wrong side makes.
+    off, om = backtest(c, "range_break", 1, params={"be_trigger_pct": 0})
+    on, _ = backtest(c, "range_break", 1, params={"be_trigger_pct": 50})
+    assert not any(t.reason == "be" for t in off), "be_trigger_pct=0 still moved a stop"
+    assert any(t.reason == "be" for t in on), "breakeven never triggered"
+    assert (sum(1 for t in on if t.reason == "target")
+            <= sum(1 for t in off if t.reason == "target")), (
+        "breakeven created target exits, which it cannot do")
     # And a consolidation is defined by its width: nothing wider than
     # max_range_ticks may arm. Checked by squeezing the ceiling to the floor,
     # which must leave strictly fewer signals than the default band.
