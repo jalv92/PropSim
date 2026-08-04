@@ -1165,8 +1165,14 @@ def prepare(contract, tf_secs=300, start=None, end=None, rth_only=True,
     # a flat, healthy-looking nothing.
     if strategy is not None and LIBRARY[strategy].full_session:
         rth_only = False
-    full = tp.load_cache(contract)
-    t = tp.slice_range(full, start, end, rth_only=rth_only)
+    # Narrow at load time (Task 5's ranged `load_cache`) so the full tape is
+    # never held alive once the request only wants a slice of it -- and drop
+    # the narrowed-but-still-whole-tape reference the moment slice_range has
+    # produced its own copy, so RTH-only trims (the common case) actually free
+    # the overnight ticks instead of keeping them pinned for the rest of prepare().
+    raw = tp.load_cache(contract, start, end)
+    t = tp.slice_range(raw, start, end, rth_only=rth_only)
+    del raw
     if not len(t["ts"]):
         raise SystemExit("no ticks in that range")
     dayi = tp.day_index(t["ts"])
@@ -1254,6 +1260,29 @@ def backtest(contract, strategy_name, tf_secs=300, start=None, end=None,
                 # balancing -- self-consistent and wrong, the worst kind.
                 commission=costs.commission * float(p.get("contracts", 1)),
                 slippage_ticks=costs.slippage_ticks)
+
+    # THE LEDGER MUST SHOW THE PRICE THAT ACTUALLY TRADED. The ALL tape is
+    # back-adjusted so indicators do not see a multi-hundred-point step at each
+    # roll, but a user checks these fills against NinjaTrader, and an entry
+    # printed hundreds of points below what the screen said that day reads as
+    # a bug. Only entry_price/exit_price are mapped -- pnl/mae/mfe/intra_mdd
+    # are DIFFERENCES and a constant offset cancels in a subtraction; mapping
+    # them too would corrupt them. Imported here rather than at module scope:
+    # `continuous` imports `tape`, and engine importing it at the top either
+    # way makes that circular (see tape.py's own local imports of it).
+    if contract == "ALL" and trades:
+        import continuous as _c
+        cmeta = _c.load_meta()
+        if cmeta and cmeta.get("roll_ts"):
+            entry_ts = np.array([tp.to_net(t.entry_time) for t in trades], np.int64)
+            exit_ts = np.array([tp.to_net(t.exit_time) for t in trades], np.int64)
+            entry_px = np.array([t.entry_price for t in trades], np.float64)
+            exit_px = np.array([t.exit_price for t in trades], np.float64)
+            raw_entry = _c.to_raw(entry_px, entry_ts, cmeta)
+            raw_exit = _c.to_raw(exit_px, exit_ts, cmeta)
+            for t, ep, xp in zip(trades, raw_entry, raw_exit):
+                t.entry_price, t.exit_price = float(ep), float(xp)
+
     return trades, meta
 
 
@@ -1276,11 +1305,10 @@ def summarise(trades, meta):
 
 def selfcheck():
     """Regressions for the traps this engine has actually fallen into."""
-    contracts = tp.cached_contracts()
-    if not contracts:
+    c = tp.sample_contract()
+    if c is None:
         print("no tape cached — run: python3 tape.py --build 'NQ 09-26'")
         return
-    c = contracts[0]
 
     # 1. LOOKAHEAD. ORB's opening range is a TIME window, so its high/low is the
     #    same whether drawn as 1m or 15m bars, and the entry is the tick that

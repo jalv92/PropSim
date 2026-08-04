@@ -607,11 +607,10 @@ def ninjascript_block(res: dict, row: dict) -> str:
 
 
 def selfcheck():
-    contracts = engine.tp.cached_contracts()
-    if not contracts:
+    c = engine.tp.sample_contract()
+    if c is None:
         print("no tape cached — run: python3 tape.py --build 'NQ 09-26'")
         return
-    c = contracts[0]
 
     # 1. Range parsing and grid size.
     k, vals = parse_range("stop_ticks=20:60:10")
