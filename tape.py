@@ -85,13 +85,38 @@ def build_cache(contract: str, nt_root=None, force=False, on_progress=None) -> d
     return arr
 
 
-def load_cache(contract: str) -> dict:
+def load_cache(contract: str, start=None, end=None) -> dict:
+    """The tape, optionally narrowed to a date range as it loads.
+
+    The tape is sorted by time, so a DATE RANGE IS A CONTIGUOUS SLICE and can be
+    resolved with two searchsorted calls on `ts` before the other three arrays
+    are touched. `slice_range` still exists for the RTH filter, which is not
+    contiguous -- but it then runs on the narrowed result rather than on the
+    whole tape. The difference matters at ALL's scale: loading everything and
+    then copying the wanted part peaks at twice 1.5 GB.
+    """
     p = cache_path(contract)
     if not p.exists():
         raise SystemExit(f"{contract} has not been prepared yet. Open the "
                          f"Backtest tab and press “Prepare this contract” once.")
     z = np.load(p)
-    return {k: z[k] for k in ("ts", "px", "vol", "side")}
+    ts = z["ts"]
+    i0, i1 = 0, len(ts)
+    if start or end:
+        epoch = datetime(1970, 1, 1).date()
+        if start:
+            d0 = (datetime.fromisoformat(start).date() - epoch).days
+            i0 = int(np.searchsorted(
+                ts, (np.int64(d0) * 86400 + NET_EPOCH_S) * TPS, "left"))
+        if end:
+            d1 = (datetime.fromisoformat(end).date() - epoch).days + 1
+            i1 = int(np.searchsorted(
+                ts, (np.int64(d1) * 86400 + NET_EPOCH_S) * TPS, "left"))
+    out = {"ts": ts[i0:i1]}
+    del ts
+    for k in ("px", "vol", "side"):
+        out[k] = z[k][i0:i1]
+    return out
 
 
 def cached_contracts() -> list[str]:
@@ -226,9 +251,25 @@ def selfcheck():
     if not contracts:
         print("nothing cached yet — run: python3 tape.py --build 'NQ 09-26'")
         return
-    c = contracts[0]
+    # ALL (~517 MB cached) may now sort first; keep this check fast and
+    # independent of whether the ALL tape has been built by picking a real
+    # contract month instead.
+    c = next((x for x in contracts if x != "ALL"), contracts[0])
     tape = load_cache(c)
     assert (np.diff(tape["ts"]) >= 0).all(), "tape must be time-ordered"
+
+    # Loading a date range must return exactly what loading everything and then
+    # slicing returns. It exists because prepare() otherwise materialises the
+    # whole tape and copies the part it wants: at ALL's 1.5 GB that peaks at
+    # 3.1 GB and does not survive a laptop.
+    lo_d, hi_d, _ = available_range(c)
+    ranged = load_cache(c, start=lo_d, end=lo_d)
+    manual = slice_range(tape, start=lo_d, end=lo_d, rth_only=False)
+    assert len(ranged["ts"]) == len(manual["ts"]), \
+        (len(ranged["ts"]), len(manual["ts"]))
+    assert (ranged["ts"] == manual["ts"]).all(), "ranged load must match slicing"
+    assert (ranged["px"] == manual["px"]).all(), "ranged load lost prices"
+    assert len(load_cache(c, start=hi_d, end=hi_d)["ts"]) > 0, "last day empty"
 
     rth = slice_range(tape, rth_only=True)
     s = sec_of_day(rth["ts"])
