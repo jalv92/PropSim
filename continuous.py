@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import argparse
 
+import numpy as np
+
+import tape
+
 
 ALL = "ALL"
 ROOT = "NQ"                     # ALL stitches this instrument only
@@ -59,6 +63,42 @@ def front_months(daily: dict) -> dict:
     return chosen
 
 
+def second_last(ts: np.ndarray, px: np.ndarray, day: int):
+    """Seconds of one session, and the last price printed in each.
+
+    Bucketed to whole seconds because two contracts never share an exact tick
+    timestamp -- they print independently, microseconds apart.
+    """
+    lo = (np.int64(day) * 86400 + tape.NET_EPOCH_S) * tape.TPS
+    hi = lo + np.int64(86400) * tape.TPS
+    i0, i1 = np.searchsorted(ts, (lo, hi))
+    if i1 <= i0:
+        return np.empty(0, np.int64), np.empty(0, np.float32)
+    s = ts[i0:i1] // tape.TPS
+    last = np.r_[s[1:] != s[:-1], True]          # last tick of each second
+    return s[last], px[i0:i1][last]
+
+
+def measure_roll(old_ts, old_px, new_ts, new_px, day):
+    """The roll spread, measured. Returns (spread, common_seconds).
+
+    Both contracts are in the tape for the same seconds around the roll, so the
+    spread is read off rather than assumed: the median per-second difference on
+    the day they change hands. Measured this way the four rolls on this data
+    come out at +241.75, +250.00, +214.50 and +281.75 with an interquartile
+    range near 2 points, so a guess would have been wrong by tens of points.
+
+    Returns (None, n) when the overlap is too thin to be a measurement.
+    """
+    sa, pa = second_last(old_ts, old_px, day)
+    sb, pb = second_last(new_ts, new_px, day)
+    common = np.intersect1d(sa, sb, assume_unique=True)
+    if len(common) < MIN_OVERLAP_SECONDS:
+        return None, len(common)
+    diff = pb[np.searchsorted(sb, common)] - pa[np.searchsorted(sa, common)]
+    return float(np.median(diff)), len(common)
+
+
 def selfcheck():
     # Contract months in calendar order, with the roll week in the middle.
     # Volume oscillates across the roll -- 12-25 wins day 3, loses day 4, wins
@@ -84,6 +124,30 @@ def selfcheck():
     assert month_key("NQ 09-25") == 2509
     assert month_key("NQ 03-26") == 2603
     assert month_key("NQ 12-25") < month_key("NQ 03-26"), "years must dominate"
+
+    # Two contracts printing in the same seconds on the same day, the new one a
+    # known 241.75 above the old. Ticks land at irregular offsets inside each
+    # second, which is what the real tape looks like -- two contracts never
+    # share an exact tick timestamp, so the match has to be per second.
+    base = (np.int64(20000) * 86400 + tape.NET_EPOCH_S) * tape.TPS      # some day, in .NET ticks
+    day = int(np.int64(20000))
+    secs = np.arange(1000, dtype=np.int64)
+    old_ts = base + secs * tape.TPS + np.int64(3_000_000)
+    new_ts = base + secs * tape.TPS + np.int64(7_000_000)
+    old_px = (23000 + np.sin(secs / 50.0) * 20).astype(np.float32)
+    new_px = (old_px + 241.75).astype(np.float32)
+
+    sp, n = measure_roll(old_ts, old_px, new_ts, new_px, day)
+    assert n == 1000, n
+    assert abs(sp - 241.75) < 0.01, sp
+
+    # Too little overlap is not a measurement.
+    sp2, n2 = measure_roll(old_ts[:50], old_px[:50], new_ts[:50], new_px[:50], day)
+    assert sp2 is None and n2 == 50, (sp2, n2)
+
+    # A different day shares no seconds at all.
+    sp3, n3 = measure_roll(old_ts, old_px, new_ts, new_px, day + 1)
+    assert sp3 is None and n3 == 0, (sp3, n3)
 
     print("selfcheck OK: front months monotone across an oscillating roll")
 
