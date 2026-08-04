@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
 
 import numpy as np
 
@@ -152,6 +154,163 @@ def audit(ts: np.ndarray, px: np.ndarray, rolls: list) -> list:
     return bad
 
 
+def cache_path() -> Path:
+    return tape.CACHE_DIR / f"{ALL}.npz"
+
+
+def meta_path() -> Path:
+    return tape.CACHE_DIR / f"{ALL}.json"
+
+
+def load_meta():
+    try:
+        return json.loads(meta_path().read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def to_raw(px, ts, meta):
+    """Adjusted price -> the price that actually traded.
+
+    The roll table is five numbers in the sidecar, so this costs nothing per
+    tick. Storing an adjustment column would spend 368 MB holding a
+    piecewise-constant function with five distinct values.
+    """
+    if not meta or not meta.get("roll_ts"):
+        return px
+    cum = np.asarray(meta["roll_cum"], np.float64)
+    idx = np.searchsorted(np.asarray(meta["roll_ts"], np.int64), ts, side="right")
+    off = np.r_[cum, 0.0][idx]
+    return (px - off).astype(px.dtype)
+
+
+def contracts_on_disk() -> list:
+    """Cached contracts of the ALL instrument, in calendar order."""
+    return sorted((c for c in tape.cached_contracts()
+                   if c.split()[0] == ROOT and c != ALL and " " in c),
+                  key=month_key)
+
+
+def daily_volume(contract: str) -> dict:
+    """{day_index: volume} for one contract, reading only ts and vol.
+
+    np.savez stores each array separately, so this touches 12 bytes per tick
+    instead of 17 and never holds more than one contract at a time.
+    """
+    z = np.load(tape.cache_path(contract))
+    d = tape.day_index(z["ts"])
+    v = z["vol"].astype(np.float64)
+    u, inv = np.unique(d, return_inverse=True)
+    return dict(zip(u.tolist(), np.bincount(inv, weights=v).tolist()))
+
+
+def build(on_progress=None) -> dict:
+    """Stitch every cached NQ contract into ALL.npz. Writes nothing if the audit fails.
+
+    Two passes, one contract resident at a time. Holding all of them plus the
+    concatenated result at once is roughly 3.4 GB and does not survive a laptop.
+    """
+    cs = contracts_on_disk()
+    if len(cs) < 2:
+        raise SystemExit(f"ALL needs at least two cached {ROOT} contracts, "
+                         f"found {len(cs)}. Prepare them on the Data tab first.")
+
+    total = len(cs) * 2
+    step = [0]
+
+    def tick(ticks=0):
+        step[0] += 1
+        if on_progress:
+            on_progress(step[0], total, ticks)
+
+    daily = {}
+    for c in cs:
+        daily[c] = daily_volume(c)
+        tick()
+
+    front = front_months(daily)
+    mine = {c: sorted(d for d, k in front.items() if k == c) for c in cs}
+
+    parts_ts, parts_px, parts_vol, parts_side = [], [], [], []
+    rolls = []
+    prev_c = None
+    prev_ts = prev_px = None
+
+    for c in cs:
+        days = mine.get(c) or []
+        z = np.load(tape.cache_path(c))
+        ts, px = z["ts"], z["px"]
+        if days and prev_c is not None:
+            # Measure on the first session this contract owns: both it and the
+            # outgoing contract still print there.
+            sp, n = measure_roll(prev_ts, prev_px, ts, px, days[0])
+            rolls.append(dict(day=int(days[0]), **{"from": prev_c, "to": c},
+                              spread=sp, n=int(n)))
+        if days:
+            keep = np.isin(tape.day_index(ts), days)
+            parts_ts.append(ts[keep]); parts_px.append(px[keep])
+            parts_vol.append(z["vol"][keep]); parts_side.append(z["side"][keep])
+            # Keep only the LAST session of this contract for the next roll
+            # measurement, not the whole contract.
+            lastd = days[-1]
+            m = tape.day_index(ts) == lastd
+            prev_ts, prev_px, prev_c = ts[m], px[m], c
+        tick(sum(len(p) for p in parts_ts))
+        del z, ts, px
+
+    ts = np.concatenate(parts_ts); parts_ts.clear()
+    px = np.concatenate(parts_px).astype(np.float64); parts_px.clear()
+    vol = np.concatenate(parts_vol); parts_vol.clear()
+    side = np.concatenate(parts_side); parts_side.clear()
+    order = np.argsort(ts, kind="stable")
+    ts, px, vol, side = ts[order], px[order], vol[order], side[order]
+    del order
+
+    # Back-adjust. The deferred contract trades ABOVE the front, so each roll is
+    # an artificial step UP; removing it raises the OLDER segment to meet the
+    # newer one. adj is therefore POSITIVE going back in time, and the newest
+    # segment is unadjusted -- so recent adjusted prices ARE real prices.
+    usable = [r for r in rolls if r["spread"] is not None]
+    roll_ts, roll_cum = [], []
+    for r in usable:
+        first = (np.int64(r["day"]) * 86400 + tape.NET_EPOCH_S) * tape.TPS
+        roll_ts.append(int(first))
+        px[ts < first] += r["spread"]
+    run = 0.0
+    for r in reversed(usable):
+        run += r["spread"]
+        roll_cum.append(run)
+    roll_cum.reverse()
+
+    px = px.astype(np.float32)
+    fails = audit(ts, px, rolls)
+    if fails:
+        raise SystemExit("ALL was NOT written — the stitch failed its audit:\n  "
+                         + "\n  ".join(fails))
+
+    days_u = np.unique(tape.day_index(ts))
+    meta = dict(
+        contracts=cs, ticks=int(len(ts)), sessions=int(len(days_u)),
+        first=tape.date_str(int(days_u[0])), last=tape.date_str(int(days_u[-1])),
+        roll_ts=roll_ts, roll_cum=roll_cum,
+        rolls=[dict(r, date=tape.date_str(r["day"])) for r in rolls],
+        inputs=fingerprint(),
+    )
+    tape.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    np.savez(cache_path(), ts=ts, px=px, vol=vol, side=side)
+    meta_path().write_text(json.dumps(meta, indent=1))
+    return meta
+
+
+def fingerprint() -> dict:
+    """What ALL was built from, so staleness is a comparison and not a guess."""
+    out = {}
+    for c in contracts_on_disk():
+        p = tape.cache_path(c)
+        out[c] = dict(mtime=int(p.stat().st_mtime), size=int(p.stat().st_size))
+    return out
+
+
 def selfcheck():
     # Contract months in calendar order, with the roll week in the middle.
     # Volume oscillates across the roll -- 12-25 wins day 3, loses day 4, wins
@@ -251,6 +410,22 @@ def selfcheck():
     large_ts, large_px = _tape([23000.0])
     large_px[200:] += 1000.0
     assert audit(large_ts, large_px, ok_rolls), "must reject a large intraday corruption"
+
+    # to_raw undoes the back-adjustment. Adjustment is POSITIVE going back in
+    # time -- the deferred contract trades above the front, so each roll puts an
+    # artificial step UP into the raw series, and removing it means raising the
+    # older segment to meet the newer one. Getting this sign backwards doubles
+    # the step instead of cancelling it, which is what left a 568-point cliff in
+    # the NQData build (286 of real spread plus 282 of wrongly-signed fix).
+    meta = dict(roll_ts=[1000, 2000], roll_cum=[400.0, 150.0])
+    ts_q = np.array([500, 1500, 2500], np.int64)
+    px_q = np.array([100.0, 200.0, 300.0], np.float32)
+    raw = to_raw(px_q, ts_q, meta)
+    assert abs(raw[0] - (100.0 - 400.0)) < 1e-6, raw     # oldest, both rolls
+    assert abs(raw[1] - (200.0 - 150.0)) < 1e-6, raw     # middle, one roll
+    assert abs(raw[2] - 300.0) < 1e-6, raw               # newest, unadjusted
+    assert to_raw(px_q, ts_q, None).tolist() == px_q.tolist(), \
+        "no roll table means no mapping"
 
     print("selfcheck OK: front months monotone across an oscillating roll")
 
