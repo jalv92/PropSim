@@ -99,6 +99,57 @@ def measure_roll(old_ts, old_px, new_ts, new_px, day):
     return float(np.median(diff)), len(common)
 
 
+def audit(ts: np.ndarray, px: np.ndarray, rolls: list) -> list:
+    """Everything that must be true of a stitched tape. [] means sound.
+
+    A mis-stitched tape does not raise. It produces a plausible, wrong
+    backtest, and every number the tool exists to get right is computed on top
+    of it. So the build refuses to write when any of these fails, and last
+    week's tape stays in place.
+    """
+    bad = []
+    if len(ts) < 2:
+        return ["tape is empty"]
+    if not (np.diff(ts) >= 0).all():
+        bad.append("timestamps are not sorted")
+
+    day = tape.day_index(ts)
+    lo, hi = ROLL_BAND
+
+    # A roll-sized step between two consecutive ticks of the SAME session. No
+    # market moves 150 points between prints inside a session; a contract change
+    # does.
+    step = np.abs(np.diff(px.astype(np.float64)))
+    same = np.diff(day) == 0
+    n_mid = int((same & (step >= lo) & (step <= hi)).sum())
+    if n_mid:
+        bad.append(f"{n_mid} roll-sized step(s) inside a session")
+
+    # The strong one: a whole session on the wrong contract. Consecutive
+    # sessions are separated only by the maintenance break, so the adjusted
+    # price barely moves across it -- measured median 8 points, 90th percentile
+    # 33, maximum 134.5. A session a roll spread out of line shows up here even
+    # when the step onto it hid inside an overnight gap, which is exactly how
+    # the morning of 2025-03-18 stayed on the wrong contract undetected during
+    # the NQData build.
+    edges = np.flatnonzero(np.r_[True, np.diff(day) != 0])
+    ends = np.r_[edges[1:] - 1, len(ts) - 1]
+    gaps = np.abs(px[edges[1:]].astype(np.float64) - px[ends[:-1]])
+    over = np.flatnonzero(gaps > SESSION_GAP_LIMIT)
+    if len(over):
+        first = tape.date_str(int(day[edges[1:][over[0]]]))
+        bad.append(f"{len(over)} session gap(s) over {SESSION_GAP_LIMIT:g} pts, "
+                   f"first into {first} ({gaps[over[0]]:.1f} pts)")
+
+    for r in rolls:
+        if r["spread"] is None:
+            bad.append(f"roll on day {r['day']} has no measured spread")
+        elif not lo <= r["spread"] <= hi:
+            bad.append(f"roll {r['from']}->{r['to']} spread {r['spread']:.2f} "
+                       f"is outside {lo:g}-{hi:g}")
+    return bad
+
+
 def selfcheck():
     # Contract months in calendar order, with the roll week in the middle.
     # Volume oscillates across the roll -- 12-25 wins day 3, loses day 4, wins
@@ -155,6 +206,43 @@ def selfcheck():
     # A different day shares no seconds at all.
     sp3, n3 = measure_roll(old_ts, old_px, new_ts, new_px, day + 1)
     assert sp3 is None and n3 == 0, (sp3, n3)
+
+    # A sound two-session tape: one session per day, a small overnight move.
+    def _tape(sess_closes):
+        ts, px = [], []
+        for i, close in enumerate(sess_closes):
+            d = 20000 + i
+            s0 = (np.int64(d) * 86400 + tape.NET_EPOCH_S) * tape.TPS
+            n = 400
+            ts.append(s0 + (36000 + np.arange(n, dtype=np.int64)) * tape.TPS)
+            px.append(np.full(n, close, np.float32))
+        return np.concatenate(ts), np.concatenate(px)
+
+    good_ts, good_px = _tape([23000.0, 23010.0, 23005.0])
+    ok_rolls = [dict(day=20001, **{"from": "NQ 09-25", "to": "NQ 12-25"},
+                     spread=241.75, n=26104)]
+    assert audit(good_ts, good_px, ok_rolls) == [], audit(good_ts, good_px, ok_rolls)
+
+    # A whole session sitting one roll spread out of line. This is the failure
+    # that matters: it does not raise, it just quietly produces a wrong
+    # backtest, and it is invisible to a check that only looks a few ticks ahead
+    # because the step onto it hides in an overnight gap.
+    bad_ts, bad_px = _tape([23000.0, 23010.0 - 241.75, 23005.0])
+    fails = audit(bad_ts, bad_px, ok_rolls)
+    assert any("session" in f for f in fails), fails
+
+    # Out-of-band roll spread.
+    assert audit(good_ts, good_px,
+                 [dict(day=20001, **{"from": "a", "to": "b"},
+                       spread=12.0, n=999)]), "12 points is not a roll"
+
+    # Unsorted time.
+    assert audit(good_ts[::-1], good_px, ok_rolls), "must reject unsorted ts"
+
+    # A roll-sized step INSIDE one session.
+    mid_ts, mid_px = _tape([23000.0])
+    mid_px[200:] += 241.75
+    assert audit(mid_ts, mid_px, ok_rolls), "must reject an intraday roll step"
 
     print("selfcheck OK: front months monotone across an oscillating roll")
 
