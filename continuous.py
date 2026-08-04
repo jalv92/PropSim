@@ -137,6 +137,13 @@ def selfcheck():
     old_px = (23000 + np.sin(secs / 50.0) * 20).astype(np.float32)
     new_px = (old_px + 241.75).astype(np.float32)
 
+    # Add outliers to verify median robustness over mean. Real tape carries bad
+    # prints (trades at stale edges, HFT reprints), so median resists outliers
+    # that would shift a naive mean by several points. With 10 prints ~500 points
+    # above the spread, median stays 241.75 but mean would be ~246.7.
+    outlier_indices = np.array([50, 150, 250, 350, 450, 550, 650, 750, 850, 950], dtype=np.int64)
+    new_px[outlier_indices] += 500.0
+
     sp, n = measure_roll(old_ts, old_px, new_ts, new_px, day)
     assert n == 1000, n
     assert abs(sp - 241.75) < 0.01, sp
