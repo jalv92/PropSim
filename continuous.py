@@ -639,21 +639,80 @@ def selfcheck():
     # contract must return the same trades as the same backtest on that
     # contract alone. If the stitch shifted, dropped or duplicated a session,
     # this is where it shows.
+    #
+    # Two cases, because they exercise different code:
+    #   - newest contract: roll_cum is exactly 0 here, so to_raw's mapping
+    #     branch never runs. Proves the plain pass-through path.
+    #   - oldest contract: its ALL-owned window is back-adjusted by a
+    #     non-zero amount, so this is the one that actually exercises
+    #     to_raw's adjust-then-recover round trip. The riskier of the two.
+    # The oldest contract's own cache keeps printing past the day it hands
+    # off to the next contract (see build()'s comment on prev_lastd) -- its
+    # available_range() would include days ALL no longer sources from it,
+    # which would fail for a reason that has nothing to do with a stitch bug.
+    # So the oldest case is bounded to the days it actually owns: from ALL's
+    # first day to the day before the first roll hands off.
     if cache_path().exists():
         import engine
         m = load_meta()
-        src = m["contracts"][-1]                    # newest contract
-        lo, hi, _ = tape.available_range(src)
-        a, _ = engine.backtest(src, "ma_cross", 300, lo, hi)
-        b, _ = engine.backtest(ALL, "ma_cross", 300, lo, hi)
-        assert len(a) == len(b), f"{src}: {len(a)} trades, ALL: {len(b)}"
-        for x, y in zip(a, b):
-            assert x.entry_time == y.entry_time, (x.entry_time, y.entry_time)
-            assert abs(x.entry_price - y.entry_price) < 0.01, \
-                (x.entry_price, y.entry_price)
-            assert abs(x.pnl - y.pnl) < 0.01, (x.pnl, y.pnl)
-        print(f"  ALL matches {src} trade-for-trade over {lo}..{hi} "
-              f"({len(a)} trades)")
+
+        def equivalence_case(src, lo, hi, label):
+            a, _ = engine.backtest(src, "ma_cross", 300, lo, hi)
+            b, _ = engine.backtest(ALL, "ma_cross", 300, lo, hi)
+            assert len(a) == len(b), f"{src}: {len(a)} trades, ALL: {len(b)}"
+            for x, y in zip(a, b):
+                assert x.entry_time == y.entry_time, (x.entry_time, y.entry_time)
+                assert abs(x.entry_price - y.entry_price) < 0.01, \
+                    (x.entry_price, y.entry_price)
+                assert abs(x.pnl - y.pnl) < 0.01, (x.pnl, y.pnl)
+            print(f"  ALL matches {src} trade-for-trade over {lo}..{hi} "
+                  f"({len(a)} trades) [{label}]")
+
+        newest = m["contracts"][-1]
+        lo, hi, _ = tape.available_range(newest)
+        equivalence_case(newest, lo, hi, "roll_cum=0")
+
+        oldest = m["contracts"][0]
+        lo0 = m["first"]
+        hi0 = tape.date_str(m["rolls"][0]["day"] - 1)   # day before it hands off
+        equivalence_case(oldest, lo0, hi0, "non-zero roll adjustment")
+
+        # THE STRUCTURE OF THE STITCH. Trade-for-trade equality is blind to a
+        # duplicated session: build_bars aggregates by time bucket, so a tick
+        # at a timestamp already present changes no OHLC value and the trade
+        # comparison above passes clean anyway. Check the partition directly
+        # instead: every day in ALL belongs to exactly one contributing
+        # contract, and the ALL tick count on each contract's owned days
+        # matches that contract's own cache tick count on the same days --
+        # a duplication inside the stitch would inflate the first without
+        # moving the second.
+        daily = {c: daily_volume(c) for c in m["contracts"]}
+        front = front_months(daily)
+        mine = {c: set(d for d, k in front.items() if k == c) for c in m["contracts"]}
+        union = set().union(*mine.values())
+        total = sum(len(v) for v in mine.values())
+        assert total == len(union), \
+            f"a session day was claimed by more than one contract ({total} claims, {len(union)} days)"
+
+        z = np.load(cache_path())
+        all_day = tape.day_index(z["ts"])
+        all_days = set(int(d) for d in np.unique(all_day))
+        assert all_days == union, \
+            f"ALL's session days != union of its contracts: {all_days ^ union}"
+        assert len(all_days) == m["sessions"], (len(all_days), m["sessions"])
+
+        for c in m["contracts"]:
+            days_c = mine[c]
+            if not days_c:
+                continue
+            all_n = int(np.isin(all_day, list(days_c)).sum())
+            c_day = tape.day_index(np.load(tape.cache_path(c))["ts"])
+            c_n = int(np.isin(c_day, list(days_c)).sum())
+            assert all_n == c_n, \
+                f"{c}: ALL has {all_n} ticks on its owned days, source cache has {c_n}"
+        print(f"  session-day partition holds: {len(all_days)} days, "
+              f"{len(m['contracts'])} contracts, no day claimed twice, "
+              f"no tick duplicated in the stitch")
 
     print("selfcheck OK: front months monotone across an oscillating roll")
 
