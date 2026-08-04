@@ -206,6 +206,12 @@ def to_datetime(net_ticks):
     return datetime(1, 1, 1) + timedelta(microseconds=int(net_ticks) / 10)
 
 
+def to_net(dt) -> int:
+    """datetime -> .NET ticks. The inverse of to_datetime, to full precision
+    (round-trips exactly since to_datetime itself only carries microseconds)."""
+    return round((dt - datetime(1, 1, 1)) / timedelta(microseconds=1)) * 10
+
+
 def day_index(ts: np.ndarray) -> np.ndarray:
     """Calendar day number per tick (naive ET)."""
     return (ts // TPS - NET_EPOCH_S) // 86400

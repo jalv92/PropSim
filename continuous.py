@@ -436,6 +436,23 @@ def fingerprint() -> dict:
     return out
 
 
+def is_stale():
+    """Does ALL still match the caches it was built from? (stale, why)."""
+    m = load_meta()
+    if not m:
+        return True, "not built yet"
+    if not cache_path().exists():
+        return True, "ALL.npz is missing"
+    now, was = fingerprint(), m.get("inputs") or {}
+    added = sorted(set(now) - set(was))
+    changed = sorted(c for c in set(now) & set(was) if now[c] != was[c])
+    if added:
+        return True, f"new contract(s) cached: {', '.join(added)}"
+    if changed:
+        return True, f"re-parsed since: {', '.join(changed)}"
+    return False, ""
+
+
 def selfcheck():
     # Contract months in calendar order, with the roll week in the middle.
     # Volume oscillates across the roll -- 12-25 wins day 3, loses day 4, wins
@@ -611,6 +628,12 @@ def selfcheck():
     assert holes[0]["from"] == tape.date_str(20007), holes
     assert holes[0]["to"] == tape.date_str(20056), holes
     assert holes[0]["sessions_missing"] == 48, holes
+
+    stale, why = is_stale()
+    assert isinstance(stale, bool) and isinstance(why, str), (stale, why)
+    if cache_path().exists():
+        m = load_meta()
+        assert m and m.get("inputs"), "a built ALL must record what built it"
 
     print("selfcheck OK: front months monotone across an oscillating roll")
 
