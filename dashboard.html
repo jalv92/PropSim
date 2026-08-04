@@ -9,6 +9,14 @@
        where text starts to smear; body text is ~14.6:1 here, which measures
        lower and reads easier. --dimmer was 3.30:1, below the 4.5:1 minimum for
        body text; it is 5.11:1 now. */
+    /* Scrollbars, date pickers and number spinners are drawn by the BROWSER, not
+       by this stylesheet, and their default is light -- which is why every
+       scroll track on a page this dark rendered as a white stripe. One
+       declaration re-skins all of them, and it inherits, so the settings
+       column, the results table and the code panes are covered too. Styling
+       ::-webkit-scrollbar by hand would cover only WebKit, and only the
+       scrollbars. */
+    color-scheme: dark;
     --bg:#0e1013; --panel:#171a1f; --card2:#1d2128; --line:#2b3038;
     --txt:#e8ebef; --dim:#a3acb7; --dimmer:#828c98;
     --green:#4ade80; --red:#ff7b76; --amber:#f5c451;
@@ -20,14 +28,19 @@
   .wrap{max-width:1360px;margin:18px auto;background:var(--bg);
         border:1px solid var(--line);border-radius:14px;padding:18px 20px 22px}
   .tabs{display:flex;gap:8px;margin-bottom:16px}
-  .tab{padding:6px 13px;border-radius:7px;border:1px solid transparent;
-       color:var(--dim);cursor:pointer;font-size:12.5px}
-  .tab.alt{border:1px solid #1d3a52;color:#7fb6e0;background:#0d1a26}
-  /* AFTER .alt on purpose. These two have equal specificity, so source order
-     decides, and with .on first every inactive tab's border overwrote the
-     active one's -- the current tab was the only one you could NOT identify. */
-  .tab.on,.tab.alt.on{color:#0e1013;background:var(--txt);border-color:var(--txt);
-    font-weight:600}
+  /* The frame belongs to EVERY tab, so it lives on .tab itself. It used to be a
+     separate .alt class applied by hand in the markup, and the very first tab
+     was written without it -- so Backtesting sat unframed next to six framed
+     siblings and looked disabled. A style that has to be remembered per element
+     is a style that will be forgotten on the next one added. */
+  .tab{padding:6px 13px;border-radius:7px;cursor:pointer;font-size:12px;
+       text-transform:uppercase;letter-spacing:.07em;font-weight:600;
+       border:1px solid #1d3a52;color:#7fb6e0;background:#0d1a26}
+  /* AFTER the base rule on purpose: with .on first, every inactive tab's border
+     overwrote the active one's and the current tab was the only one you could
+     NOT identify. */
+  .tab.on{color:#0e1013;background:var(--txt);border-color:var(--txt);
+    font-weight:700}
   .tab.off{opacity:.4;cursor:not-allowed}
   .bar{display:flex;align-items:center;justify-content:space-between;gap:12px;
        margin-bottom:14px;flex-wrap:wrap}
@@ -89,7 +102,8 @@
   table.tr th{position:sticky;top:0;background:var(--bg);color:var(--dim);
     text-align:right;padding:5px 8px;font-weight:500;font-size:10.5px;
     text-transform:uppercase;letter-spacing:.06em}
-  table.tr td{text-align:right;padding:4px 8px;border-top:1px solid #17191b}
+  table.tr td{text-align:right;padding:4px 8px;border-top:1px solid #17191b;
+    white-space:nowrap}
   table.tr td:first-child,table.tr th:first-child{text-align:left}
   /* The `hidden` attribute works through a UA rule ([hidden]{display:none})
      with the lowest possible specificity, so an INLINE display would silently
@@ -106,6 +120,13 @@
   .an-settings > label{display:flex;justify-content:space-between;align-items:center;
     gap:8px;margin:4px 0;font-size:13px}
   .an-settings > label input,.an-settings > label select{width:170px}
+  /* One control in this column carries a genuinely long value -- an account
+     name plus its trade count -- and 170px truncated it to "my account MFFU…".
+     It gets the full width and its own line instead. */
+  .an-settings > label.wide{display:block}
+  .an-settings > label.wide select{width:100%;max-width:none;margin-top:4px}
+  ul.unmod{margin:6px 0 4px;padding-left:16px}
+  ul.unmod li{margin:3px 0;line-height:1.35}
   .an-badge{display:flex;align-items:center;gap:8px;min-height:30px;margin:2px 0 6px}
   .an-logo{max-height:26px;max-width:170px;object-fit:contain}
   .an-mono{display:inline-flex;align-items:center;justify-content:center;
@@ -115,6 +136,20 @@
   .an-derived{border-top:1px solid var(--line,#333);margin-top:8px;padding-top:8px;
     font-size:12px}
   .an-derived div{display:flex;justify-content:space-between;margin:2px 0}
+  /* The rows in this block are label-left/value-right flex pairs, but a warning
+     is prose plus a list -- as a flex container it laid its heading, its bullets
+     and its caption out as three columns about six characters wide. */
+  .an-derived div.warn{display:block}
+  .eqwrap{position:relative}
+  .eqtip{position:absolute;pointer-events:none;z-index:5;min-width:190px;
+    background:#12161c;border:1px solid var(--line);border-radius:9px;
+    padding:9px 11px;font-size:12px;box-shadow:0 8px 26px rgba(0,0,0,.55)}
+  .eqtip-h{color:var(--dim);font-size:11px;letter-spacing:.06em;
+    text-transform:uppercase;margin-bottom:6px}
+  .eqtip div{display:flex;align-items:center;gap:7px;line-height:1.9;
+    white-space:nowrap}
+  .eqtip b{margin-left:auto;font-family:var(--mono)}
+  .eqtip i{width:7px;height:7px;border-radius:50%;flex:none}
   .eq{width:100%;height:auto;display:block;background:var(--panel);
     border:1px solid var(--line);border-radius:10px;margin:10px 0 16px}
   .ax{font-size:10.5px;font-family:var(--mono)}
@@ -151,16 +186,15 @@
 <div class="wrap">
   <div class="tabs">
     <div class="tab on"  data-p="analyzer">Backtesting</div>
-    <div class="tab alt" data-p="prop">Prop Firm</div>
-    <div class="tab alt" data-p="mc">Risk &amp; Monte Carlo</div>
-    <div class="tab alt" data-p="optimize">Optimize</div>
-    <div class="tab alt" data-p="ai">AI author</div>
-    <div class="tab alt" data-p="imported">Imported</div>
-    <div class="tab alt" data-p="trials">Trials</div>
-    <div class="tab alt" data-p="data">Data</div>
+    <div class="tab" data-p="optimize">Optimize</div>
+    <div class="tab" data-p="mc">Risk &amp; Monte Carlo</div>
+    <div class="tab" data-p="ai">AI author</div>
+    <div class="tab" data-p="imported">Imported</div>
+    <div class="tab" data-p="trials">Trials</div>
+    <div class="tab" data-p="data">Data</div>
   </div>
 
-  <div id="pane-prop" hidden>
+  <div id="pane-mc" hidden>
     <div class="bar">
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <select id="firm"></select>
@@ -207,22 +241,28 @@
     <div class="foot" id="foot">Ready.</div>
   </div>
 
-  <div id="pane-mc" hidden>
-    <div class="panebody" id="mcBody"></div>
-  </div>
-
   <div id="pane-analyzer">
     <div class="panebody an-wrap">
       <div class="an-report">
         <div class="row">
-          <button id="an_raw" class="mini primary">Raw backtest</button>
-          <button id="an_prop" class="mini">Prop-firm reality</button>
+          <label style="display:flex;align-items:center;gap:8px;margin:0">
+            <span class="hint">Display</span>
+            <select id="an_display" style="max-width:220px">
+              <option value="raw">Summary ($)</option>
+              <option value="daily">Analysis — daily ($)</option>
+              <option value="prop">Prop-firm reality</option>
+            </select></label>
         </div>
+        <div id="an_fwd" hidden></div>
         <div id="an_report"><p class="hint">Choose an account and press Run.</p></div>
       </div>
 
       <div class="an-settings">
         <h4>General</h4>
+        <label class="wide">Trade source <select id="an_source"
+          title="a PropSim strategy over the tape, or a trade list you already have">
+          <option value="">PropSim strategy (backtest)</option></select></label>
+        <div id="an_srcnote" class="hint"></div>
         <label>Backtest type
           <select id="an_bttype" disabled title="parameter sweeps live on the Optimize tab">
             <option>Backtest</option></select></label>
@@ -265,8 +305,8 @@
 
         <div class="row" style="justify-content:flex-end;margin-top:12px">
           <button id="an_score" class="mini" disabled
-                  title="send this run to the Prop Firm tab as its trade source"
-                  >Send to Prop Firm</button>
+                  title="send this run to Risk &amp; Monte Carlo as its trade source"
+                  >Send to Monte Carlo</button>
           <button id="an_run" class="primary">Run</button>
         </div>
       </div>
@@ -275,18 +315,16 @@
 
   <div id="pane-optimize" hidden>
     <div class="panebody">
-      <p>Sweep parameter ranges over your own tick data, rank the results, and take
-      the winning values to NinjaTrader. A 200-combination sweep over 28 sessions
-      runs in about half a minute here.</p>
+      <p>Optimizer — search parameter ranges over your own tick data, rank the
+      results, and take the winning values to NinjaTrader. A 200-combination
+      run over 28 sessions takes about four seconds here.</p>
 
-      <div class="warn"><b>Every combination is a trial, and the ledger is told
-      so.</b> The winner is judged against the best t-statistic that <i>pure
-      noise</i> reaches over that many trials — the best of 200 null searches
-      reaches 2.74 by chance. A sweep therefore buys speed and spends credibility;
-      the wider the grid, the higher the bar its own winner has to clear.
-      P(pass) is never the objective here: the search ranks on the cluster-robust
-      daily t-statistic, and the prop-firm Monte Carlo runs afterwards, on a
-      result, never inside the search.</div>
+      <!-- Reserved for errors. The standing explanation of the multiple-testing
+           cost used to live here; it is not gone, it moved to where it is acted
+           on: the combination counter under the ranges states the noise ceiling
+           this grid will have to clear BEFORE the run, and the results header
+           repeats it against the trial count afterwards. -->
+      <div class="warn" id="op_err" hidden></div>
 
       <div class="row">
         <label>Market data <select id="op_contract"></select>
@@ -308,6 +346,16 @@
       to hold it at its default.</p>
 
       <div class="row">
+        <label>Prop firm account <select id="op_firm"></select></label>
+        <label><select id="op_variant"></select></label>
+        <label><select id="op_phase"></select></label>
+        <label><select id="op_size"></select></label>
+        <label>Contracts <input type="number" id="op_contracts" value="1" min="1"
+               max="50" step="1" style="width:60px"></label>
+      </div>
+      <p class="hint" id="op_acctnote" style="margin:-4px 0 12px"></p>
+
+      <div class="row">
         <label>Slippage <input type="number" id="op_slip" value="2" step="0.5"
                min="0" max="20" style="width:70px"><span class="hint">ticks each way</span></label>
         <label>Commission <input type="number" id="op_comm" value="5" step="0.5"
@@ -324,12 +372,14 @@
         <div id="op_head" style="margin-top:18px"></div>
         <div class="sec">
           <h3>Results</h3>
+          <p class="hint" id="op_acct_summary"></p>
           <div id="op_table" style="max-height:460px;overflow:auto"></div>
         </div>
         <div class="sec">
           <div style="display:flex;justify-content:space-between;align-items:baseline">
             <h3>Take it to NinjaTrader</h3>
-            <button id="op_score" class="primary">Score the winner against a prop firm →</button>
+            <button id="op_score" class="primary"
+                    title="load the winning parameters into Backtesting and run them on sessions the search never saw">Forward-test →</button>
           </div>
           <p class="hint">Paste this into your NinjaScript <code>State.SetDefaults</code>
           block. The caveats are inside the snippet on purpose — a parameter set
@@ -883,6 +933,16 @@ async function anInit(){
   $("#an_phase").onchange = anSizes;
   $("#an_size").onchange = anRules;
   await anFirm();
+
+  // The trade sources. `loadAccounts` fills ACCOUNTS/NTSTRATS for the Monte
+  // Carlo screen and IMPORTS only ever loaded when the Imported tab was opened,
+  // so both are fetched here rather than assumed -- an empty picker that is
+  // empty because nobody asked is indistinguishable from one with nothing in it.
+  $("#an_source").onchange = ()=>{ anSourceChanged(); };
+  await loadAccounts();
+  await fetch("/api/imports").then(r=>r.json())
+    .then(d=>{ IMPORTS = d.runs || []; }).catch(()=>{});
+  anSources();
 }
 
 function anPluginNote(dir){
@@ -908,7 +968,15 @@ function anParams(){
 function anContract(){
   const c = (AN.tape||[]).find(x=>x.contract===$("#an_contract").value);
   const note = $("#an_prep");
-  $("#an_run").disabled = !(c && c.ready);
+  // Run is gated on a prepared TAPE, because a strategy has nothing to run over
+  // without one. A trade list that already exists needs no tape at all, so the
+  // gate does not apply to it -- leaving it in place disabled Run for every
+  // external source whenever the contract happened to be an unprepared one,
+  // with the button simply dead and nothing on screen saying why.
+  const external = $("#an_source") && !!$("#an_source").value;
+  $("#an_run").disabled = !external && !(c && c.ready);
+  if(external){ note.innerHTML = ""; $("#an_range").textContent =
+      c ? (c.ready ? `${c.first} .. ${c.last}` : "—") : "—"; return; }
   if(!c){ $("#an_range").textContent = "—"; note.innerHTML = ""; return; }
   $("#an_range").textContent = c.ready ? `${c.first} .. ${c.last}`
                                        : `${c.raw_first} .. ${c.raw_last}, not prepared`;
@@ -942,6 +1010,71 @@ function anPrepare(c){
   });
   es.addEventListener("error", ()=>{ es.close();
     note.innerHTML = '<div class="warn">Could not prepare this contract.</div>'; });
+}
+
+/* ---------- the account picker, one definition, two mounts ----------------
+   Firm -> plan -> phase -> size, cascading from what EXISTS rather than from a
+   cross product. Written once because the Optimize tab needs exactly the same
+   four dropdowns as Backtesting, and a copy would have drifted on the details
+   that are easy to miss: plans grouped so a firm selling one plan across two
+   phases appears once, the ones a trader cannot buy sorted last, and the phase
+   option carrying the `variant|phase` slug pair it resolves to. */
+const acctKey  = c   => c.plan + (c.plan_note ? " — " + c.plan_note : "");
+const acctPair = pre => ($("#"+pre+"_phase").value || "|").split("|");
+
+async function acctFirms(pre, state){
+  const r = await (await fetch("/api/rules")).json();
+  state.firms = r.firms || [];
+  $("#"+pre+"_firm").innerHTML = state.firms.map(f=>
+    `<option value="${esc(f.key)}">${esc(f.display)}</option>`).join("");
+}
+
+async function acctFirm(pre, state, onChange){
+  const r = await (await fetch("/api/rules?firm="+
+    encodeURIComponent($("#"+pre+"_firm").value))).json();
+  state.combos = r.combos || [];
+  const seen = new Set(), vs = [];
+  for(const c of state.combos){
+    const k = acctKey(c);
+    if(!seen.has(k)){ seen.add(k); vs.push(c); }
+  }
+  // What a trader can actually buy goes first, and the list opens on one.
+  vs.sort((a, b) => (a.plan_note ? 1 : 0) - (b.plan_note ? 1 : 0)
+                    || a.plan.localeCompare(b.plan));
+  $("#"+pre+"_variant").innerHTML = vs.map(c=>
+    `<option value="${esc(acctKey(c))}">${esc(acctKey(c))}</option>`).join("");
+  return acctPhases(pre, state, onChange);
+}
+
+function acctPhases(pre, state, onChange){
+  const k = $("#"+pre+"_variant").value;
+  const seen = new Set(), ps = [];
+  for(const c of state.combos||[]){
+    const id = c.variant + "|" + c.phase;
+    if(acctKey(c)===k && !seen.has(id)){ seen.add(id); ps.push(c); }
+  }
+  $("#"+pre+"_phase").innerHTML = ps.map(c=>
+    `<option value="${c.variant}|${c.phase}">${esc(c.phase_label)}</option>`).join("");
+  return acctSizes(pre, state, onChange);
+}
+
+function acctSizes(pre, state, onChange){
+  const [v, p] = acctPair(pre);
+  const ss = [...new Set((state.combos||[])
+    .filter(c=>c.variant===v && c.phase===p).map(c=>c.size))].sort((a,b)=>a-b);
+  $("#"+pre+"_size").innerHTML = ss.map(s=>
+    `<option value="${s}">$${s.toLocaleString()}</option>`).join("");
+  return onChange && onChange();
+}
+
+function acctMount(pre, state, onChange){
+  $("#"+pre+"_firm").onchange    = ()=>acctFirm(pre, state, onChange);
+  // Each level rebuilds the ones below it; only Size, the leaf, goes straight
+  // to the consumer. Binding all three to the leaf handler once re-fetched
+  // rules for a combination whose Phase and Size lists had not been rebuilt yet.
+  $("#"+pre+"_variant").onchange = ()=>acctPhases(pre, state, onChange);
+  $("#"+pre+"_phase").onchange   = ()=>acctSizes(pre, state, onChange);
+  $("#"+pre+"_size").onchange    = ()=>onChange && onChange();
 }
 
 async function anFirm(){
@@ -1044,8 +1177,34 @@ async function anRules(){
      ["Daily loss limit", money(R.daily_loss_limit)],
      ["Max contracts", R.max_contracts ?? "—"]]
     .map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join("")
-    + (R.warnings||[]).map(w=>`<div class="warn">${w}</div>`).join("");
+    // Everything EXCEPT the "n rule(s) not modelled" line, which is replaced
+    // below by the same count with the rules actually named under it.
+    + (R.warnings||[]).filter(w=>!/not modelled by the simulator/.test(w))
+        .map(w=>`<div class="warn">${esc(w)}</div>`).join("")
+    + anUnmodelled(R.unmodeled||[]);
 }
+
+function anUnmodelled(list){
+  // A COUNT IS HALF A SENTENCE. "3 rule(s) not modelled" reads the same whether
+  // the three are administrative formalities that cannot touch a verdict --
+  // MFF Builder's account limit, payout cap and inactivity clause -- or the
+  // mechanism the verdict rests on, which is what MFF Rapid's "intraday
+  // trailing on equity incl. unrealized" is. Same firm, same badge, opposite
+  // meaning. Naming them is the difference between a disclosure and a shrug.
+  if(!list.length) return "";
+  return `<div class="warn"><b>${list.length} rule(s) not modelled by the
+    simulator</b><ul class="unmod">`
+    + list.map(u=>`<li>${esc(u)}</li>`).join("")
+    + `</ul><div class="hint" style="display:block">Everything above IS modelled.
+      These are the ones the verdict does not account for — read them before
+      trusting it.</div></div>`;
+}
+
+// Rule text is not ours. `prop_rules.json` is refreshed over the network from a
+// public repo (see prop_rules.update_rules), so its strings are remote content
+// going into innerHTML. Escaped where this file renders them.
+const esc = s => String(s).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
 const anMoney = v => v==null ? "—"
   : (v<0?"-":"+")+"$"+Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,
@@ -1053,6 +1212,54 @@ const anMoney = v => v==null ? "—"
 const anNum = (v,d=2) => v==null ? "—"
   : (v===Infinity ? "∞" : v.toFixed(d));
 const anPct = v => v==null ? "—" : (100*v).toFixed(1)+"%";
+
+// The Backtesting tab's own copy of the trade-source picker. Same sources the
+// Monte Carlo offers -- they are resolved by one function on the server, so a
+// source that works on one screen works on the other.
+function anSources(){
+  // SHORT in the option, FULL underneath. This picker sits in a 340px column,
+  // not in the wide bar the Monte Carlo screen has, so the Monte Carlo's label
+  // format truncated to "my account MFFU…" and every account looked the same.
+  // The detail moves to the note, which has the whole column to say it in.
+  const opts = ['<option value="">PropSim strategy (backtest)</option>']
+    .concat((NTSTRATS||[]).map(d=>
+      `<option value="__strategy:${d.strategy_id}" data-full="strategy ${d.strategy} — `
+      + `${d.n} trades${d.is_replay?", Playback":""}, account ${d.account}">`
+      + `${d.strategy} · ${d.n}${d.is_replay?" · Playback":""}</option>`))
+    .concat((ACCOUNTS||[]).map(d=>{
+      const m=d.match;
+      const tag = m ? (m.firm.replace(/_/g," ")+(m.phase?" / "+m.phase:"")) : "unmatched";
+      return `<option value="${d.account}" data-full="my account ${d.account} — `
+        + `${d.n} trades, ${tag}">${d.account} · ${d.n}</option>`;
+    }))
+    .concat((IMPORTS||[]).map(m=>
+      `<option value="__import:${m.run_id}" data-full="NinjaTrader run — `
+      + `${m.strategy}, ${m.n_trades} trades">NT8 run · ${m.strategy} · `
+      + `${m.n_trades}</option>`));
+  const keep = $("#an_source").value;
+  $("#an_source").innerHTML = opts.join("");
+  if([...$("#an_source").options].some(o=>o.value===keep)) $("#an_source").value = keep;
+  anSourceChanged();
+}
+
+function anSourceChanged(){
+  const external = !!$("#an_source").value;
+  // Greyed rather than hidden: a control that vanishes reads as a bug, and the
+  // user needs to see WHY it stopped applying.
+  ["an_strategy","an_bttype","an_contract","an_tf","an_start","an_end",
+   "an_comm","an_slip","an_measure"].forEach(id=>{
+    const e = $("#"+id); if(e) e.disabled = external; });
+  const ps = $("#an_params"); if(ps) ps.style.opacity = external ? ".35" : "";
+  if(ps) ps.querySelectorAll("input,select").forEach(e=>e.disabled = external);
+  anContract();          // re-evaluates the Run gate for the new source
+  const opt = $("#an_source").selectedOptions[0];
+  $("#an_srcnote").innerHTML = external
+    ? `<b>${(opt && opt.dataset.full) || ""}</b><br>These trades already exist, so `
+      + "the strategy, the tape, the timeframe and the cost settings do not apply — "
+      + "they describe how trades are made. The prop-firm account and the contract "
+      + "multiplier still do."
+    : "";
+}
 
 async function anRun(){
   const q = new URLSearchParams({contract:$("#an_contract").value,
@@ -1062,12 +1269,26 @@ async function anRun(){
     slippage:$("#an_slip").value, firm:$("#an_firm").value,
     variant:anPair()[0], phase:anPair()[1],
     size:$("#an_size").value});
-  for(const p of ((AN.strategies[$("#an_strategy").value]||{}).params||[]))
+  // An external trade list already exists: the strategy, the tape, the timeframe
+  // and the costs describe how trades are PRODUCED, and none of them applies to
+  // trades that were produced elsewhere. Sending them anyway would put settings
+  // on screen that silently did nothing to the answer.
+  const src = $("#an_source").value;
+  if(src) q.set("account", src);
+  else for(const p of ((AN.strategies[$("#an_strategy").value]||{}).params||[]))
     q.set("p_"+p.key, $("#an_p_"+p.key).value);
 
   $("#an_run").disabled = true;
+  // A forward-test note describes ONE run. The next run is not that run.
+  if($("#an_fwd")) $("#an_fwd").hidden = true;
   $("#an_report").innerHTML = '<p class="hint">running…</p>';
-  const es = new EventSource("/api/analyzer?"+q);
+  // CLOSE THE PREVIOUS STREAM FIRST. Each run opened a new EventSource and only
+  // ever closed it from its own result/error handler, so a run abandoned before
+  // either -- pressing Run again while one is in flight -- leaked the socket.
+  // A browser allows six connections per host: the sixth Run wedged the page
+  // with no error anywhere, because the request was queued and never sent.
+  if(AN.es) { try { AN.es.close(); } catch(_){} }
+  const es = AN.es = new EventSource("/api/analyzer?"+q);
   es.addEventListener("progress", e=>{
     $("#an_report").innerHTML =
       '<p class="hint">'+JSON.parse(e.data).stage+'…</p>'; });
@@ -1085,15 +1306,62 @@ async function anRun(){
 
 function anRender(){
   const R = AN.report; if(!R) return;
-  $("#an_raw").classList.toggle("primary", AN.view!=="prop");
-  $("#an_prop").classList.toggle("primary", AN.view==="prop");
+  if($("#an_display").value !== AN.view) $("#an_display").value = AN.view;
   if(!R.has_trades){
     $("#an_report").innerHTML =
       '<div class="warn">No trades in this range. There is nothing to judge, '
       + 'so no account verdict is given.</div>';
     return;
   }
-  $("#an_report").innerHTML = AN.view==="prop" ? anProp(R) : anGrid(R);
+  $("#an_report").innerHTML = AN.view==="prop" ? anProp(R)
+                            : AN.view==="daily" ? anDaily(R) : anGrid(R);
+  // The chart only exists on the prop view, and only once it is in the DOM.
+  if(AN.view==="prop") anHover();
+}
+
+function anDaily(R){
+  // NinjaTrader's Analysis view at Period=Daily. The summary answers "was this
+  // strategy any good"; this answers "which day did that come from", which is
+  // the question a prop account actually lives or dies on -- one session is the
+  // unit the drawdown floor and the daily loss limit are measured in.
+  const d = R.daily || [];
+  if(!d.length) return '<div class="warn">No sessions to break down.</div>';
+  const COLS = [
+    ["Date",        r=>r.date,                 "l"],
+    ["#",           r=>r.trades,               ""],
+    ["Cum. net",    r=>anMoney(r.cum_net),     "m"],
+    ["Net profit",  r=>anMoney(r.net_profit),  "m"],
+    ["Gross profit",r=>anMoney(r.gross_profit),"m"],
+    ["Gross loss",  r=>anMoney(r.gross_loss),  "m"],
+    ["Commission",  r=>anMoney(r.commission),  "m"],
+    ["Cum. max DD", r=>anMoney(r.cum_max_drawdown), "m"],
+    ["Max. draw",   r=>anMoney(r.max_drawdown),"m"],
+    ["% Win",       r=>anPct(r.pct_profitable),""],
+    ["Avg. trade",  r=>anMoney(r.avg_trade),   "m"],
+    ["Avg. winner", r=>anMoney(r.avg_win),     "m"],
+    ["Avg. loser",  r=>anMoney(r.avg_loss),    "m"],
+    ["Lrg. winner", r=>anMoney(r.largest_win), "m"],
+    ["Lrg. loser",  r=>anMoney(r.largest_loss),"m"],
+    ["Avg. MAE",    r=>anMoney(r.avg_mae),     "m"],
+    ["Avg. MFE",    r=>anMoney(r.avg_mfe),     "m"],
+    ["Avg. ETD",    r=>anMoney(r.avg_etd),     "m"],
+    ["Max. fall",   r=>anMoney(r.max_fall),    "m"],
+    ["% Trade",     r=>anPct(r.pct_of_trades), ""],
+  ];
+  const body = d.map(r=>"<tr>" + COLS.map(([, get, kind])=>{
+    const v = get(r);
+    const neg = kind==="m" && typeof v==="string" && v.trim().startsWith("-");
+    return `<td class="${neg?"r":""}">${v}</td>`;
+  }).join("") + "</tr>").join("");
+  return `<div style="overflow:auto;max-height:520px">
+    <table class="tr"><tr>${COLS.map(c=>`<th>${c[0]}</th>`).join("")}</tr>
+    ${body}</table></div>
+   <p class="hint"><b>Max. fall</b> is PropSim's own column and has no
+    NinjaTrader equivalent: the deepest fall from a running peak <i>inside</i> a
+    trade that day. A day that closed green can still have come within a few
+    dollars of the drawdown floor, and that is the column that says so.
+    <b>Cum. max DD</b> is walked trade by trade, not from daily closes, so a day
+    that ran up and gave it back is counted where it happened.</p>`;
 }
 
 function anGrid(R){
@@ -1211,7 +1479,84 @@ function anEquity(ch, died){
    <text x="8" y="${(Y(lo+pad)+4).toFixed(1)}" class="ax" fill="var(--dimmer)">${money(lo+pad)}</text>
    <text x="${P.l}" y="${H-9}" class="ax" fill="var(--dimmer)">${L[0].date}</text>
    <text x="${W-P.r-64}" y="${H-9}" class="ax" fill="var(--dimmer)">${(A[A.length-1]||L[L.length-1]).date}</text>
+   <line id="eq_guide" x1="0" y1="${P.t}" x2="0" y2="${H-P.b}" stroke="var(--dim)"
+     stroke-width="1" stroke-dasharray="4 4" opacity="0"/>
+   <circle id="eq_dot" cx="0" cy="0" r="4" fill="var(--txt)" opacity="0"/>
   </svg>`;
+}
+
+// Every day of the curve, in the order it is drawn, so the hover can name one.
+// Built where the geometry is, because a tooltip that computes its own x from a
+// second copy of the layout is a tooltip that drifts the day either changes.
+function anCurvePoints(ch){
+  const L=ch.lived||[], A=ch.after||[];
+  const pts = L.map(p=>({...p, real:true}))
+    .concat(A.slice(1).map(p=>({...p, floor:null, real:false})));
+  let prev = ch.start;
+  pts.forEach(p=>{ p.day_pnl = p.balance - prev; prev = p.balance; });
+  return pts;
+}
+
+function anHover(){
+  const svg = $("#an_report svg.eq"); if(!svg) return;
+  const ch = (AN.report.prop||{}).chart; if(!ch) return;
+  const pts = anCurvePoints(ch);
+  if(pts.length < 2) return;
+  const W=880, P={l:74,r:18};
+  const X = i => P.l + i*(W-P.l-P.r)/Math.max(pts.length-1,1);
+  // The balance is drawn as TWO polylines -- the days the account lived, then a
+  // dotted tail for the ones it did not -- and the tail starts by repeating the
+  // last real point. Reading "the last polyline" would put the dot on the wrong
+  // curve for every fiction day. Collect the y of each drawn point once, in the
+  // same order `pts` is in, and index straight into it.
+  const polys = [...svg.querySelectorAll("polyline")];
+  const real = polys[polys.length-1], fict = polys.length>2 ? polys[polys.length-2] : null;
+  const ysOf = el => (el.getAttribute("points")||"").trim().split(/\s+/)
+                     .map(s=>parseFloat(s.split(",")[1]));
+  const ys = ysOf(real).concat(fict ? ysOf(fict).slice(1) : []);
+  const tip = document.createElement("div");
+  tip.className = "eqtip"; tip.hidden = true;
+  svg.parentNode.appendChild(tip);
+  const guide = svg.querySelector("#eq_guide"), dot = svg.querySelector("#eq_dot");
+  const money = v => "$"+v.toLocaleString(undefined,{minimumFractionDigits:2,
+                                                     maximumFractionDigits:2});
+
+  svg.addEventListener("mousemove", ev=>{
+    // The SVG scales to its container, so a client x means nothing until it is
+    // mapped back through the viewBox it was laid out in.
+    const box = svg.getBoundingClientRect();
+    const vx = (ev.clientX - box.left) * W / box.width;
+    let i = 0, best = Infinity;
+    pts.forEach((p, k)=>{ const d = Math.abs(X(k) - vx); if(d < best){best=d; i=k;} });
+    const p = pts[i], px = X(i);
+    guide.setAttribute("x1", px); guide.setAttribute("x2", px);
+    guide.setAttribute("opacity", ".55");
+    // The dot rides the balance line; its y comes from what the chart actually
+    // drew rather than from a second copy of the scale, so the two cannot drift.
+    if(ys[i] != null && !isNaN(ys[i])){
+      dot.setAttribute("cx", px); dot.setAttribute("cy", ys[i]);
+      dot.setAttribute("opacity", "1");
+    }
+    tip.hidden = false;
+    tip.innerHTML =
+      `<div class="eqtip-h">${p.date}${p.real?"":" · account had ended"}</div>`
+      + (ch.target ? `<div><i style="background:var(--green)"></i>Profit target
+          <b>${money(ch.target)}</b></div>` : "")
+      + `<div><i style="background:var(--amber)"></i>Balance
+          <b>${money(p.balance)}</b></div>`
+      + (p.floor==null ? "" : `<div><i style="background:var(--red)"></i>Minimum balance
+          <b>${money(p.floor)}</b></div>`)
+      + `<div><i style="background:${p.day_pnl<0?"var(--red)":"var(--green)"}"></i>That day
+          <b>${(p.day_pnl<0?"-":"+")+money(Math.abs(p.day_pnl))}</b></div>`;
+    // Flip to the left near the right edge so the card never leaves the chart.
+    const frac = px / W, w = tip.offsetWidth || 200;
+    tip.style.left = (frac > .62 ? (box.width*frac - w - 14) : (box.width*frac + 14)) + "px";
+    tip.style.top = "18px";
+  });
+  svg.addEventListener("mouseleave", ()=>{
+    tip.hidden = true;
+    guide.setAttribute("opacity", "0"); dot.setAttribute("opacity", "0");
+  });
 }
 
 function anProp(R){
@@ -1234,7 +1579,7 @@ function anProp(R){
     : null;
   return `<h3>${verdict}</h3>
   <p class="hint">${r.account}</p>
-  ${p.chart ? anEquity(p.chart, r.outcome==="busted") : ""}
+  ${p.chart ? `<div class="eqwrap">${anEquity(p.chart, r.outcome==="busted")}</div>` : ""}
   <table>
     ${r.reason ? `<tr><td>Rule</td><td>${r.reason}</td></tr>` : ""}
     ${r.date ? `<tr><td>When</td><td>${r.date} · day ${r.day}`
@@ -1254,9 +1599,22 @@ function anProp(R){
   </table>
   ${R.over_cap ? '<div class="warn">This run uses more contracts than the '
     + 'account allows, so it no longer describes that account.</div>' : ""}
-  ${p.fidelity==="bounded" ? '<div class="warn">At least one trade had no '
-    + 'recorded intra-trade path, so its fall was taken at its upper bound. '
-    + 'At size that is not a near miss.</div>' : ""}
+  ${p.fidelity!=="bounded" ? "" :
+    (R.path_bounded >= (R.meta.trades||R.grid.all.trades)
+      // EVERY trade was judged on a bound, which is what a trade list read out
+      // of NinjaTrader always looks like: it stores MinPrice and MaxPrice and
+      // nothing about the order they arrived in. The verdict above is then the
+      // WORST the account could have done, not what it did -- and "BROKE THE
+      // ACCOUNT" in that type size reads as a fact unless this says otherwise.
+      ? '<div class="warn"><b>This verdict is an upper bound, not a '
+        + 'measurement.</b> NinjaTrader records how far each trade went in each '
+        + 'direction but nothing about the path between, so every fall here was '
+        + 'taken at its widest possible value. A real breach is at most this '
+        + 'bad and may not have happened at all. To measure it, run the strategy '
+        + 'against the tape on this tab, or import the run with the nt8 add-on.</div>'
+      : `<div class="warn">${R.path_bounded} trade(s) had no recorded `
+        + 'intra-trade path, so their fall was taken at its upper bound. '
+        + 'At size that is not a near miss.</div>')}
   <h4>Projection — ${j.sims.toLocaleString()} resampled futures</h4>
   <table>
     <tr><td>P(pass)</td><td>${anNum(j.p_pass,3)}</td></tr>
@@ -1272,8 +1630,9 @@ function anProp(R){
 }
 
 $("#an_run") && ($("#an_run").onclick = anRun);
-// The bridge that used to live on the old Backtest tab: this run becomes the
-// Prop Firm tab's trade source. Without it that source has no way to appear.
+// This run becomes a trade source for Risk & Monte Carlo. The reverse bridge --
+// scoring an existing trade list against the RULES -- is the source picker at
+// the top of this tab's settings; the two directions are now symmetric.
 $("#an_score") && ($("#an_score").onclick = ()=>{
   if(!AN.report) return;
   let o=[...$("#account").options].find(x=>x.value==="__backtest");
@@ -1282,17 +1641,18 @@ $("#an_score") && ($("#an_score").onclick = ()=>{
   const m=AN.report.meta||{};
   o.textContent = `backtest — ${m.label||m.strategy}, ${AN.report.grid.all.trades} trades`;
   $("#account").value="__backtest";
-  document.querySelector('.tab[data-p="prop"]').click();
+  document.querySelector('.tab[data-p="mc"]').click();
   $("#run").click();
 });
-$("#an_raw") && ($("#an_raw").onclick = ()=>{AN.view="raw"; anRender();});
-$("#an_prop") && ($("#an_prop").onclick = ()=>{AN.view="prop"; anRender();});
+$("#an_display") && ($("#an_display").onchange = e=>{
+  AN.view = e.target.value; anRender(); });
 
 /* ---------- optimize tab ---------- */
 let OP=null;
 
 let opTries = 0;
 function opInit(){
+  opAccountInit();            // independent of the tape; mount it either way
   // Both lists are fetched asynchronously by the Backtest tab, and the contract
   // list lands AFTER the strategy list. Waiting on only one of them left this tab
   // permanently showing "prepare a contract first" while a prepared contract sat
@@ -1362,11 +1722,37 @@ function opCount(){
   }
   // Show the price of the sweep BEFORE it runs: the noise ceiling it will create.
   const noise = n<=1 ? 0 : Math.sqrt(2*Math.log(n));   // rough, the server is exact
+  // MEASURED, not assumed. The old fixed 0.18 s per combination predated the
+  // parallel sweep and the cached tape invariants; on ma_cross the real figure
+  // is nearer 0.015 s, so a 15,000-combination grid was advertised as 46
+  // minutes when it runs in well under two. A number that wrong is worse than
+  // no number: it talks you out of runs that are cheap. Per strategy, because
+  // the spread between them is thirtyfold.
+  const rate = OP_RATE[$("#op_strategy").value];
+  const secs = n * (rate || 0.05);
+  const eta = secs < 90 ? `${Math.max(1, Math.round(secs))}s`
+            : `${(secs/60).toFixed(secs < 600 ? 1 : 0)} min`;
   $("#op_count").innerHTML = !any ? "give at least one parameter a range"
-    : `<b>${n.toLocaleString()}</b> combinations ≈ ${(n*0.18).toFixed(0)}s — `
-      + `noise alone will reach t ≈ ${noise.toFixed(2)} over that many trials`;
+    : `<b>${n.toLocaleString()}</b> combinations ≈ ${eta}`
+      // Honest in both branches. A rate timed on fifteen combinations running
+      // serially over-predicts fifteen thousand running across six cores, so
+      // "timed" is not the same as "known" and the wording does not pretend it is.
+      + (rate ? " (timed on your last run of this strategy)"
+              : " (rough — run this strategy once and it gets timed)")
+      + ` — noise alone will reach t ≈ ${noise.toFixed(2)} over that many trials`
+      // No wall here any more, so this is the whole guardrail: at a grid this
+      // wide the winner has to beat what chance produces, and that number is
+      // right there. It is stated louder, and it still does not stop anything.
+      + (n > 5000 ? `<br><b class="a">A grid this wide means the best of it must
+          clear t ≈ ${noise.toFixed(2)} to be worth anything, and your best
+          result so far is ${(OP_BEST_T==null ? "—" : OP_BEST_T.toFixed(2))}.</b>`
+        : "");
   $("#op_run").disabled = !any || !$("#op_contract").value;
 }
+
+// Seconds per combination, per strategy, learned from the runs in this session.
+let OP_RATE = {};
+let OP_BEST_T = null;
 
 // Handles for the running sweep: OP_RUN stops it, OP_PAUSE holds and releases
 // it. Both null when nothing is running, which is what the refresh guard tests.
@@ -1380,12 +1766,39 @@ addEventListener("beforeunload", e=>{
   e.preventDefault(); e.returnValue = "";
 });
 
+// The account the sweep is CONSTRAINED by. Not its objective: the ranking is
+// still the daily t-statistic. See optimize.account_check for why.
+let OPACC = {};
+function opAccountInit(){
+  if(OPACC.mounted) return;
+  OPACC.mounted = true;
+  // The best daily t you have ever recorded. Shown beside the noise ceiling on
+  // a wide grid because the comparison is the whole point: a grid whose ceiling
+  // sits above everything you have ever found cannot return a finding.
+  fetch("/api/ledger").then(r=>r.json())
+    .then(d=>{ OP_BEST_T = (d.stats||{}).best_t ?? null; opCount && opCount(); })
+    .catch(()=>{});
+  acctMount("op", OPACC, opAccountNote);
+  acctFirms("op", OPACC).then(()=>acctFirm("op", OPACC, opAccountNote));
+}
+function opAccountNote(){
+  const [v, p] = acctPair("op");
+  $("#op_acctnote").innerHTML = !v ? "" :
+    "Every combination is replayed against this account and the table says "
+    + "whether it survived. The ranking does <b>not</b> change: it stays on the "
+    + "daily t-statistic, because P(pass) near zero edge rewards luck rather "
+    + "than edge. The account is a feasibility bound, not the target.";
+}
+
 function opRun(){
   const s = STRATS.find(x=>x.name===$("#op_strategy").value);
+  const [av, ap] = acctPair("op");
   const q = new URLSearchParams({contract:$("#op_contract").value,
     strategy:s.name, tf:$("#op_tf").value,
     start:$("#op_start").value, end:$("#op_end").value,
-    slippage:$("#op_slip").value, commission:$("#op_comm").value});
+    slippage:$("#op_slip").value, commission:$("#op_comm").value,
+    firm:$("#op_firm").value||"", variant:av||"", phase:ap||"",
+    size:$("#op_size").value||"", contracts:$("#op_contracts").value||"1"});
   for(const p of s.params){
     const v = ($("#op_r_"+p.key)||{}).value || "";
     if(v.trim()) q.set("r_"+p.key, v.trim());
@@ -1396,6 +1809,7 @@ function opRun(){
   q.set("id", id);
   $("#op_run").disabled=true; $("#op_stop").hidden=false;
   $("#op_pause").hidden=false; $("#op_pause").textContent="Pause";
+  $("#op_err").hidden = true;                 // last run's failure is not this one's
   $("#op_status").textContent="Starting…";
   const es = new EventSource("/api/optimize?"+q);
   let paused = false;
@@ -1420,13 +1834,23 @@ function opRun(){
       : `${p.done}/${p.total} combinations (${p.secs}s)`; });
   es.addEventListener("result", e=>{
     OP=JSON.parse(e.data); opRender(); finish(""); });
-  es.addEventListener("error", e=>{ let m="the sweep failed";
+  es.addEventListener("error", e=>{ let m="the run failed";
     try{ m=JSON.parse(e.data).message; }catch(_){}
-    finish(m); });
+    // The banner slot earns its space only when something actually went wrong.
+    // It says it there and nowhere else -- printing the same sentence beside
+    // the button too reads as two different problems.
+    $("#op_err").innerHTML = esc(m); $("#op_err").hidden = false;
+    finish(""); });
 }
 
 function opRender(){
   $("#op_out").hidden=false;
+  // Time the strategy so the next estimate is a measurement rather than a guess.
+  // `elapsed` is rounded to a tenth of a second, so a handful of combinations
+  // reports 0.0 and would teach a rate of zero -- which is falsy, so it would
+  // silently fall back to the guess forever while looking like it had learned.
+  // A run too short to time is a run that measured nothing.
+  if(OP.combos && OP.elapsed > 0) OP_RATE[OP.strategy] = OP.elapsed / OP.combos;
   const keys = Object.keys(OP.ranges);
   const cls = v => v==="earns a forward test" ? "g"
                  : (v==="indistinguishable from noise" ? "a" : "");
@@ -1440,21 +1864,45 @@ function opRender(){
       a 5% claim now needs <b>${OP.threshold_t}</b>. Any row below
       ${OP.noise_t} is not a finding.</div>
     ${OP.unreachable ? `<div class="warn bad" style="margin-top:10px"><b>⚠ </b>${OP.unreachable}</div>` : ""}`;
-  const rows = OP.rows.map(r=>{
+  // The account columns exist only when an account was chosen. A blank column
+  // is worse than no column: it reads as "survived".
+  const acct = OP.rows.some(r=>r.outcome);
+  const OUT = {busted:["r","broke it"], passed:["g","passed"], open:["","survived"]};
+  const rows = OP.rows.filter(r=>!OP_SURVIVORS || r.outcome!=="busted").map(r=>{
     const vals = keys.map(k=>`<td>${r.params[k]}</td>`).join("");
     const t = r.t_daily==null ? "—" : r.t_daily.toFixed(2);
+    const [oc, olabel] = OUT[r.outcome] || ["", "—"];
     return `<tr>${vals}<td>${r.trades}</td>
       <td class="${r.pnl>=0?'g':'r'}">${fmt$(r.pnl)}</td>
       <td>${fmt$(r.mean)}</td><td>${t}</td>
       <td>${r.positive_subperiods}/3</td>
+      ${acct ? `<td class="${oc}" title="${esc(r.breach_reason||"")}">${olabel}</td>
+        <td class="${r.margin!=null && r.margin<0 ? "r":""}">${
+          r.margin==null ? "—" : fmt$(r.margin)}</td>` : ""}
       <td class="${cls(r.verdict)}">${r.verdict}</td></tr>`;
   }).join("");
   $("#op_table").innerHTML =
     `<table class="tr"><tr>${keys.map(k=>`<th>${k.replace(/_/g," ")}</th>`).join("")}
      <th>trades</th><th>P&L</th><th>avg</th><th>t (daily)</th><th>sub+</th>
+     ${acct ? `<th title="did this configuration survive the account">account</th>
+       <th title="tightest margin to the drawdown floor over the whole run">margin</th>` : ""}
      <th>verdict</th></tr>${rows}</table>`;
+  if(acct){
+    const n = OP.rows.length, dead = OP.rows.filter(r=>r.outcome==="busted").length;
+    // THE POINT OF THE WHOLE FEATURE, said in one line: a drawdown limit is a
+    // feasibility bound, and the share of the grid it removes is the thing that
+    // decides whether a strategy is tradable on that account at all.
+    $("#op_acct_summary").innerHTML =
+      `<b>${dead} of ${n}</b> combination(s) broke this account. `
+      + `The ranking above is unchanged — it is the daily t-statistic, not P(pass) `
+      + `— so a row can top the table and still be untradable here. `
+      + `<label style="margin-left:8px"><input type="checkbox" id="op_survivors" `
+      + `${OP_SURVIVORS?"checked":""}> show only what survived</label>`;
+    $("#op_survivors").onchange = e=>{ OP_SURVIVORS = e.target.checked; opRender(); };
+  } else $("#op_acct_summary").innerHTML = "";
   $("#op_export").value = OP.export || "";
 }
+let OP_SURVIVORS = false;
 
 /* ---------- AI author ---------- */
 let AI={}, aiTries=0;
@@ -1684,7 +2132,7 @@ function scoreImport(m){
           $("#account").insertBefore(o, $("#account").firstChild); }
   o.textContent = `NinjaTrader — ${m.strategy}, ${m.n_trades} trades`;
   $("#account").value=val;
-  document.querySelector('.tab[data-p="prop"]').click();
+  document.querySelector('.tab[data-p="mc"]').click();
   $("#run").click();
 }
 
@@ -1823,7 +2271,7 @@ $("#scrub").oninput=e=>drawPaths(+e.target.value);
 document.querySelectorAll(".tab[data-p]").forEach(t=>t.onclick=()=>{
   document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
   t.classList.add("on");
-  for(const p of ["analyzer","prop","mc","data","optimize","ai","imported","trials"])
+  for(const p of ["analyzer","mc","data","optimize","ai","imported","trials"])
     $("#pane-"+p).hidden = (p!==t.dataset.p);
   if(t.dataset.p==="analyzer") anInit();
   if(t.dataset.p==="data") loadData();
@@ -1884,12 +2332,35 @@ $("#op_gen").onclick=()=>{
   }).catch(()=>{ $("#op_gen").disabled=false;
     $("#op_gen_out").innerHTML="<div class='warn'>Could not generate the file.</div>"; });
 };
+// The sessions the optimiser never looked at. A winner picked out of thousands
+// of combinations is fitted BY CONSTRUCTION -- that is what searching means --
+// so the only number that says anything about it is one measured on data the
+// search could not see. Re-running it on the searched window would reproduce the
+// fit and print it as a result.
+function opUnseenWindow(){
+  const c = (TAPE||[]).find(x=>x.contract===OP.contract);
+  if(!c || !c.ready || !OP.start || !OP.end) return null;
+  const D = s => new Date(s+"T00:00:00Z");
+  const shift = (s,n) => { const x=D(s); x.setUTCDate(x.getUTCDate()+n);
+                           return x.toISOString().slice(0,10); };
+  // Sessions AFTER the search window are the real thing: they are later in time,
+  // which is the only direction a live account ever runs.
+  if(D(c.last) > D(OP.end))
+    return {start: shift(OP.end,1), end: c.last, kind: "after"};
+  // Earlier sessions are second best -- unseen by the search, but tested
+  // backwards through time, so a regime that only existed before the window can
+  // flatter or damn it for reasons the future would not repeat.
+  if(D(c.first) < D(OP.start))
+    return {start: c.first, end: shift(OP.start,-1), kind: "before"};
+  return null;
+}
+
 $("#op_score").onclick=()=>{
-  // The winning parameter set becomes a normal backtest, which becomes a trade
-  // source. The sweep never touches the prop-firm numbers itself.
   if(!OP||!OP.rows.length) return;
   const best=OP.rows[0];
+  const w = opUnseenWindow();
   document.querySelector('.tab[data-p="analyzer"]').click();
+  $("#an_source").value=""; anSourceChanged();     // a strategy run, not a list
   $("#an_contract").value=OP.contract; anContract();
   $("#an_strategy").value=OP.strategy; anParams();
   $("#an_tf").value=String(OP.timeframe);
@@ -1897,7 +2368,45 @@ $("#op_score").onclick=()=>{
     const el=$("#an_p_"+k); if(el) el.value=v;
   }
   $("#an_slip").value=OP.slippage_ticks; $("#an_comm").value=OP.commission;
-  $("#an_run").click();
+
+  const fwd = $("#an_fwd"), pretty = Object.entries(best.params)
+    .map(([k,v])=>`${k}=${v}`).join(", ");
+  if(w){
+    $("#an_start").value = w.start; $("#an_end").value = w.end;
+    // Started FIRST: anRun clears this slot, so a note written before the click
+    // would be wiped by the very run it describes.
+    $("#an_run").click();
+    fwd.className = "warn"; fwd.hidden = false;
+    fwd.innerHTML = `<b>Forward test.</b> ${esc(pretty)} — best of
+      ${OP.combos.toLocaleString()} combinations searched on
+      ${esc(OP.start)}..${esc(OP.end)}. This run uses
+      <b>${esc(w.start)}..${esc(w.end)}</b>, ${w.kind==="after"
+        ? "sessions later than anything the search saw"
+        : "earlier sessions the search never reached — unseen, but backwards in "
+          + "time, so treat it as weaker than a true forward test"}.
+      One test. Re-tuning against this window turns it into more training data.`;
+    return;
+  }
+  // NOTHING HELD OUT. Filling the form and running anyway would hand back the
+  // fit itself dressed as a verdict, which is the one number this project
+  // exists to not produce. Set it up, say why it stopped, let the user choose.
+  const other = (TAPE||[]).filter(x=>x.ready && x.contract!==OP.contract)
+                          .map(x=>`${x.contract} (${x.days} sessions)`);
+  $("#an_start").value = ""; $("#an_end").value = "";
+  // Clear the previous result too. A finished report sitting under a "not run"
+  // banner is read as the thing that was not run -- the reader has no way to
+  // know the numbers below belong to an earlier question.
+  AN.report = null;
+  $("#an_report").innerHTML = '<p class="hint">Pick a contract with sessions the '
+    + 'search never saw, then press Run.</p>';
+  fwd.className = "warn bad"; fwd.hidden = false;
+  fwd.innerHTML = `<b>Not run — there is no unseen data left on
+    ${esc(OP.contract)}.</b> The sweep searched ${esc(OP.start)}..${esc(OP.end)},
+    which is every session this contract has. ${esc(pretty)} is loaded and ready,
+    but a backtest over those same sessions would just reproduce the fit and
+    print it as a result. ` + (other.length
+      ? `Pick a different contract — ${esc(other.join(", "))} — and press Run.`
+      : `Prepare another contract on the Data tab, then press Run.`);
 };
 $("#an_measure").onclick=()=>{
   const c=$("#an_contract").value;

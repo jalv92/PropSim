@@ -23,6 +23,33 @@ import sim
 from prop_rules import INTRA, NONE, RuleSet
 
 
+def _fall(t):
+    """The fall from a running peak inside a trade, or its upper bound.
+
+    `None` means the source recorded no path. NinjaTrader stores MinPrice and
+    MaxPrice and nothing between them, so for a trade read out of its database
+    this is not recoverable, and `mfe - mae` is the widest the fall could have
+    been. It is the same substitution `sim.trade_path` makes, and it is
+    deliberately the pessimistic one: a shallower guess is the one that reports
+    an account survived a day it did not.
+
+    Without this the whole report crashed on any NinjaTrader trade -- `np.mean`
+    over a list of None raises -- which is why real account trades could only
+    ever be scored on the Monte Carlo side.
+    """
+    v = getattr(t, "intra_mdd", None)
+    return (t.mfe - t.mae) if v is None else v
+
+
+def path_measured(trades) -> bool:
+    """True when every trade carried a real intra-trade path.
+
+    The reader has to be able to tell a measured fall from a bounded one: on a
+    trailing-drawdown account the two are not a rounding difference.
+    """
+    return all(getattr(t, "intra_mdd", None) is not None for t in trades)
+
+
 def _column(trades, commission, days, contracts):
     """One column of the summary table for a subset of trades.
 
@@ -105,8 +132,56 @@ def _column(trades, commission, days, contracts):
         # PropSim's own two rows: the fall from the running peak is what an
         # intraday trailing floor tests, and the maximum of it is the single
         # number that decides whether this strategy can be sized up at all.
-        avg_fall=float(np.mean([t.intra_mdd for t in trades]) * k),
-        max_fall=float(max(t.intra_mdd for t in trades) * k))
+        avg_fall=float(np.mean([_fall(t) for t in trades]) * k),
+        max_fall=float(max(_fall(t) for t in trades) * k))
+
+
+def daily(trades, commission, contracts=1):
+    """NinjaTrader's Analysis view at Period=Daily: one row per session.
+
+    Every per-day figure comes from `_column`, the same function the summary
+    table is built from, so a day cannot be measured one way and the run
+    another. Only the two cumulative columns are computed here, and they are
+    walked over TRADES rather than over daily closes: a day that ran +$900 and
+    closed at +$100 drew down $800, and a curve sampled once a day cannot see it.
+
+    ETD is NinjaTrader's "end trade drawdown" -- how much of the best unrealised
+    profit was handed back before the exit. It is the gap between the MFE this
+    project already measures and what the trade actually booked.
+    """
+    by_day: dict[str, list] = {}
+    for t in trades:
+        by_day.setdefault(t.date, []).append(t)
+    k = float(contracts)
+    total = len(trades)
+    run = peak = cum_mdd = 0.0
+    out = []
+    for d in sorted(by_day):
+        day = by_day[d]
+        c = _column(day, commission, 1, contracts)
+        for t in day:                       # inside the day, trade by trade
+            run += t.pnl * k
+            peak = max(peak, run)
+            cum_mdd = min(cum_mdd, run - peak)
+        out.append(dict(
+            date=d, trades=c["trades"],
+            cum_net=run, net_profit=c["net_profit"],
+            gross_profit=c["gross_profit"], gross_loss=c["gross_loss"],
+            commission=c["commission"],
+            cum_max_drawdown=cum_mdd, max_drawdown=c["max_drawdown"],
+            pct_profitable=c["pct_profitable"], avg_trade=c["avg_trade"],
+            avg_win=c["avg_win"], avg_loss=c["avg_loss"],
+            largest_win=c["largest_win"], largest_loss=c["largest_loss"],
+            avg_mae=c["avg_mae"], avg_mfe=c["avg_mfe"],
+            avg_etd=float(np.mean([t.mfe - t.pnl for t in day]) * k),
+            # PropSim's own column, and the one no other daily table has: the
+            # deepest fall from a running peak INSIDE a trade that day. It is
+            # what an intraday trailing floor is tested against, so it is the
+            # column that says whether a good-looking day was actually close to
+            # ending the account.
+            max_fall=c["max_fall"],
+            pct_of_trades=(c["trades"] / total if total else 0.0)))
+    return out
 
 
 def grid(trades, meta, contracts=1):
@@ -218,7 +293,7 @@ def prop(trades, rules, contracts=1, sims=20_000, rng=None):
             # deepest fall of the whole list can come from a trade after the
             # breach -- printed one row above the split whose entire job is
             # keeping those two worlds apart.
-            deepest_fall=(max(t.intra_mdd for t in ordered[:lived]) * contracts
+            deepest_fall=(max(_fall(t) for t in ordered[:lived]) * contracts
                           if ordered else 0.0),
             allowed_fall=rules.max_dd if floor_breach else None,
             margin=rep["margin"], low_water=rep["low_water"],
@@ -244,6 +319,14 @@ def build(trades, meta, rules, contracts=1, sims=20_000, rng=None):
     return dict(
         has_trades=bool(trades),
         grid=grid(trades, meta, contracts),
+        daily=daily(trades, meta.get("commission", 0.0), contracts),
+        # HOW MANY trades were judged on a bound rather than a measurement.
+        # "At least one" is the right warning when it is one of fifty; when it
+        # is fifty of fifty -- every trade read out of NinjaTrader, which records
+        # no path at all -- the verdict itself is an upper bound on how badly it
+        # went, and saying so is the difference between a finding and a libel.
+        path_bounded=sum(1 for t in trades
+                         if getattr(t, "intra_mdd", None) is None),
         prop=(prop(trades, rules, contracts, sims, rng) if trades else None),
         # Carried INSIDE the report, not on another tab: a t-statistic means
         # something different on trial 1 than on trial 43, and the two numbers
@@ -278,6 +361,22 @@ def selfcheck():
     # happen to look right.
     for k in ("net_profit", "gross_profit", "gross_loss", "trades", "commission"):
         assert abs(g["long"][k] + g["short"][k] - g["all"][k]) < 0.01, (k, g)
+
+    # THE DAILY TABLE MUST ADD UP TO THE SUMMARY TABLE. Two views of one run
+    # that disagree is worse than having only one: the reader cannot tell which
+    # is wrong, and both carry the same authority on screen.
+    dy = daily(trades, meta["commission"])
+    assert [r["date"] for r in dy] == ["2026-01-01", "2026-01-02"], dy
+    assert abs(sum(r["net_profit"] for r in dy) - g["all"]["net_profit"]) < 0.01, dy
+    assert abs(dy[-1]["cum_net"] - g["all"]["net_profit"]) < 0.01, dy
+    assert sum(r["trades"] for r in dy) == g["all"]["trades"], dy
+    assert abs(sum(r["pct_of_trades"] for r in dy) - 1.0) < 1e-9, dy
+    # The cumulative drawdown is walked over TRADES, not over daily closes. Day
+    # two runs +250 then -110 and CLOSES at +140, so a curve sampled once a day
+    # never sees the 110 it gave back. Here the running peak is 40+250=290 and
+    # the trough 180, so the deepest fall is 110 -- and it must not be the -100
+    # that end-of-day sampling reports.
+    assert abs(dy[-1]["cum_max_drawdown"] - (-110.0)) < 0.01, dy[-1]
 
     # A TRADE THAT LOST LESS THAN THE COMMISSION IS A GROSS WINNER. Splitting
     # the gross rows on the net sign sums it into gross loss -- which makes a

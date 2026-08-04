@@ -439,7 +439,7 @@ MAX_GAP_S = 120.0           # a longer silence inside a session is missing data
 
 def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
             cooldown_min=0.0, timeout_min=240.0, limit_px=None,
-            max_gap_s=MAX_GAP_S) -> list[Trade]:
+            max_gap_s=MAX_GAP_S, day=None) -> list[Trade]:
     """Walk ticks from each entry to its exit. One position at a time.
 
     Bounded forward scans, deliberately: an unbounded per-trade scan to the end
@@ -468,7 +468,12 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
     # 30611.75 was filled out at 29718.50 -- 893 points, -$17,870 -- on a stop 40
     # ticks away. It also fed a 893-point overnight gap into the intraday drawdown
     # test, which is the number this whole product exists to get right.
-    day = tp.day_index(ts)
+    # A function of `ts` alone, so a sweep computes it once in `prepare` and
+    # hands it down. Recomputing it here cost 34% of a sweep's wall clock: two
+    # integer divisions over 12M ticks, per combination, for an answer that
+    # cannot change while the tape does not.
+    if day is None:
+        day = tp.day_index(ts)
     gap_limit = int(max_gap_s * tp.TPS)
 
     for k in range(len(entry_idx)):
@@ -560,10 +565,21 @@ def prepare(contract, timeframe=5, start=None, end=None, rth_only=True) -> dict:
     t = tp.slice_range(full, start, end, rth_only=rth_only)
     if not len(t["ts"]):
         raise SystemExit("no ticks in that range")
-    days = np.unique(tp.day_index(t["ts"]))
+    dayi = tp.day_index(t["ts"])
+    days = np.unique(dayi)
+    # EVERYTHING BELOW IS A FUNCTION OF THE TAPE, NOT OF THE PARAMETERS, and it
+    # used to be recomputed inside every `backtest` call. Profiled on a 16-
+    # combination sweep over 12.1M ticks, the three of them -- day_index, unique
+    # and the two diffs -- were 73% of the run, against 19% for the fill loop
+    # that does the actual simulating. A sweep is not compute-bound on the
+    # simulation; it was compute-bound on constants.
+    dt = np.diff(t["ts"])
+    holes = np.flatnonzero((dt > MAX_GAP_S * tp.TPS) & (np.diff(dayi) == 0))
     return dict(contract=contract, tape=t, bars=tp.build_bars(t, timeframe),
                 timeframe=timeframe, rth_only=rth_only, days=len(days),
-                start=tp.date_str(days[0]), end=tp.date_str(days[-1]))
+                start=tp.date_str(days[0]), end=tp.date_str(days[-1]),
+                dayi=dayi, n_holes=len(holes),
+                hole_days=sorted({tp.date_str(int(dayi[i])) for i in holes}))
 
 
 def backtest(contract, strategy_name, timeframe=5, start=None, end=None,
@@ -592,22 +608,19 @@ def backtest(contract, strategy_name, timeframe=5, start=None, end=None,
     # of who wrote the entry function.
     lim = res[4] if len(res) > 4 else None
     cd = p.get("cooldown_min", 0.0)
-    trades = resolve(t, ei, dr, st, tg, costs, cooldown_min=cd, limit_px=lim)
+    trades = resolve(t, ei, dr, st, tg, costs, cooldown_min=cd, limit_px=lim,
+                     day=ctx["dayi"])
 
-    dayi = tp.day_index(t["ts"])
-    days = np.unique(dayi)
     # Data quality, reported rather than assumed: a silence longer than MAX_GAP_S
     # inside a session means hourly files are missing, and every bar spanning one
     # is fiction. The user needs to see that before believing a P&L built on it.
-    dt = np.diff(t["ts"])
-    holes = np.flatnonzero((dt > MAX_GAP_S * tp.TPS) & (np.diff(dayi) == 0))
+    # Measured once per tape in `prepare`, not once per parameter set.
     meta = dict(contract=contract, strategy=strategy_name, label=strat.label,
-                timeframe=timeframe, start=tp.date_str(days[0]),
-                end=tp.date_str(days[-1]), days=len(days), rth_only=rth_only,
+                timeframe=timeframe, start=ctx["start"],
+                end=ctx["end"], days=ctx["days"], rth_only=rth_only,
                 params=p, bars=len(bars["t"]), ticks=len(t["ts"]),
                 signals=len(ei), trades=len(trades),
-                data_holes=len(holes),
-                hole_days=sorted({tp.date_str(int(dayi[i])) for i in holes}),
+                data_holes=ctx["n_holes"], hole_days=ctx["hole_days"],
                 gap_exits=sum(1 for x in trades if x.reason == "gap"),
                 commission=costs.commission, slippage_ticks=costs.slippage_ticks)
     return trades, meta

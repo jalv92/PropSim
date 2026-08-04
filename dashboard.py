@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
 import threading
 import time
 import traceback
@@ -75,7 +76,7 @@ class ClientGone(Exception):
     """
 
 
-# The most recent backtest, so the Prop Firm tab can score it without re-running.
+# The most recent backtest, so Risk & Monte Carlo can score it without re-running.
 LAST_BACKTEST: dict = {}
 
 # Sweeps the browser has asked to hold. A sweep runs inside its own request, so
@@ -184,6 +185,45 @@ def analyzer_stream(q, write):
         if v not in (None, ""):
             params[k] = float(v)
 
+    # A TRADE SOURCE THAT IS NOT A PROPSIM STRATEGY. Your own NinjaTrader
+    # account, one NinjaScript strategy's trades, or an imported run: the rules
+    # engine does not care where a trade list came from, so neither does this.
+    # These used to reach the Monte Carlo and nothing else, which meant the one
+    # question the product exists to answer -- "would MY trading have passed" --
+    # could only ever be answered as a projection, never as a verdict on what
+    # actually happened.
+    account = (q.get("account", [""])[0] or "").strip()
+    if account:
+        tl, src, fidelity = trade_source(account)
+        if not tl:
+            raise SystemExit("that trade source has no trades on it")
+        days = sorted({t.date for t in tl})
+        # Per-trade commission varies on a real account, and `_column` takes a
+        # scalar. The mean keeps the identity gross+loss-commission == net exact
+        # for the column as a whole, which is the property that table is checked on.
+        comms = [getattr(t, "commission", 0.0) or 0.0 for t in tl]
+        meta = dict(contract=(getattr(tl[0], "instrument", "") or "—"),
+                    strategy=account, label=src, timeframe="—",
+                    start=days[0], end=days[-1], days=len(days),
+                    params={}, trades=len(tl), source=src,
+                    commission=(sum(comms) / len(comms) if comms else 0.0),
+                    slippage_ticks=None, external=True,
+                    fidelity=(fidelity or {}).get("level"))
+        # SCORED, NOT SEARCHED. Re-pricing a trade list you already own tells you
+        # about prop-firm rules, not about whether an edge is real, so it is
+        # recorded without inflating the multiplicity correction -- exactly what
+        # the Monte Carlo side already did for the same list.
+        ledger.append("score", firm=q.get("firm", [""])[0], source=src,
+                      size=int(q.get("size", ["50000"])[0]), sims=20_000,
+                      variant=q.get("variant", [""])[0], policy="analyzer")
+        rep = report.build(tl, meta, rules, contracts=contracts, sims=20_000,
+                           rng=np.random.default_rng(7))
+        rep["t_daily"] = None
+        rep["over_cap"] = bool(rules.max_contracts
+                               and contracts > rules.max_contracts)
+        rep["path_measured"] = report.path_measured(tl)
+        return write("result", _jsonable(rep))
+
     write("progress", dict(stage="loading the tape"))
     costs = engine.Costs(commission=comm, slippage_ticks=slip)
     trades, meta = engine.backtest(contract, strategy, tf, start, end,
@@ -209,9 +249,8 @@ def analyzer_stream(q, write):
                            else round(summary["t_daily"], 3)),
                   slippage_ticks=slip, commission=comm)
 
-    # The Prop Firm tab's "__backtest" trade source reads this. It used to be
-    # filled by the old Backtest tab; that tab is gone, so the run that feeds it
-    # is this one.
+    # The "__backtest" trade source reads this, on either screen. Both resolve
+    # their sources through `trade_source`, so what one can score the other can.
     global LAST_BACKTEST
     LAST_BACKTEST = dict(trades=trades, meta=meta, summary=summary)
 
@@ -224,6 +263,7 @@ def analyzer_stream(q, write):
     # but the report has to say the run no longer describes that account.
     rep["over_cap"] = bool(rules.max_contracts
                            and contracts > rules.max_contracts)
+    rep["path_measured"] = report.path_measured(trades)
     write("result", _jsonable(rep))
 
 
@@ -327,6 +367,18 @@ def optimize_stream(q, write):
     end = q.get("end", [""])[0] or None
     costs = engine.Costs(slippage_ticks=float(q.get("slippage", ["2"])[0]),
                          commission=float(q.get("commission", ["5"])[0]))
+    # The account is a CONSTRAINT on the search, not its objective -- see
+    # `optimize.account_check`. Optional: with no firm chosen the sweep behaves
+    # exactly as it did, so an existing bookmark keeps working.
+    op_contracts = max(1, int(float(q.get("contracts", ["1"])[0])))
+    rules = None
+    if q.get("firm", [""])[0]:
+        try:
+            rules = pr.select(q.get("firm", [""])[0], q.get("variant", [""])[0],
+                              q.get("phase", [""])[0],
+                              int(q.get("size", ["50000"])[0]))
+        except (KeyError, ValueError) as exc:
+            raise SystemExit(f"that account does not exist: {exc}")
 
     ranges = {}
     S = engine.LIBRARY[strategy]
@@ -343,6 +395,13 @@ def optimize_stream(q, write):
     SWEEP_PAUSED.setdefault(run_id, False)
     write("meta", dict(strategy=strategy, contract=contract, timeframe=tf,
                        combos=len(optimize.grid(ranges)),
+                       account=(None if rules is None else dict(
+                           label=f"{rules.firm}/{rules.variant}/{rules.phase}"
+                                 f"/${rules.size:,}",
+                           max_dd=rules.max_dd, contracts=op_contracts,
+                           max_contracts=rules.max_contracts,
+                           over_cap=bool(rules.max_contracts
+                                         and op_contracts > rules.max_contracts))),
                        ranges={k: list(v) for k, v in ranges.items()}))
 
     def prog(done, total, secs):
@@ -360,7 +419,8 @@ def optimize_stream(q, write):
 
     try:
         res = optimize.sweep(contract, strategy, tf, start, end, ranges, costs,
-                             on_progress=prog)
+                             on_progress=prog, rules=rules,
+                             contracts=op_contracts)
     finally:
         # However this ends -- finished, stopped, or the browser vanished --
         # the run stops being pausable.
@@ -380,6 +440,72 @@ def optimize_stream(q, write):
             f"trades more often.")
     res["rows"] = res["rows"][:200]
     write("result", res)
+
+
+def trade_source(account: str):
+    """Resolve what `#account` names into a real trade LIST.
+
+    ONE resolver, because the two halves of this app used to disagree about what
+    a trade source even is: the Monte Carlo had four of them and the Analyzer had
+    none, which is why a real NinjaTrader account could be *simulated* but never
+    *scored* against the rules it actually traded under. Both go through here now,
+    so a source that works on one screen works on the other by construction.
+
+    Returns (trades, label, fidelity). `trades` is None when `account` names
+    nothing -- an empty picker, or the parametric profile the Monte Carlo falls
+    back to.
+    """
+    account = (account or "").strip()
+    if not account:
+        return None, None, None
+
+    if account.startswith("__import:"):
+        run_id = account.split(":", 1)[1]
+        path = next((p for p in ntimport.RUNS_DIR.glob("*.json")
+                     if p.stem == run_id), None)
+        if path is None:
+            raise SystemExit(f"imported run {run_id!r} is no longer on disk")
+        tl, im = ntimport.load_run(path)
+        # A NinjaTrader run WAS a search: someone chose a strategy, a period and
+        # a parameter set and kept the result. It counts as a trial the first time
+        # it is scored here, and only once -- re-reading the same run is not a new
+        # look at the market. Charged in the resolver so it cannot depend on which
+        # screen the user happened to open it from.
+        if not any(r.get("run_id") == run_id for r in ledger.read()):
+            ledger.append("import", run_id=run_id, strategy=im["strategy"],
+                          contract=im["instrument"], timeframe=im["timeframe"],
+                          start=im["start"], end=im["end"], params=im["params"],
+                          trades=im["n_trades"], pnl=im["pnl"],
+                          fidelity=im["fidelity"]["level"])
+        return tl, (f"{im['n_trades']} trades from a NinjaTrader run: "
+                    f"{im['strategy']} · {im['instrument']} · "
+                    f"{im['start']}..{im['end']} · {im['cost_basis']}"), im["fidelity"]
+
+    if account == "__backtest":
+        if not LAST_BACKTEST.get("trades"):
+            raise SystemExit("No backtest has been run yet.")
+        bt = LAST_BACKTEST
+        m = bt["meta"]
+        return bt["trades"], (f"{len(bt['trades'])} trades from a backtest: "
+                              f"{m['label']} · {m['contract']} · {m['timeframe']}m · "
+                              f"{m['start']}..{m['end']}"), None
+
+    if account.startswith("__strategy:"):
+        # One NinjaScript strategy's own trades, isolated from everything else on
+        # the account. NinjaTrader records the attribution; nothing is inferred.
+        sid = account.split(":", 1)[1]
+        tl = nttrades.read_trades(strategy=sid)
+        if not tl:
+            raise SystemExit("that strategy has no recorded trades any more")
+        where = "Playback" if tl[0].is_replay else "live/sim"
+        return tl, (f"{len(tl)} trades from strategy {tl[0].strategy or sid} "
+                    f"({where}, account {tl[0].account})"), None
+
+    # the user's own trades, straight out of NinjaTrader -- no export step
+    tl = nttrades.read_trades(account=account)
+    if not tl:
+        return None, None, None
+    return tl, f"{len(tl)} real trades from account {account}", None
 
 
 def run_stream(q, write):
@@ -405,55 +531,9 @@ def run_stream(q, write):
     trades = (q.get("trades", [""])[0] or "").strip()
     account = (q.get("account", [""])[0] or "").strip()
     pool = None
-    src = None
-    fidelity = None
-    if account.startswith("__import:"):
-        run_id = account.split(":", 1)[1]
-        path = next((p for p in ntimport.RUNS_DIR.glob("*.json")
-                     if p.stem == run_id), None)
-        if path is None:
-            raise SystemExit(f"imported run {run_id!r} is no longer on disk")
-        tl, im = ntimport.load_run(path)
+    tl, src, fidelity = trade_source(account)
+    if tl:
         pool = nttrades.to_pool(tl)
-        fidelity = im["fidelity"]
-        src = (f"{im['n_trades']} trades from a NinjaTrader run: {im['strategy']} · "
-               f"{im['instrument']} · {im['start']}..{im['end']} · {im['cost_basis']}")
-        # A NinjaTrader run WAS a search: someone chose a strategy, a period and
-        # a parameter set and kept the result. It counts as a trial the first time
-        # it is scored here, and only once -- re-reading the same run is not a new
-        # look at the market.
-        if not any(r.get("run_id") == run_id for r in ledger.read()):
-            ledger.append("import", run_id=run_id, strategy=im["strategy"],
-                          contract=im["instrument"], timeframe=im["timeframe"],
-                          start=im["start"], end=im["end"], params=im["params"],
-                          trades=im["n_trades"], pnl=im["pnl"],
-                          fidelity=fidelity["level"])
-    elif account == "__backtest":
-        if not LAST_BACKTEST.get("trades"):
-            raise SystemExit("No backtest has been run yet — use the Backtest tab.")
-        bt = LAST_BACKTEST
-        pool = nttrades.to_pool(bt["trades"])
-        m = bt["meta"]
-        src = (f"{len(bt['trades'])} trades from a backtest: {m['label']} · "
-               f"{m['contract']} · {m['timeframe']}m · {m['start']}..{m['end']}")
-    elif account.startswith("__strategy:"):
-        # One NinjaScript strategy's own trades, isolated from everything else on
-        # the account. NinjaTrader records the attribution; nothing is inferred.
-        sid = account.split(":", 1)[1]
-        tl = nttrades.read_trades(strategy=sid)
-        if not tl:
-            raise SystemExit("that strategy has no recorded trades any more")
-        pool = nttrades.to_pool(tl)
-        name = tl[0].strategy or sid
-        where = "Playback" if tl[0].is_replay else "live/sim"
-        src = (f"{len(tl)} trades from strategy {name} ({where}, "
-               f"account {tl[0].account})")
-    elif account:
-        # the user's own trades, straight out of NinjaTrader -- no export step
-        tl = nttrades.read_trades(account=account)
-        if tl:
-            pool = nttrades.to_pool(tl)
-            src = f"{len(tl)} real trades from account {account}"
     elif trades:
         pool = load_trades(trades, friction=float(q.get("tfric", ["5"])[0]))
         src = f"trade list {trades}"
@@ -784,6 +864,16 @@ class Handler(BaseHTTPRequestHandler):
                     daily_loss_limit=rs.daily_loss_limit,
                     max_contracts=rs.max_contracts,
                     automation_allowed=rs.automation_allowed,
+                    # THE LIST, not only the count. `warnings()` says "3 rule(s)
+                    # not modelled by the simulator" and stopped there, which is
+                    # half a sentence: three administrative formalities and three
+                    # rules that drive the trailing drawdown read identically at
+                    # that resolution. On this same firm, Builder's three cannot
+                    # move a verdict while Rapid's include "intraday trailing on
+                    # equity incl. unrealized" -- which is the whole mechanism.
+                    # A product whose case is that it says what it does not model
+                    # has to actually say it.
+                    unmodeled=list(rs.unmodeled_rules or []),
                     warnings=rs.warnings()))).encode()
             return self._send(200, body, "application/json")
         if u.path == "/api/optimize/pause":
@@ -908,6 +998,12 @@ def _free_port(preferred):
 
 
 def main():
+    # MUST COME FIRST, and it is not optional in the packaged build. A sweep
+    # starts worker processes with "spawn", and under PyInstaller a spawned
+    # child re-executes the frozen EXE -- which without this call means each
+    # worker starts a whole new PropSim, which starts its own workers. The
+    # symptom is a process bomb on a user's machine, not an error message here.
+    multiprocessing.freeze_support()
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--open", action="store_true", help="open a browser tab")

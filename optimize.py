@@ -42,12 +42,15 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import multiprocessing as mp
+import os
 import time
 
 import numpy as np
 
 import engine
 import ledger
+import sim
 
 # The pre-registered bar: a hypothesis earns a forward test at train t >= 1.5,
 # N >= 80 trades, and positive in at least 2 of 3 sub-periods.
@@ -55,7 +58,22 @@ MIN_T = 1.5
 MIN_TRADES = 80
 SUBPERIODS = 3
 MIN_POSITIVE_SUBPERIODS = 2
-MAX_COMBOS = 5000        # a hard stop; a sweep this size is already a red flag
+# Above this a grid is worth a second thought, and the UI says so before the run
+# — but it is ADVISORY, not a wall. This used to raise and refuse. The owner of
+# the tool decides how wide to search; the tool's job is to price the search
+# honestly, not to withhold it. The price is already on screen before you press
+# Optimize (combination count, estimated seconds, and the t that pure noise
+# reaches over that many trials) and in the ledger afterwards.
+BIG_SWEEP = 5000
+
+# Starting a pool costs a couple of seconds -- every worker rebuilds the tape --
+# so it only pays above a few seconds of remaining work. Measured per
+# combination on 37 days of NQ: orb 14 ms, ma_cross 15 ms, fvg 166 ms,
+# vwap_revert 250 ms, sweep_follow 451 ms. A 200-combination orb sweep finishes
+# in 4 s and would LOSE time in a pool; the same sweep on sweep_follow is 90 s
+# and gains an order of magnitude. The decision is made from a measurement of
+# the first combination rather than from a table like this one, which goes stale.
+PARALLEL_MIN_SECONDS = 6.0
 
 
 def parse_range(spec: str):
@@ -72,14 +90,18 @@ def parse_range(spec: str):
     return key.strip(), [round(lo + i * step, 10) for i in range(max(n, 1))]
 
 
-def grid(ranges: dict[str, list], cap=MAX_COMBOS) -> list[dict]:
+def grid(ranges: dict[str, list]) -> list[dict]:
+    """Every combination of the ranges. No ceiling.
+
+    A grid is a cross product, so parameters multiply: four ranges of ten values
+    are ten thousand searches, not forty. That is worth knowing before pressing
+    the button, which is why the count, the estimated runtime and the noise
+    ceiling are all shown next to it -- but knowing it and being allowed to do
+    it are different things, and only the first is this module's business.
+    """
     keys = list(ranges)
-    combos = [dict(zip(keys, vals)) for vals in itertools.product(*(ranges[k] for k in keys))]
-    if len(combos) > cap:
-        raise SystemExit(f"{len(combos):,} combinations exceeds the cap of {cap:,} — "
-                         f"narrow the ranges. A sweep this wide costs more in "
-                         f"multiple-testing debt than any result it could find is worth.")
-    return combos
+    return [dict(zip(keys, vals))
+            for vals in itertools.product(*(ranges[k] for k in keys))]
 
 
 def default_ranges(strategy: str, points=4) -> dict[str, list]:
@@ -125,6 +147,143 @@ def subperiod_pnl(trades, n=SUBPERIODS) -> list[float]:
     return out
 
 
+def account_check(trades, rules, contracts=1) -> dict:
+    """Would this parameter set have survived that account? One replay, no rng.
+
+    THE ACCOUNT IS A CONSTRAINT HERE, NEVER THE OBJECTIVE, and the distinction is
+    the whole reason this is safe to run inside a search. Ranking on P(pass)
+    would be optimising a bounded, highly non-linear transform of the edge:
+    near zero edge it is dominated by variance, so the winner is the luckiest
+    configuration rather than the best one. That failure mode is why the module
+    docstring pre-registered against it.
+
+    What a drawdown limit legitimately IS, though, is a hard feasibility bound.
+    A configuration with a great t-statistic and a $3,000 intra-trade fall
+    cannot be traded on a $2,000 account at any size, and no amount of edge
+    fixes that. Bounds belong inside the search; objectives do not. So the rank
+    stays on the daily t and this rides alongside it.
+
+    `sim.replay` is the same walk the Backtesting tab's verdict uses -- one pass
+    over the trades, no Monte Carlo -- so it costs a few milliseconds per
+    combination rather than twenty thousand resampled futures.
+    """
+    if rules is None or not trades:
+        return {}
+    r = sim.replay(sorted(trades, key=lambda t: t.entry_time), rules,
+                   contracts=contracts)
+    return dict(
+        outcome=r["outcome"], breach_reason=r["reason"],
+        breach_date=r["date"], breach_day=r["day"],
+        # How close it came to the floor at its worst, even when it lived. A
+        # configuration that survived by $40 has not really survived; it has
+        # been lucky once, and the ranking column cannot show that.
+        margin=(None if r["margin"] is None else round(float(r["margin"]), 2)),
+        account_pnl=round(float(r["profit"]), 2))
+
+
+def result_row(p: dict, keys: list, trades, meta, rules=None, contracts=1) -> dict:
+    """One row of the results table. THE only definition of one.
+
+    Both the serial and the pooled path call this, so a sweep cannot report a
+    different shape depending on how many cores the machine happened to have.
+    """
+    s = engine.summarise(trades, meta)
+    subs = subperiod_pnl(trades)
+    t_daily = s["t_daily"]
+    return dict(
+        params={k: p[k] for k in keys},
+        trades=s["trades"], days=s["days"], pnl=round(s["pnl"], 2),
+        mean=round(s.get("mean", 0.0), 2), wr=round(s["wr"], 4),
+        per_day=round(s["per_day"], 2),
+        t_daily=(None if t_daily != t_daily else round(float(t_daily), 3)),
+        subperiods=[round(v, 2) for v in subs],
+        positive_subperiods=sum(1 for v in subs if v > 0),
+        **account_check(trades, rules, contracts))
+
+
+# --------------------------------------------------------------------------
+# worker processes
+# --------------------------------------------------------------------------
+# The pool is started with "spawn", not "fork", and that is deliberate. A sweep
+# launched from the dashboard runs inside an HTTP handler THREAD; forking a
+# multi-threaded process gives the child a single thread plus whatever locks the
+# others were holding, which is a deadlock waiting for a slow afternoon. Spawn
+# costs a fresh interpreter per worker and behaves identically on Windows, where
+# the packaged build runs and fork does not exist at all.
+
+_W: dict = {}           # per-worker state; only ever touched inside a worker
+
+
+def _worker_init(job: dict):
+    """Rebuild everything a worker needs, once, before it takes any task.
+
+    The tape is NOT pickled across: 303 MB on 37 days of NQ, and it would be
+    copied per worker per task. Each worker reads the same cache from disk
+    instead, which is one second it spends in parallel with the others.
+    """
+    try:                                   # user strategies exist here too
+        import plugins
+        plugins.register_all()
+    except Exception:
+        pass
+    _W.update(job)
+    _W["ctx"] = engine.prepare(job["contract"], job["timeframe"],
+                               job["start"], job["end"])
+
+
+def _run_combo(p: dict) -> dict:
+    """One combination, in a worker. Returns the row -- never the trades.
+
+    Handing back the Trade objects would pickle several hundred dataclasses per
+    combination for a summary that is nine numbers wide.
+    """
+    trades, meta = engine.backtest(_W["contract"], _W["strategy"], _W["timeframe"],
+                                   _W["start"], _W["end"], params=p,
+                                   costs=_W["costs"], ctx=_W["ctx"])
+    return result_row(p, _W["keys"], trades, meta, _W.get("rules"),
+                      _W.get("contracts", 1))
+
+
+def _worker_name(_) -> str:
+    """What a pool worker calls itself. Only the selfcheck cares."""
+    return mp.current_process().name
+
+
+def worker_count() -> int:
+    """How many processes this machine can actually feed.
+
+    Bounded by MEMORY, not by cores, and the bound is MEASURED rather than
+    estimated. The first attempt at this priced a worker at the size of its
+    numpy arrays -- 303 MB for 37 days of NQ -- and allowed 15 of them. The real
+    peak is 987 MB, 3.3x that, because loading the compressed cache, slicing to
+    RTH and building bars all allocate temporaries the finished arrays do not
+    show. Fifteen workers asked for 14.8 GB on an 11 GB machine and took it to
+    1 GB free before it was killed.
+
+    So: ask the kernel what this process actually peaked at. By the time this is
+    called the parent has already run one full combination, which makes its own
+    high-water mark exactly the thing a worker is about to need.
+    """
+    n = max(1, (os.cpu_count() or 2) - 1)
+    try:
+        with open("/proc/self/status") as f:
+            peak_mb = next(int(l.split()[1]) for l in f
+                           if l.startswith("VmHWM")) / 1024
+        with open("/proc/meminfo") as f:
+            avail_mb = next(int(l.split()[1]) for l in f
+                            if l.startswith("MemAvailable")) / 1024
+        n = min(n, int(avail_mb * 0.6 / max(peak_mb, 1)))
+    except Exception:
+        # No /proc, i.e. Windows, where the packaged build runs. Reading the
+        # equivalent counters there means ctypes against GlobalMemoryStatusEx
+        # and GetProcessMemoryInfo -- untestable from here, and untested code in
+        # the path that decides whether to exhaust a user's RAM is worse than a
+        # small constant. Two workers is still 2x. MEASURE THIS ON WINDOWS and
+        # raise it; the number above is what the same measurement produced here.
+        n = min(n, 2)
+    return max(1, n)
+
+
 def evaluate(row: dict, noise_t: float) -> tuple[str, str]:
     """(verdict, reason) for one configuration, against the pre-registered bar."""
     t = row["t_daily"]
@@ -149,34 +308,85 @@ def evaluate(row: dict, noise_t: float) -> tuple[str, str]:
 
 def sweep(contract, strategy, timeframe=5, start=None, end=None, ranges=None,
           costs: engine.Costs | None = None, on_progress=None,
-          log_to_ledger=True) -> dict:
+          log_to_ledger=True, rules=None, contracts=1) -> dict:
     """Run every combination, rank by the daily t-statistic, charge the ledger."""
     ranges = ranges or default_ranges(strategy)
     combos = grid(ranges)
+    if not combos:
+        # One empty value list makes the whole product empty. This used to return
+        # an empty table and charge the ledger nothing, which reads exactly like
+        # "your parameters found nothing" -- say which of the two it was.
+        raise SystemExit("no combinations to sweep: "
+                         + ", ".join(k for k, v in ranges.items() if not v)
+                         + " was given an empty range")
     costs = costs or engine.Costs()
     ctx = engine.prepare(contract, timeframe, start, end)
 
     t0 = time.time()
+    keys = list(ranges)
     rows = []
     done = 0
+    pool = None
     try:
-      for i, p in enumerate(combos):
-        trades, meta = engine.backtest(contract, strategy, timeframe, start, end,
-                                       params=p, costs=costs, ctx=ctx)
-        s = engine.summarise(trades, meta)
-        subs = subperiod_pnl(trades)
-        t_daily = s["t_daily"]
-        rows.append(dict(
-            params={k: p[k] for k in ranges},
-            trades=s["trades"], days=s["days"], pnl=round(s["pnl"], 2),
-            mean=round(s.get("mean", 0.0), 2), wr=round(s["wr"], 4),
-            per_day=round(s["per_day"], 2),
-            t_daily=(None if t_daily != t_daily else round(float(t_daily), 3)),
-            subperiods=[round(v, 2) for v in subs],
-            positive_subperiods=sum(1 for v in subs if v > 0)))
-        done = i + 1
-        if on_progress and (i % 5 == 0 or i == len(combos) - 1):
-            on_progress(i + 1, len(combos), time.time() - t0)
+      # THE FIRST COMBINATION RUNS HERE, AND ITS COST DECIDES THE REST. A pool is
+      # worth about an order of magnitude on a slow strategy and a net loss on a
+      # fast one, and the gap between them is 30x -- too wide to guess at and too
+      # dependent on the tape length to hardcode. So measure one, keep its
+      # result, and let the number choose. Nothing is wasted either way.
+      trades, meta = engine.backtest(contract, strategy, timeframe, start, end,
+                                     params=combos[0], costs=costs, ctx=ctx)
+      rows.append(result_row(combos[0], keys, trades, meta, rules, contracts))
+      done = 1
+      per_combo = time.time() - t0
+      rest = combos[1:]
+      if on_progress:
+          on_progress(done, len(combos), time.time() - t0)
+
+      # NEVER NEST A POOL, and this is a real fork bomb rather than a tidiness
+      # rule. Spawn re-executes the caller's main module in every worker; a
+      # caller that forgot `if __name__ == "__main__":` therefore re-runs its own
+      # sweep inside each worker, which starts its own pool, and so on. It took
+      # an 11 GB machine to its knees while this was being written. PropSim's own
+      # entry points are guarded, but users script against `sweep()` -- and the
+      # cost of being wrong is their machine, not an exception. `parent_process()`
+      # is still None this early in a spawned child; the process NAME is not.
+      in_worker = mp.current_process().name != "MainProcess"
+      n = worker_count() if rest and not in_worker else 1
+      if n > 1 and per_combo * len(rest) > PARALLEL_MIN_SECONDS:
+        pool = mp.get_context("spawn").Pool(
+            n, initializer=_worker_init,
+            initargs=(dict(contract=contract, strategy=strategy,
+                           timeframe=timeframe, start=start, end=end,
+                           costs=costs, keys=keys, rules=rules,
+                           contracts=contracts),))
+        # BATCHED, AND THE BATCH BOUNDARY IS A BARRIER ON PURPOSE. Two things
+        # depend on it, and both are correctness rather than speed:
+        #
+        #   `done` must be EXACTLY the number of combinations searched. The
+        #   ledger charges it on cancellation, and a count that drifts low turns
+        #   Stop into a way to search the data for free -- the thing the partial
+        #   trial below exists to prevent. After a barrier the count is exact;
+        #   with work in flight it is a guess, and the guess would be low.
+        #
+        #   Pause is `on_progress` declining to return (see dashboard.py). That
+        #   holds the sweep only if nothing is dispatched behind it, which a
+        #   barrier guarantees and a prefetching iterator does not.
+        #
+        # The cost is the spread within one batch of otherwise-identical work.
+        for i in range(0, len(rest), n):
+            batch = rest[i:i + n]
+            rows.extend(pool.map(_run_combo, batch, chunksize=1))
+            done += len(batch)
+            if on_progress:
+                on_progress(done, len(combos), time.time() - t0)
+      else:
+        for i, p in enumerate(rest):
+            trades, meta = engine.backtest(contract, strategy, timeframe, start, end,
+                                           params=p, costs=costs, ctx=ctx)
+            rows.append(result_row(p, keys, trades, meta, rules, contracts))
+            done = i + 2
+            if on_progress and (i % 5 == 0 or i == len(rest) - 1):
+                on_progress(done, len(combos), time.time() - t0)
     except BaseException:
         # A CANCELLED SWEEP STILL LOOKED AT THE DATA. The user closed the page
         # or pressed Stop, so no result is returned -- but `done` combinations
@@ -198,6 +408,13 @@ def sweep(contract, strategy, timeframe=5, start=None, end=None, ranges=None,
                           n_trials=done, combos=len(combos), cancelled=True,
                           ranges={k: [float(v) for v in vs] for k, vs in ranges.items()})
         raise
+    finally:
+        # Stop, a closed browser and a clean finish all land here. Without it a
+        # cancelled sweep leaves its workers alive, each holding 300 MB of tape,
+        # and the next sweep starts on a machine that is already out of memory.
+        if pool is not None:
+            pool.terminate()
+            pool.join()
 
     # Rank by the gate statistic among configurations that could clear the bar;
     # everything else sorts below it, still visible.
@@ -237,6 +454,10 @@ def sweep(contract, strategy, timeframe=5, start=None, end=None, ranges=None,
 
     return dict(strategy=strategy, label=engine.LIBRARY[strategy].label,
                 contract=contract, timeframe=timeframe,
+                account_label=(None if rules is None else
+                               f"{rules.firm}/{rules.variant}/{rules.phase}"
+                               f"/${rules.size:,}"),
+                account_contracts=contracts,
                 start=ctx["start"], end=ctx["end"], days=ctx["days"],
                 combos=len(combos), ranges={k: list(v) for k, v in ranges.items()},
                 elapsed=round(time.time() - t0, 1),
@@ -266,6 +487,21 @@ def ninjascript_block(res: dict, row: dict) -> str:
         f"{res['trials_after']}; the best of that many null trials reaches "
         f"t = {res['noise_t']:.2f} by chance.",
         f"// VERDICT: {row['verdict'].upper()} — {row['reason']}.",
+    ]
+    # The account result travels with the numbers too. A parameter set that
+    # broke the account it was searched against is the one thing a reader must
+    # not have to go back to the table for -- and "survived by $15" is a fact
+    # about luck, not about the configuration, so the margin comes with it.
+    if row.get("outcome"):
+        said = {"busted": "BROKE THE ACCOUNT", "passed": "PASSED THE ACCOUNT",
+                "open": "survived the account"}.get(row["outcome"], row["outcome"])
+        lines.append(f"// {said}: {res.get('account_label', 'the chosen account')}"
+                     + (f" — {row['breach_reason']}" if row.get("breach_reason") else "")
+                     + (f", day {row['breach_day']}" if row.get("breach_day") else ""))
+        if row.get("margin") is not None:
+            lines.append(f"// Tightest margin to the drawdown floor: "
+                         f"{row['margin']:,.0f}. This is one sequence, not a rate.")
+    lines += [
         "// NOT VALIDATED. These values were fitted on data already searched;",
         "// they have earned one forward test, not a funded account.",
         f"// Costs assumed: {res['slippage_ticks']:g} ticks/side slippage, "
@@ -335,6 +571,67 @@ def selfcheck():
     snippet = ninjascript_block(res, res["rows"][0])
     assert "NOT VALIDATED" in snippet and "StopTicks" in snippet, snippet
 
+    # 7. THE POOLED PATH MUST RETURN EXACTLY WHAT THE SERIAL PATH RETURNS.
+    #    Whether a sweep forks out to 14 cores is decided by a stopwatch and the
+    #    amount of free RAM, which means it can differ between two runs on the
+    #    same machine. If the answer moved with it, a result would not be
+    #    reproducible -- and the ledger has already charged for it.
+    rng = {"stop_ticks": [20, 30, 40, 50, 60], "rr": [1.5, 2.0]}
+    serial = sweep(c, "orb", 5, ranges=rng, log_to_ledger=False)
+    g = globals()
+    keep = (PARALLEL_MIN_SECONDS, worker_count)
+    g["PARALLEL_MIN_SECONDS"], g["worker_count"] = -1.0, lambda: 2
+    try:
+        par = sweep(c, "orb", 5, ranges=rng, log_to_ledger=False)
+    finally:
+        g["PARALLEL_MIN_SECONDS"], g["worker_count"] = keep
+    assert par["combos"] == serial["combos"] == 10, par["combos"]
+    assert par["rows"] == serial["rows"], (
+        "the pooled sweep disagrees with the serial one:\n"
+        + "\n".join(f"  {a}\n  {b}" for a, b in zip(par["rows"], serial["rows"]) if a != b))
+
+    # 8. AND A CANCELLED POOLED SWEEP CHARGES THE EXACT COUNT. This is why the
+    #    batch boundary is a barrier: with work in flight the number of
+    #    combinations already searched is a guess, the guess is low, and Stop
+    #    becomes a discount on the noise ceiling. One combination runs to time
+    #    the decision, then batches of two -- so raising at the first progress
+    #    call past 2 must charge exactly 3, never "about 3".
+    with tempfile.TemporaryDirectory() as td:
+        led = Path(td) / "trials.jsonl"
+        real_append = ledger.append
+        ledger.append = lambda kind, path=None, **kw: real_append(kind, led, **kw)
+        g["PARALLEL_MIN_SECONDS"], g["worker_count"] = -1.0, lambda: 2
+        try:
+            boom = RuntimeError("stop pressed")
+            def die(done, total, secs):
+                if done >= 2: raise boom
+            try:
+                sweep(c, "orb", 5, ranges={"stop_ticks": [20, 30, 40, 50, 60, 70, 80, 90]},
+                      on_progress=die)
+            except RuntimeError as exc:
+                assert exc is boom, exc
+            else:
+                raise AssertionError("the cancelled pooled sweep did not propagate")
+        finally:
+            ledger.append = real_append
+            g["PARALLEL_MIN_SECONDS"], g["worker_count"] = keep
+        charged = [json.loads(l) for l in led.read_text().splitlines()]
+        assert len(charged) == 1, charged
+        assert charged[0]["n_trials"] == 3, (
+            f"pooled cancel charged {charged[0]['n_trials']} trials, 3 were searched")
+
+    # 9. THE SIGNAL THE FORK-BOMB GUARD RESTS ON. A worker must be able to tell
+    #    it is a worker, or `sweep` nests pools inside pools the moment a user
+    #    calls it from a script without a `__main__` guard. The process NAME is
+    #    what carries that, and it is set before the child re-executes the main
+    #    module -- unlike `parent_process()`, which is still None at that point.
+    #    If a future Python changes this, the guard fails open and the failure
+    #    mode is somebody's machine, so it is pinned here rather than assumed.
+    with mp.get_context("spawn").Pool(1) as _p:
+        assert _p.map(_worker_name, [0])[0] != "MainProcess", (
+            "a pool worker reports itself as MainProcess; the nested-pool guard "
+            "in sweep() is now a no-op and an unguarded caller will fork-bomb")
+
     # A CANCELLED SWEEP MUST STILL COST ITS LOOKS. Without this the Stop button
     # is a way to search the data for free: run 200 combinations, read the
     # progress, cancel, and the noise ceiling never hears about it.
@@ -370,6 +667,7 @@ def selfcheck():
 
 
 def main():
+    mp.freeze_support()                 # see the note in dashboard.main()
     ap = argparse.ArgumentParser()
     ap.add_argument("--contract")
     ap.add_argument("--strategy")
