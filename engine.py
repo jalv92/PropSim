@@ -1276,11 +1276,10 @@ def summarise(trades, meta):
 
 def selfcheck():
     """Regressions for the traps this engine has actually fallen into."""
-    contracts = tp.cached_contracts()
-    if not contracts:
+    c = tp.sample_contract()
+    if c is None:
         print("no tape cached — run: python3 tape.py --build 'NQ 09-26'")
         return
-    c = contracts[0]
 
     # 1. LOOKAHEAD. ORB's opening range is a TIME window, so its high/low is the
     #    same whether drawn as 1m or 15m bars, and the entry is the tick that

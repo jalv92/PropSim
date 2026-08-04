@@ -261,8 +261,7 @@ def check_output(res, tape, bars) -> list[str]:
 
 def smoke_test(S: type, contract: str | None = None, tf_secs=300) -> dict:
     """Run the strategy once on real ticks and check what it returned."""
-    contracts = tp.cached_contracts()
-    contract = contract or (contracts[0] if contracts else None)
+    contract = contract or tp.sample_contract()
     if contract is None:
         return dict(ran=False, note="no tape cached — cannot smoke-test yet")
     ctx = engine.prepare(contract, tf_secs)
@@ -523,9 +522,9 @@ def selfcheck():
     assert not bad["ok"] and "already taken" in bad["error"], bad
 
     # 4. The output contract catches the mistakes a generated strategy makes.
-    contracts = tp.cached_contracts()
-    if contracts:
-        ctx = engine.prepare(contracts[0], 300)
+    c = tp.sample_contract()
+    if c:
+        ctx = engine.prepare(c, 300)
         tape, bars = ctx["tape"], ctx["bars"]
         ei = np.array([10, 20], np.int64)
         px = tape["px"][ei]

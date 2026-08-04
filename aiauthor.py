@@ -393,8 +393,7 @@ def lookahead_probe(S: type, ctx: dict | None = None, contract=None, tf_secs=300
     solely unsampled trades can hide, and the probe says nothing about whether the
     strategy makes money. A clean probe means causal, not profitable.
     """
-    contracts = tp.cached_contracts()
-    contract = contract or (ctx or {}).get("contract") or (contracts[0] if contracts else None)
+    contract = contract or (ctx or {}).get("contract") or tp.sample_contract()
     if contract is None:
         return dict(ran=False, clean=None, findings=[],
                     note="no tape cached, so the lookahead probe could not run")
@@ -734,22 +733,22 @@ def selfcheck():
 
     # 4. THE LOOKAHEAD PROBE, on real ticks: it must clear the honest strategy and
     #    catch the peeker. This is the check the whole feature rests on.
-    contracts = tp.cached_contracts()
-    if contracts:
-        ctx = engine.prepare(contracts[0], 300)
+    c = tp.sample_contract()
+    if c:
+        ctx = engine.prepare(c, 300)
         good = plugins.load_source(_HONEST, "honest.py")
         bad = plugins.load_source(_PEEKER, "peeker.py")
-        g = lookahead_probe(good, ctx=ctx, contract=contracts[0])
-        b = lookahead_probe(bad, ctx=ctx, contract=contracts[0])
+        g = lookahead_probe(good, ctx=ctx, contract=c)
+        b = lookahead_probe(bad, ctx=ctx, contract=c)
         assert g["ran"] and g["clean"], g["findings"][:2]
         assert b["ran"] and not b["clean"], "the probe failed to catch a known peeker"
         assert any("after the entry" in f or "changed when only LATER" in f
                    for f in b["findings"]), b["findings"]
         # 5. validate() must reject the peeker end to end, and say LOOKAHEAD.
-        problems, info = validate(_PEEKER, contracts[0])
+        problems, info = validate(_PEEKER, c)
         assert problems.startswith("LOOKAHEAD:"), problems[:200]
         # and it must not leak the numbers that would make generation a free search
-        problems2, info2 = validate(_HONEST, contracts[0])
+        problems2, info2 = validate(_HONEST, c)
         assert not problems2, problems2[:300]
         assert set(info2["smoke"]) == {"ran", "trades", "signals", "contract", "note"}, \
             info2["smoke"]

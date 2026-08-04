@@ -147,6 +147,18 @@ def cached_contracts() -> list[str]:
             + [n for n in names if n != "ALL"])
 
 
+def sample_contract():
+    """A single real contract month, for code that just needs representative data.
+
+    ALL is a stitched tape of every contract and can run to gigabytes; it is
+    the wrong thing to reach for when the caller only wants "some ticks to
+    exercise". Selfchecks that took cached_contracts()[0] silently switched to
+    it the moment it was first built, and still passed, which is how a
+    thirteen-million-tick check quietly becomes a hundred-million-tick one.
+    """
+    return next((c for c in cached_contracts() if c != "ALL"), None)
+
+
 # --------------------------------------------------------------------------
 # time helpers -- .ncd timestamps are naive ET wall clock
 # --------------------------------------------------------------------------
@@ -286,7 +298,7 @@ def selfcheck():
     # ALL (~517 MB cached) may now sort first; keep this check fast and
     # independent of whether the ALL tape has been built by picking a real
     # contract month instead.
-    c = next((x for x in contracts if x != "ALL"), contracts[0])
+    c = sample_contract() or contracts[0]
     tape = load_cache(c)
     assert (np.diff(tape["ts"]) >= 0).all(), "tape must be time-ordered"
 
@@ -350,6 +362,12 @@ def selfcheck():
         assert cached_contracts()[0] == cont.ALL, "ALL must sort first"
         b = build_bars(slice_range(a, rth_only=True), 300)
         assert len(b["t"]) > 0, "ALL must bar like any other contract"
+        # The one behaviour that actually distinguishes the wiring from its
+        # absence: available_range("ALL") must answer from the sidecar JSON,
+        # not by loading the 500 MB+ tape to recompute the same three values.
+        m = cont.load_meta()
+        assert available_range(cont.ALL) == (m["first"], m["last"], m["sessions"]), \
+            "ALL's range must come from the sidecar, not from loading the tape"
         print(f"  ALL: {len(a['ts']):,} ticks, {nd_a} sessions {lo_a}..{hi_a}")
     else:
         print("  ALL not built yet — run: python3 continuous.py --build")
