@@ -49,9 +49,11 @@ import tape as tp
 USER_DIR = Path.home() / ".prop-sim" / "strategies"
 
 # Nothing needs importing -- the engine injects numpy, the tape helpers and the
-# Strategy/Param base classes. An import is therefore always either a mistake or
-# something the file has no business doing.
-ALLOWED_IMPORTS = {"math"}
+# Strategy/Param base classes. `numpy` is allowed anyway: the sandbox already
+# hands a plugin the real module as `np`, so an explicit `import numpy` grants
+# nothing an attacker doesn't already have -- and it lets a plugin file run its
+# own selfchecks standalone, outside the sandbox, without a second code path.
+ALLOWED_IMPORTS = {"math", "numpy"}
 BANNED_CALLS = {
     "eval", "exec", "compile", "open", "input", "__import__", "globals",
     "locals", "vars", "getattr", "setattr", "delattr", "breakpoint", "exit",
@@ -99,7 +101,7 @@ def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
     serves numpy's own internals.
     """
     root = (name or "").split(".")[0]
-    if root in ALLOWED_IMPORTS | {"numpy"}:
+    if root in ALLOWED_IMPORTS:
         return __import__(name, globals, locals, fromlist, level)
     raise ImportError(f"a strategy may not import {name!r}")
 
@@ -513,6 +515,16 @@ def selfcheck():
             raise AssertionError(f"should have been rejected ({expect}): {src[:40]}")
         except Rejected as exc:
             assert expect.lower() in str(exc).lower(), (expect, str(exc))
+
+    # 2b. `import numpy` now passes: the sandbox already hands a plugin the
+    # real module as `np`, so the explicit import grants nothing new.
+    numpy_src = ("import numpy as np\n"
+                 "class A(Strategy):\n"
+                 " name=label='a'\n"
+                 " params={}\n"
+                 " def entries(s,b,t,p):\n"
+                 "  return np.array([], np.int64)\n")
+    load_source(numpy_src)   # must not raise Rejected
 
     # 3. Shadowing a built-in name is refused: the ledger's history would become
     #    ambiguous about which "orb" a past trial referred to.
