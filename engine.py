@@ -1240,7 +1240,8 @@ def backtest(contract, strategy_name, tf_secs=300, start=None, end=None,
                      day=ctx["dayi"], be_trigger=bet,
                      contracts=p.get("contracts", 1),
                      be_offset_ticks=p.get("breakeven_offset_ticks", 0.0),
-                     day_target=tgt, day_loss=dl, gov_day=gd)
+                     day_target=tgt, day_loss=dl, gov_day=gd,
+                     timeout_min=float(p.get("timeout_min", 240.0)))
 
     # Data quality, reported rather than assumed: a silence longer than MAX_GAP_S
     # inside a session means hourly files are missing, and every bar spanning one
