@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import re
 import subprocess
@@ -47,6 +48,13 @@ import engine
 import tape as tp
 
 USER_DIR = Path.home() / ".prop-sim" / "strategies"
+
+# Validation verdicts, keyed by the plugin file's content hash. A verdict costs
+# a subprocess plus a smoke backtest over a real contract -- minutes for a
+# tick-level plugin -- which is the right price per plugin VERSION and an absurd
+# one per app launch (the dashboard validates every file at startup). PASSes
+# are cached; failures never are, so a broken file re-explains itself each run.
+CHECK_CACHE = Path.home() / ".prop-sim" / "plugin_checks.json"
 
 # Nothing needs importing -- the engine injects numpy, the tape helpers and the
 # Strategy/Param base classes. `numpy` is allowed anyway: the sandbox already
@@ -340,17 +348,27 @@ def scan(directory: Path | None = None, validate: bool = True) -> list[dict]:
     d = Path(directory or USER_DIR)
     if not d.is_dir():
         return []
+    cache: dict = {}
+    if validate:
+        try:
+            cache = json.loads(CHECK_CACHE.read_text())
+        except (OSError, ValueError):
+            cache = {}
+    dirty = False
     rows = []
     for f in sorted(d.glob("*.py")):
         if f.name.startswith("_"):
             continue
         row = dict(file=f.name, path=str(f))
-        ok, why = _isolated_check(f) if validate else (True, "")
+        src = f.read_text()
+        sha = hashlib.sha256(src.encode()).hexdigest()
+        hit = cache.get(sha) if validate else None
+        ok, why = (True, "") if (hit or not validate) else _isolated_check(f)
         if not ok:
             rows.append(dict(row, ok=False, error=why))
             continue
         try:
-            S = load_source(f.read_text(), f.name)
+            S = load_source(src, f.name)
             if S.name in engine.LIBRARY and S.name not in _INSTALLED:
                 raise Rejected(
                     f"name {S.name!r} is already taken by a built-in strategy. "
@@ -359,12 +377,23 @@ def scan(directory: Path | None = None, validate: bool = True) -> list[dict]:
             row.update(ok=True, name=S.name, label=S.label,
                        params=list(S.params), cls=S)
             if validate:
-                row["smoke"] = smoke_test(S)
+                if hit:
+                    row["smoke"] = hit.get("smoke", {})
+                else:
+                    row["smoke"] = smoke_test(S)
+                    cache[sha] = dict(file=f.name, smoke=row["smoke"])
+                    dirty = True
             rows.append(row)
         except Rejected as exc:
             rows.append(dict(row, ok=False, error=str(exc)))
         except Exception as exc:
             rows.append(dict(row, ok=False, error=f"{type(exc).__name__}: {exc}"))
+    if dirty:
+        try:
+            CHECK_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            CHECK_CACHE.write_text(json.dumps(cache, indent=1))
+        except OSError:
+            pass                      # a cache that cannot be written is just slow
     return rows
 
 
