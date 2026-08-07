@@ -266,7 +266,13 @@ def smoke_test(S: type, contract: str | None = None, tf_secs=300) -> dict:
     contract = contract or tp.sample_contract()
     if contract is None:
         return dict(ran=False, note="no tape cached — cannot smoke-test yet")
-    ctx = engine.prepare(contract, tf_secs)
+    # A full-session strategy handed an RTH-only tape finds nothing and reads
+    # exactly like "no edge" (families.py's own warning, paid for once
+    # already) -- every plugin checked here before this was RTH-only, so
+    # nobody had hit it. `S` is the class itself, not yet in LIBRARY, so this
+    # reads `full_session` directly rather than through the strategy-name
+    # lookup `engine.prepare` also supports.
+    ctx = engine.prepare(contract, tf_secs, rth_only=not S.full_session)
     strat = S()
     p = {k: v.default for k, v in strat.params.items()}
     res = strat.entries(ctx["bars"], ctx["tape"], p)
