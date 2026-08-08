@@ -34,9 +34,11 @@ import argparse
 import hashlib
 import json
 import math
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from statistics import NormalDist
+
+import engine            # for MIN_T_DAYS only; engine never imports this module
 
 LEDGER = Path.home() / ".prop-sim" / "trials.jsonl"
 SEARCH_KINDS = ("backtest", "import", "sweep")
@@ -135,6 +137,34 @@ def fingerprint(**inputs) -> str:
         json.dumps(clean, sort_keys=True, default=str).encode()).hexdigest()[:12]
 
 
+def _t_sessions(r: dict) -> int:
+    """How many sessions this record's daily t was computed over.
+
+    THIS FILE IS APPEND-ONLY AND HASH-CHAINED, so a record written before
+    `engine.MIN_T_DAYS` existed cannot be edited or removed -- and one of them
+    is a three-session run that recorded t = 216.08 and became the "best result
+    you have ever found" on every screen that compares against it. The record
+    still carries the range it ran over, so the number can be recognised as
+    unpublishable now without rewriting a single byte of history.
+
+    Weekdays in `start..end`, which over-counts holidays. Over-counting keeps a
+    borderline record IN, and the only thing this decides is whether a t is
+    admissible -- so the error falls on the side of not silently discarding
+    someone's result. `days` (sweeps record it) wins when present, being exact.
+    """
+    if isinstance(r.get("days"), int):
+        return r["days"]
+    a, b = r.get("start"), r.get("end")
+    if not (isinstance(a, str) and isinstance(b, str)):
+        return 0                      # no range recorded: cannot vouch for it
+    try:
+        d0, d1 = date.fromisoformat(a), date.fromisoformat(b)
+    except ValueError:
+        return 0
+    return sum(1 for i in range((d1 - d0).days + 1)
+               if (d0 + timedelta(days=i)).weekday() < 5)
+
+
 def stats(path: Path | None = None) -> dict:
     rows = [r for r in read(path) if r.get("kind")]
     search = [r for r in rows if r["kind"] in SEARCH_KINDS]
@@ -152,7 +182,8 @@ def stats(path: Path | None = None) -> dict:
     search = dedup
     ts = [float(r["t_daily"]) for r in search
           if isinstance(r.get("t_daily"), (int, float))
-          and not math.isnan(float(r["t_daily"]))]
+          and not math.isnan(float(r["t_daily"]))
+          and _t_sessions(r) >= engine.MIN_T_DAYS]
     # A sweep is not one look. "A parameter change is a trial" -- so a record may
     # declare how many it stands for, and the multiplicity arithmetic uses that.
     # A 200-combination sweep raises the noise bar for every result that follows
@@ -163,6 +194,9 @@ def stats(path: Path | None = None) -> dict:
         scores=sum(1 for r in rows if r["kind"] not in SEARCH_KINDS),
         total=len(rows),
         best_t=max(ts, default=None), tested=len(ts),
+        # Shipped with the stats so the screens can say WHY a t is missing
+        # without keeping a second copy of the number. One source of truth.
+        min_t_days=engine.MIN_T_DAYS,
         expected_max_t=round(expected_max_t(n), 2) if n else 0.0,
         threshold_t=round(threshold_t(n), 2) if n else 0.0,
         first=search[0]["ts"] if search else None,
@@ -179,8 +213,11 @@ def selfcheck():
     import tempfile
     p = Path(tempfile.mkdtemp(prefix="propsim-ledger-")) / "trials.jsonl"
 
-    a = append("backtest", path=p, strategy="orb", t_daily=1.1)
-    b = append("backtest", path=p, strategy="orb", t_daily=2.4)
+    # `days` on every record because every real one carries it: a t that cannot
+    # be tied to a sample size is not admissible (see `_t_sessions`), and a
+    # fixture that omitted it was testing a record shape this never writes.
+    a = append("backtest", path=p, strategy="orb", t_daily=1.1, days=30)
+    b = append("backtest", path=p, strategy="orb", t_daily=2.4, days=30)
     append("score", path=p, firm="my_funded_futures")
     assert a["seq"] == 1 and b["prev"] == a["hash"], (a, b)
     assert verify(p)["ok"], verify(p)
@@ -212,6 +249,21 @@ def selfcheck():
     # Deleting a record must also be detectable.
     p.write_text("\n".join(p.read_text().splitlines()[1:]) + "\n")
     assert not verify(p)["ok"], verify(p)
+
+    # THE 216. A three-session run recorded t = 216.08 and, because this file is
+    # append-only and hash-chained, it is still sitting in a real ledger on disk
+    # -- so `stats` has to recognise it from the range the record carries rather
+    # than by editing it away. It still counts as a TRIAL: it was a look at the
+    # data and the multiplicity debt is owed either way. It just is not a result.
+    # On its own chain, so the trial counts asserted above stay exact.
+    q = Path(tempfile.mkdtemp(prefix="propsim-ledger-")) / "trials.jsonl"
+    append("backtest", path=q, strategy="orb", t_daily=2.4, days=30)
+    append("backtest", path=q, strategy="latigo_break", t_daily=216.084,
+           start="2026-07-26", end="2026-07-28")
+    sq = stats(q)
+    assert sq["best_t"] == 2.4, f"a 3-session t must not become the best: {sq}"
+    assert sq["trials"] == 2 and sq["tested"] == 1, sq
+    assert verify(q)["ok"], "recognising it must not require rewriting history"
 
     # The noise baseline has to rise with the count, and the 5% bar sit above it.
     assert expected_max_t(1) == 0.0

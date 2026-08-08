@@ -436,7 +436,10 @@ def evaluate(row: dict, noise_t: float) -> tuple[str, str]:
     """(verdict, reason) for one configuration, against the pre-registered bar."""
     t = row["t_daily"]
     if t is None or t != t:
-        return "no signal", "not enough trading days to compute a daily t-statistic"
+        return "no signal", (
+            f"fewer than {engine.MIN_T_DAYS} trading days: below that the daily "
+            f"t-statistic is not bounded by anything and the noise ceiling it "
+            f"would be judged against does not apply — run this on more tape")
     if row["trades"] < MIN_TRADES:
         return "below the bar", f"{row['trades']} trades, needs {MIN_TRADES}"
     if row["positive_subperiods"] < MIN_POSITIVE_SUBPERIODS:

@@ -1357,6 +1357,36 @@ def backtest(contract, strategy_name, tf_secs=300, start=None, end=None,
     return trades, meta
 
 
+# THE FEWEST SESSIONS A DAILY t MAY BE PUBLISHED FROM. It used to be two, and
+# two is not a sample: at one degree of freedom the null t is Cauchy, which has
+# no mean and no variance, so it is unbounded by construction. That is not a
+# hypothetical -- a real three-session run of `latigo_break` recorded t = 216.08
+# and became the "best result you have ever found" that every later noise
+# ceiling was compared against. Its three daily totals were 2962.56, 3005.12 and
+# 2965.12: a daily profit target of $3,000 had clamped all three to the same
+# number, so the denominator was 23.87 on a mean of 2977.60. The same
+# configuration over 39 sessions scores -0.75.
+#
+# The number comes from what noise alone reaches, 200k null draws per row:
+#
+#     sessions   df    p99 |t|   worst of 200k     vs a normal's p99
+#            2    1      64.75         103,859.7             25.14x
+#            3    2      10.10             353.7              3.92x
+#            5    4       4.58              38.7              1.78x
+#            8    7       3.51              12.7              1.36x
+#           11   10       3.18              11.9              1.24x
+#           20   19       2.87               6.4              1.11x
+#           30   29       2.75               6.0              1.07x
+#
+# `ledger.expected_max_t` prices the ceiling as the max of n standard NORMALS,
+# so wherever that last column is far from 1.00 the ceiling understates what
+# chance produces -- and understating it flatters the user, the one direction
+# this project's guardrails must never err in. Twenty is where the overshoot
+# falls to a ninth. Below it there is no number to report, and `nan` is already
+# what every consumer reads as "not enough trading days".
+MIN_T_DAYS = 20
+
+
 def summarise(trades, meta):
     if not trades:
         return dict(**meta, pnl=0.0, wr=0.0, per_day=0.0, t_daily=float("nan"))
@@ -1368,7 +1398,8 @@ def summarise(trades, meta):
     # Cluster-robust: intraday trades share a session and are not independent,
     # so the gate statistic is computed on daily totals, not per trade.
     t_daily = (daily.mean() / (daily.std(ddof=1) / np.sqrt(len(daily)))
-               if len(daily) > 1 and daily.std(ddof=1) > 0 else float("nan"))
+               if len(daily) >= MIN_T_DAYS and daily.std(ddof=1) > 0
+               else float("nan"))
     return dict(**meta, pnl=float(pnl.sum()), wr=float((pnl > 0).mean()),
                 mean=float(pnl.mean()), per_day=len(trades) / max(meta["days"], 1),
                 t_daily=float(t_daily), t_days=len(daily))
@@ -1444,6 +1475,33 @@ def selfcheck():
                     for pv in (20.0, 2.0))
     assert _small.pnl > 0 and abs(_big.pnl - 10 * _small.pnl) < 1e-6, \
         f"point value must scale P&L: {_big.pnl} vs {_small.pnl}"
+
+    # 5c. A DAILY t NEEDS A SAMPLE, and the shape that produced the worst one is
+    #     built here rather than described: three sessions whose totals a $3,000
+    #     daily target had clamped to within $43 of each other. That is t = 216
+    #     under the old two-session floor -- and it was recorded, and it became
+    #     the best result the ledger had ever seen. The same series stretched to
+    #     MIN_T_DAYS sessions must publish a number again, or this check would
+    #     also pass with the statistic switched off entirely.
+    class _T:
+        def __init__(self, day, pnl):
+            self.pnl, self.mae, self.mfe = pnl, 0.0, 0.0
+            self.date = f"2026-07-{day:02d}"
+    _clamped = [2962.56, 3005.12, 2965.12]
+    _short = summarise([_T(d + 1, v) for d, v in enumerate(_clamped)],
+                       dict(days=len(_clamped)))
+    assert _short["t_daily"] != _short["t_daily"], (
+        f"three clamped sessions must publish no t, got {_short['t_daily']}")
+    #     The long series keeps the clamped winners and lets losing days back in,
+    #     which is what a real month looks like and what the three-session window
+    #     happened to exclude: the same configuration over 39 sessions scores
+    #     -0.75, not 216.
+    _long = [(-1500.0 if i % 4 == 3 else _clamped[i % 3]) for i in range(MIN_T_DAYS)]
+    _ok = summarise([_T(d + 1, v) for d, v in enumerate(_long)], dict(days=len(_long)))
+    assert _ok["t_daily"] == _ok["t_daily"], "MIN_T_DAYS sessions must publish a t"
+    assert _ok["t_days"] == MIN_T_DAYS, _ok["t_days"]
+    assert abs(_ok["t_daily"]) < 10, (
+        f"a month of ordinary days must not score {_ok['t_daily']:.0f}")
 
     # 6. THE INVARIANT THAT CAUGHT A REAL BUG. A stop-out cannot make money and a
     #    target cannot lose it. Both were violated when a strategy measured its

@@ -1540,8 +1540,11 @@ function anGrid(R){
   <p class="hint">trial #${n.trials} · noise ceiling at ${n.trials}
    trials: ${anNum(n.expected_max_t)}</p>
   ${t==null
-    ? '<div class="hint">Not enough distinct days for a t-statistic, so this '
-      + 'run cannot be measured against the noise ceiling.</div>'
+    ? `<div class="hint">Fewer than <b>${n.min_t_days}</b> trading days, so there is
+       no daily t-statistic to report and this run cannot be measured against the
+       noise ceiling. Below that the statistic is not bounded by anything — on
+       three sessions, chance alone reaches 350 — and the ceiling above it is
+       priced for a number that is. Run it on more tape.</div>`
     : (t<=n.expected_max_t
        ? '<div class="warn">This t does NOT clear the noise of '+n.trials
          +' searches. The best of that many null trials is expected to reach '
