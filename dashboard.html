@@ -1872,8 +1872,15 @@ function opCount(){
   // minutes when it runs in well under two. A number that wrong is worse than
   // no number: it talks you out of runs that are cheap. Per strategy, because
   // the spread between them is thirtyfold.
-  const rate = OP_RATE[$("#op_strategy").value];
-  const eta = fmtDur(n * (rate || 0.05));
+  // PER SESSION, AND REMEMBERED ACROSS RELOADS. Two things made the estimate
+  // wrong by more than an order of magnitude rather than a little: it was a
+  // flat guess until this strategy had been run once IN THIS TAB, so a reload
+  // threw the measurement away; and a rate learned over a month of tape was
+  // applied unchanged to a fortnight of it. A 36,504-combination sweep was
+  // advertised at 30 minutes and reported 6h15m the moment it started -- a
+  // number that wrong is not a rough number, it is a different decision.
+  const rate = OP_RATE[opRateKey()];
+  const eta = fmtDur(n * (rate ? rate * Math.max(opSessions(), 1) : 0.05));
   $("#op_count").innerHTML = !any ? "give at least one parameter a range"
     : `<b>${n.toLocaleString()}</b> combinations ≈ ${eta}`
       // Honest in both branches. A rate timed on fifteen combinations running
@@ -1892,9 +1899,35 @@ function opCount(){
   $("#op_run").disabled = !any || !$("#op_contract").value;
 }
 
-// Seconds per combination, per strategy, learned from the runs in this session.
-let OP_RATE = {};
+// Seconds per combination PER SESSION, keyed by strategy and bar size, learned
+// from every run and kept in localStorage so a reload does not go back to
+// guessing. A bad read (private mode, quota, corrupt value) just means the
+// estimate is rough again, so it never throws.
+const OP_RATE_STORE = "propsim.op_rate.v1";
+let OP_RATE = (() => {
+  try { return JSON.parse(localStorage.getItem(OP_RATE_STORE)) || {}; }
+  catch(e){ return {}; }
+})();
 let OP_BEST_T = null;
+// [rate key, sessions] of the sweep now running, taken at submit time.
+let OP_RATE_PENDING = null;
+
+function opRateKey(){
+  return $("#op_strategy").value + "|" + $("#op_bartype").value + $("#op_tf").value;
+}
+
+// Sessions in the picked range, counted as weekdays. Holidays make this a
+// slight over-count and nothing downstream cares: it only scales an estimate,
+// and over-counting errs towards saying a sweep is slower than it is.
+function opSessions(){
+  const a = $("#op_start").value, b = $("#op_end").value;
+  if(!a || !b) return 0;
+  let n = 0;
+  const end = new Date(b + "T12:00:00");
+  for(let d = new Date(a + "T12:00:00"); d <= end; d.setDate(d.getDate() + 1))
+    if(d.getDay() % 6) n++;              // 0 Sun, 6 Sat
+  return n;
+}
 
 // Handles for the running sweep: OP_RUN stops it, OP_PAUSE holds and releases
 // it. Both null when nothing is running, which is what the refresh guard tests.
@@ -1934,6 +1967,10 @@ function opAccountNote(){
 
 function opRun(){
   const s = STRATS.find(x=>x.name===$("#op_strategy").value);
+  // Captured HERE, not when the result lands: the controls are live during the
+  // sweep, so reading them at the end would file the measurement under whatever
+  // the user happened to be looking at by then.
+  OP_RATE_PENDING = [opRateKey(), opSessions()];
   const [av, ap] = acctPair("op");
   const q = new URLSearchParams({contract:$("#op_contract").value,
     strategy:s.name, ...tfPair("op"),
@@ -2013,7 +2050,18 @@ function opRender(){
   // reports 0.0 and would teach a rate of zero -- which is falsy, so it would
   // silently fall back to the guess forever while looking like it had learned.
   // A run too short to time is a run that measured nothing.
-  if(OP.combos && OP.elapsed > 0) OP_RATE[OP.strategy] = OP.elapsed / OP.combos;
+  //
+  // Divided by the SESSIONS it ran over, because that is what makes the rate
+  // transferable: the fill loop walks the ticks of every session, so a sweep of
+  // a fortnight and the same sweep of a month are not the same measurement.
+  // `OP.days` is what the server actually swept; the picked-range count is the
+  // fallback for a payload without it.
+  const sess = (OP.days || (OP_RATE_PENDING && OP_RATE_PENDING[1]) || 0);
+  if(OP.combos && OP.elapsed > 0 && sess > 0 && OP_RATE_PENDING){
+    OP_RATE[OP_RATE_PENDING[0]] = OP.elapsed / OP.combos / sess;
+    try { localStorage.setItem(OP_RATE_STORE, JSON.stringify(OP_RATE)); }
+    catch(e){ /* no storage: the rate still holds for this tab */ }
+  }
   const keys = Object.keys(OP.ranges);
   const cls = v => v==="earns a forward test" ? "g"
                  : (v==="indistinguishable from noise" ? "a" : "");
@@ -2471,6 +2519,12 @@ $("#im_refresh").onclick=loadImports;
 $("#op_contract").onchange=()=>{opContract();opCount();};
 $("#op_strategy").onchange=opParams;
 $("#op_params").oninput=opCount;
+// The estimate now depends on the DATES (it is priced per session) and on the
+// bar size (it is keyed by it), so both have to re-run it. `addEventListener`
+// rather than `onchange`: bar type already carries a handler that refills the
+// value list, and assigning over it would silently break that instead.
+for(const id of ["#op_start","#op_end","#op_bartype","#op_tf"])
+  $(id) && $(id).addEventListener("change", opCount);
 $("#op_run").onclick=opRun;
 $("#op_stop") && ($("#op_stop").onclick=()=>OP_RUN&&OP_RUN());
 $("#op_pause") && ($("#op_pause").onclick=()=>OP_PAUSE&&OP_PAUSE());

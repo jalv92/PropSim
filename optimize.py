@@ -271,13 +271,27 @@ def _share(ctx: dict) -> dict:
 
 
 def _map_shared(share: dict) -> dict:
-    """The other half of `_share`, inside a worker: a ctx backed by the page cache."""
+    """The other half of `_share`, inside a worker: a ctx backed by the page cache.
+
+    `np.asarray` AROUND EVERY MAPPING, AND IT IS NOT DECORATION. It returns a
+    base-class VIEW of the same buffer -- no copy, not one byte more resident,
+    `shares_memory` is True -- but it drops the `np.memmap` subclass, and the
+    subclass is what the fill loop pays for. `resolve` reads `ts[i]` and `px[i]`
+    one scalar at a time, a few hundred thousand times per combination, and
+    every one of those reads on a memmap goes through the subclass's array
+    machinery instead of straight into the buffer. Measured on 300k reads:
+    23 ms as an ndarray, 74 ms as a memmap, 24 ms as a view of the memmap.
+    End to end that was 384 ms per combination in a worker against 164 ms for
+    the same tape in the parent -- a pool where every worker silently ran at
+    43% of the speed the same code had in series, which is most of why 19 of
+    them only ever bought 2.8x.
+    """
     d = Path(share["dir"])
     ctx = dict(share["scalars"])
     for key in _ARRAYS:
-        ctx[key] = {p.name.split(".")[1]: np.load(p, mmap_mode="r")
+        ctx[key] = {p.name.split(".")[1]: np.asarray(np.load(p, mmap_mode="r"))
                     for p in d.glob(f"{key}.*.npy")}
-    ctx["dayi"] = np.load(d / "dayi.npy", mmap_mode="r")
+    ctx["dayi"] = np.asarray(np.load(d / "dayi.npy", mmap_mode="r"))
     return ctx
 
 
@@ -313,6 +327,73 @@ def _worker_name(_) -> str:
     return mp.current_process().name
 
 
+def _memory() -> tuple[float, float] | None:
+    """(this process's resident size, physically available memory), in MB.
+
+    `None` when neither platform's counters can be read, which is the only case
+    left for a hardcoded guess.
+
+    THE WINDOWS HALF USED TO BE THE GUESS, and it cost real time: with no
+    `/proc` to read, `worker_count` fell back to a flat six workers on a machine
+    reporting twenty. Both counters are two ctypes calls and both were run
+    against the Windows Python this project actually ships to -- 24,261 MB
+    total, 3,806 MB available, 57.9 MB working set with numpy imported -- so
+    the reason the guess existed ("untestable from here") was never true; WSL
+    can execute Windows binaries. Every failure mode still lands on the guess.
+
+    `ullAvailPhys` is stricter than Linux's `MemAvailable`: it counts memory
+    that is physically free rather than free-or-reclaimable, so this errs
+    towards fewer workers on Windows, which is the correct direction to err.
+    """
+    try:                                   # Linux, and WSL
+        with open("/proc/self/status") as f:
+            rss_mb = next(int(l.split()[1]) for l in f
+                          if l.startswith("VmRSS")) / 1024
+        with open("/proc/meminfo") as f:
+            avail_mb = next(int(l.split()[1]) for l in f
+                            if l.startswith("MemAvailable")) / 1024
+        return rss_mb, avail_mb
+    except Exception:
+        pass
+    try:                                   # Windows, where the packaged build runs
+        import ctypes
+        from ctypes import wintypes
+        MB = float(1 << 20)
+        # Only two fields are read, but the structs must be declared in full or
+        # the kernel writes past what was allocated: both calls are handed
+        # `sizeof` and fill everything up to it.
+        class _Mem(ctypes.Structure):
+            _fields_ = ([("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD)]
+                        + [(n, ctypes.c_ulonglong) for n in
+                           ("TotalPhys", "AvailPhys", "TotalPageFile", "AvailPageFile",
+                            "TotalVirtual", "AvailVirtual", "AvailExtendedVirtual")])
+
+        class _Proc(ctypes.Structure):
+            _fields_ = ([("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)]
+                        + [(n, ctypes.c_size_t) for n in
+                           ("PeakWorkingSetSize", "WorkingSetSize",
+                            "QuotaPeakPagedPoolUsage", "QuotaPagedPoolUsage",
+                            "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage",
+                            "PagefileUsage", "PeakPagefileUsage")])
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # WITHOUT THIS THE HANDLE IS TRUNCATED TO 32 BITS and the second call
+        # simply returns FALSE -- which is how it looked the first time it ran.
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.c_void_p,
+                                                wintypes.DWORD]
+        m = _Mem(); m.dwLength = ctypes.sizeof(m)
+        p = _Proc(); p.cb = ctypes.sizeof(p)
+        if not k32.GlobalMemoryStatusEx(ctypes.byref(m)):
+            return None
+        if not k32.K32GetProcessMemoryInfo(k32.GetCurrentProcess(),
+                                           ctypes.byref(p), p.cb):
+            return None
+        return p.WorkingSetSize / MB, m.AvailPhys / MB
+    except Exception:
+        return None
+
+
 def worker_count(shared_mb: float = 0.0) -> int:
     """How many processes this machine can actually feed.
 
@@ -338,31 +419,17 @@ def worker_count(shared_mb: float = 0.0) -> int:
     an earlier version asked for 14.8 GB on an 11 GB machine and got killed.
     """
     n = max(1, (os.cpu_count() or 2) - 1)
-    try:
-        with open("/proc/self/status") as f:
-            rss_mb = next(int(l.split()[1]) for l in f
-                          if l.startswith("VmRSS")) / 1024
-        with open("/proc/meminfo") as f:
-            avail_mb = next(int(l.split()[1]) for l in f
-                            if l.startswith("MemAvailable")) / 1024
-        # Floored: a worker is never free, and a floor of 0 would divide the
-        # whole machine by rounding error.
-        private_mb = max(rss_mb - shared_mb, 64.0)
-        n = min(n, int(avail_mb * 0.6 / private_mb))
-    except Exception:
-        # No /proc, i.e. Windows, where the packaged build runs. Reading the
-        # equivalent counters there means ctypes against GlobalMemoryStatusEx
-        # and GetProcessMemoryInfo -- untestable from here, and untested code in
-        # the path that decides whether to exhaust a user's RAM is worse than a
-        # small constant.
-        #
-        # This constant is a BOUND, not a measurement, and it was two while a
-        # worker cost the whole tape. Since `_share` a worker measures 47 MB on
-        # the same machine where it used to measure 600, so six of them is a
-        # smaller bet than two used to be -- and six cores is six cores. MEASURE
-        # THIS ON WINDOWS and let the number decide instead.
-        n = min(n, 6)
-    return max(1, n)
+    mem = _memory()
+    if mem is None:
+        # Neither platform's counters could be read. A bound, not a measurement,
+        # and deliberately small: six is a smaller bet than the machine is
+        # likely to justify, and being wrong here costs someone's RAM.
+        return max(1, min(n, 6))
+    rss_mb, avail_mb = mem
+    # Floored: a worker is never free, and a floor of 0 would divide the whole
+    # machine by rounding error.
+    private_mb = max(rss_mb - shared_mb, 64.0)
+    return max(1, min(n, int(avail_mb * 0.6 / private_mb)))
 
 
 def evaluate(row: dict, noise_t: float) -> tuple[str, str]:
@@ -683,6 +750,41 @@ def selfcheck():
     assert par["rows"] == serial["rows"], (
         "the pooled sweep disagrees with the serial one:\n"
         + "\n".join(f"  {a}\n  {b}" for a, b in zip(par["rows"], serial["rows"]) if a != b))
+
+    # 7b. THE POOL MUST BE SIZED FROM A MEASUREMENT ON EVERY PLATFORM THIS RUNS
+    #     ON. While the Windows branch was a hardcoded six, a twenty-thread
+    #     machine ran a sweep on six threads and nothing said so. `_memory`
+    #     returning None is the one case where the guess is still correct, so
+    #     what is asserted is that it does NOT return None here, and that both
+    #     numbers are physically sane -- the same assertion the Windows build
+    #     makes for itself when this runs there.
+    mem = _memory()
+    assert mem is not None, "no memory counters on this platform: pool sized by guess"
+    _rss, _avail = mem
+    assert 1.0 < _rss < 1e6 and _avail > 1.0, mem
+    #     Bounded by cores at the top and by one at the bottom, and MONOTONE in
+    #     what the workers do not have to pay for: the whole point of `_share`
+    #     is that a bigger shared tape buys more workers, never fewer. It read
+    #     the other way round once, and that is what sized a 57,600-combination
+    #     sweep at one worker on a twenty-core machine.
+    _cores = max(1, (os.cpu_count() or 2) - 1)
+    _counts = [worker_count(s) for s in (0.0, 64.0, 512.0, 1e9)]
+    assert all(1 <= x <= _cores for x in _counts), _counts
+    assert _counts == sorted(_counts), f"more shared memory must not cost workers: {_counts}"
+
+    # 7c. AND THE MAPPED TAPE MUST NOT BE AN `np.memmap`. It is a base-class
+    #     view of one, which shares the buffer but not the subclass's per-scalar
+    #     cost -- the fill loop reads a few hundred thousand scalars per
+    #     combination, and as a memmap that ran at 43% of the parent's speed.
+    #     Check 7 above proves the numbers agree; this proves they are reached
+    #     at full speed, which no assertion on the results can see.
+    _share_d = _share(engine.prepare(c, 300, strategy="orb"))
+    try:
+        _m = _map_shared(_share_d)
+        assert type(_m["tape"]["px"]) is np.ndarray, type(_m["tape"]["px"])
+        assert type(_m["dayi"]) is np.ndarray, type(_m["dayi"])
+    finally:
+        shutil.rmtree(_share_d["dir"], ignore_errors=True)
 
     # 8. AND A CANCELLED POOLED SWEEP CHARGES THE EXACT COUNT. This is why the
     #    batch boundary is a barrier: with work in flight the number of
