@@ -950,7 +950,7 @@ function anTapeList(){
   const list = TAPE.slice();
   if(ALLROW) list.unshift({contract: "ALL", ready: ALLROW.ready,
     stale: ALLROW.stale, first: ALLROW.first, last: ALLROW.last,
-    holes: ALLROW.holes, why: ALLROW.why});
+    holes: ALLROW.holes, why: ALLROW.why, point_value: ALLROW.point_value});
   return list;
 }
 
@@ -1057,12 +1057,17 @@ function anContract(){
   // with the button simply dead and nothing on screen saying why.
   const external = $("#an_source") && !!$("#an_source").value;
   $("#an_run").disabled = !external && !(c && c.ready);
+  // WHAT A POINT COSTS, next to the dates. MNQ and NQ print the same prices
+  // off the same ticks, so for a long time the only thing separating a $2 tape
+  // from a $20 one was the symbol in the dropdown -- and every MNQ run was
+  // reported at ten times its real size with nothing on screen contradicting it.
+  const pv = c && c.point_value ? ` · $${c.point_value.toFixed(2)}/point` : "";
   if(external){ note.innerHTML = ""; $("#an_range").textContent =
       c ? (c.ready ? `${c.first} .. ${c.last}` : "—") : "—"; return; }
   if(!c){ $("#an_range").textContent = "—"; note.innerHTML = ""; return; }
   const isAll = c.contract === "ALL";
   $("#an_range").innerHTML = c.ready
-    ? `${c.first} .. ${c.last}` + (isAll ? holesNote(c.holes) : "")
+    ? `${c.first} .. ${c.last}${pv}` + (isAll ? holesNote(c.holes) : "")
     : (isAll ? "not built yet" : `${c.raw_first} .. ${c.raw_last}, not prepared`);
   // The two ranges are stated side by side whenever they disagree. A backtester
   // that quietly covers less than the data on disk is the failure this reports.

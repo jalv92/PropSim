@@ -119,6 +119,16 @@ def _fmt_day(yyyymmdd: str) -> str:
     return f"{yyyymmdd[:4]}-{yyyymmdd[4:6]}-{yyyymmdd[6:8]}"
 
 
+def _point_value(contract: str):
+    """For DISPLAY only, so a symbol nobody can price must not take the Data
+    tab down with it. A run on that same contract still raises, which is the
+    behaviour that matters -- see `engine.instrument`."""
+    try:
+        return engine.instrument(contract)[0]
+    except SystemExit:
+        return None
+
+
 def prepare_stream(q, write):
     """Build a contract's tick cache, reporting progress as it goes."""
     contract = q.get("contract", [""])[0]
@@ -777,7 +787,14 @@ class Handler(BaseHTTPRequestHandler):
                                  last=hi or raw_last,
                                  raw_first=raw_first, raw_last=raw_last,
                                  raw_days=v["days"], stale=stale,
-                                 mb=v["mb"], est_ticks=v["est_ticks"]))
+                                 mb=v["mb"], est_ticks=v["est_ticks"],
+                                 # WHAT A POINT COSTS, on screen. MNQ and NQ
+                                 # print the same prices off the same ticks, so
+                                 # the only thing that ever distinguished a
+                                 # $2 tape from a $20 one was the symbol in the
+                                 # dropdown -- which is how every MNQ run got
+                                 # reported at ten times its size unnoticed.
+                                 point_value=_point_value(name)))
             # ALL is not a file under db/tick, so it never appears in `rows` --
             # it is reported separately, from its own sidecar (continuous.py),
             # with the coverage holes that a stitch across missing months
@@ -794,6 +811,7 @@ class Handler(BaseHTTPRequestHandler):
                 ticks=(m or {}).get("ticks", 0),
                 rolls=(m or {}).get("rolls", []),
                 holes=(m or {}).get("holes", []),
+                point_value=_point_value("ALL"),
                 sources=[dict(contract=c, truncated=tp.truncated_hours(c))
                          for c in continuous.contracts_on_disk()])
             return self._send(200, json.dumps(dict(contracts=rows,

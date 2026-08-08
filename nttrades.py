@@ -150,6 +150,47 @@ def _instruments(con):
                                     JOIN MasterInstruments m ON m.Id=i.MasterInstrument""")}
 
 
+# Filled on first successful read and never re-read. Only successes are cached:
+# a database that was locked once must not pin an empty answer for the life of
+# the dashboard process.
+_MASTER: dict[str, tuple[float, float]] = {}
+
+
+def master_instruments(nt_root=None) -> dict[str, tuple[float, float]]:
+    """Root symbol -> (point value, tick size), e.g. 'MNQ' -> (2.0, 0.25).
+
+    The multiplier is a property of the INSTRUMENT, and NinjaTrader already
+    knows it for everything it can hand this project a tape of, so it is read
+    rather than tabulated. Empty dict if the database cannot be read -- the
+    caller falls back to its own table (see `engine.instrument`) rather than
+    failing a backtest over a transient lock.
+
+    FUTURES ONLY, AND THAT IS NOT A TIDINESS FILTER. `Name` is unique per asset
+    class, not per table: this database holds "ES" the E-mini S&P future
+    ($50/point) and "ES" Eversource Energy the NYSE stock ($1/point), plus an
+    options row at $0. Keyed by name alone the stock wins on row order and a
+    futures backtest prices 50 points of S&P as one dollar. Measured here:
+    ES and CL both collided, GC and NQ did not. `InstrumentType = 0` is
+    futures -- 358 of the 1,748 rows on this machine.
+    """
+    if _MASTER:
+        return _MASTER
+    root = ntdata.resolve_root(nt_root)
+    db = (Path(root) / "db" / "NinjaTrader.sqlite") if root else None
+    if db is None or not db.exists():
+        return _MASTER
+    try:
+        con = _open_readonly(db)
+    except SystemExit:
+        return _MASTER
+    _MASTER.update(
+        (r["Name"], (float(r["PointValue"]), float(r["TickSize"])))
+        for r in con.execute("SELECT Name, PointValue, TickSize "
+                             "FROM MasterInstruments WHERE InstrumentType = 0")
+        if r["Name"] and r["PointValue"] and r["TickSize"])
+    return _MASTER
+
+
 # NinjaTrader's connection provider id for the Playback connection. Measured on a
 # real database: Playback101 = 13, while Sim101 and Backtest are 15 and live
 # brokers are 38/50. This is how a replay run is identified, because

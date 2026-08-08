@@ -35,14 +35,53 @@ and never a hidden constant.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
 import tape as tp
 
-TICK_SIZE = 0.25            # NQ/MNQ; overridden per instrument by the caller
-POINT_VALUE = 20.0
+TICK_SIZE = 0.25            # NQ. Only the `Costs` defaults and the plugin
+POINT_VALUE = 20.0          # sandbox; `backtest` resolves the real pair.
+
+# WHAT ONE POINT IS WORTH, and the minimum increment, per root symbol. This
+# used to be the two constants above with a comment saying the caller overrides
+# them per instrument, and NO CALLER EVER DID: every contract this project can
+# be pointed at was priced as NQ. On an MNQ tape -- a tenth the size, same
+# ticks, same prices, so nothing on screen looks wrong -- that reported ten
+# times the P&L, ten times the drawdown, and a prop-firm verdict for an account
+# that was never traded. NinjaTrader's own MasterInstruments table is the
+# source of truth (see `instrument`); this table is the fallback for when that
+# database cannot be read, and the place to add anything it does not list.
+INSTRUMENTS = {
+    "NQ": (20.0, 0.25),  "MNQ": (2.0, 0.25),
+    "ES": (50.0, 0.25),  "MES": (5.0, 0.25),
+    "YM": (5.0, 1.0),    "MYM": (0.5, 1.0),
+    "RTY": (50.0, 0.10), "M2K": (5.0, 0.10),
+}
+
+
+def instrument(contract: str) -> tuple[float, float]:
+    """(point value, tick size) for a tape contract, e.g. 'MNQ 09-26'.
+
+    Raises rather than guessing: a wrong multiplier is invisible in every
+    number it corrupts, so an unknown symbol has to stop the run.
+    """
+    if contract == "ALL":
+        # Local import for the same reason `prepare` does it: `continuous`
+        # imports `tape`, and a module-scope import here makes that circular.
+        import continuous as _c
+        root = _c.ROOT
+    else:
+        root = contract.split()[0]
+    import nttrades                    # local: pulls in sqlite, and only this needs it
+    pair = nttrades.master_instruments().get(root) or INSTRUMENTS.get(root)
+    if not pair:
+        raise SystemExit(
+            f"{contract}: no point value for {root!r}. NinjaTrader's database does "
+            f"not list it and it is not in engine.INSTRUMENTS — add it there rather "
+            f"than letting the backtest price it as some other instrument.")
+    return pair
 
 
 # --------------------------------------------------------------------------
@@ -1235,6 +1274,13 @@ def backtest(contract, strategy_name, tf_secs=300, start=None, end=None,
     rth_only = ctx["rth_only"]              # the tape that ran, not the request
     t, bars = ctx["tape"], ctx["bars"]
 
+    # THE MULTIPLIER IS A PROPERTY OF THE TAPE, NOT A COST SETTING. Commission
+    # and slippage are the user's assumptions and stay theirs; what a point is
+    # worth is not negotiable, so it is resolved from the contract that actually
+    # ran and overwrites whatever the caller happened to construct.
+    pv, tick = instrument(ctx["contract"])
+    costs = replace(costs, point_value=pv, tick_size=tick)
+
     res = strat.entries(bars, t, p)
     ei, dr, st, tg = res[:4]
     # A retrace strategy rests a limit at its level; a breakout crosses the
@@ -1281,7 +1327,10 @@ def backtest(contract, strategy_name, tf_secs=300, start=None, end=None,
                 # rate understates both its gross and its commission while still
                 # balancing -- self-consistent and wrong, the worst kind.
                 commission=costs.commission * float(p.get("contracts", 1)),
-                slippage_ticks=costs.slippage_ticks)
+                slippage_ticks=costs.slippage_ticks,
+                # REPORTED so it can be checked by eye. The bug this replaced was
+                # silent precisely because no screen ever said what a point cost.
+                point_value=pv, tick_size=tick)
 
     # THE LEDGER MUST SHOW THE PRICE THAT ACTUALLY TRADED. The ALL tape is
     # back-adjusted so indicators do not see a multi-hundred-point step at each
@@ -1367,17 +1416,44 @@ def selfcheck():
         f"date range had no effect: {c} spans {lo}..{hi}, cut at {cut}")
 
     # 5. Every trade must resolve to a real exit reason.
-    tr, _ = backtest(c, "orb", 300)
+    tr, m5 = backtest(c, "orb", 300)
     assert all(t.reason in ("stop", "be", "target", "timeout", "close", "gap")
                for t in tr)
     assert all(t.mae <= 0 <= t.mfe for t in tr), "MAE/MFE signs"
+
+    # 5b. THE MULTIPLIER MUST COME FROM THE CONTRACT, AND MUST REACH THE MONEY.
+    #     A micro is a tenth of its parent, so an MNQ tape priced as NQ -- same
+    #     ticks, same prices, nothing on screen out of place -- reports ten times
+    #     the P&L, ten times the drawdown, and a prop-firm verdict for an account
+    #     nobody traded. Both halves are checked: that the contract resolves, and
+    #     that the resolved number is what multiplies the points.
+    assert instrument("NQ 09-26")[0] == 20.0, instrument("NQ 09-26")
+    assert instrument("MNQ 09-26")[0] == 2.0, instrument("MNQ 09-26")
+    #     ES is here because it is the one that collides: NinjaTrader's table
+    #     also holds "ES" the NYSE stock at $1/point (see `master_instruments`).
+    assert instrument("ES 09-26")[0] == 50.0, instrument("ES 09-26")
+    assert m5["point_value"] == instrument(c)[0], (m5["point_value"], c)
+    _sod = np.arange(9 * 3600 + 1800, 16 * 3600 + 1)          # 09:30..16:00, 1s
+    _ramp = dict(ts=(20_000 * 86400 + tp.NET_EPOCH_S) * tp.TPS
+                    + _sod.astype(np.int64) * tp.TPS,
+                 px=np.linspace(20000.0, 20100.0, len(_sod)))
+    _i0 = int(np.searchsorted(_sod, 10 * 3600))
+    _free = Costs(commission=0.0, slippage_ticks=0.0)
+    _big, _small = (resolve(_ramp, [_i0], [1], [19000.0], [21000.0],
+                            replace(_free, point_value=pv), timeout_min=600.0)[0]
+                    for pv in (20.0, 2.0))
+    assert _small.pnl > 0 and abs(_big.pnl - 10 * _small.pnl) < 1e-6, \
+        f"point value must scale P&L: {_big.pnl} vs {_small.pnl}"
 
     # 6. THE INVARIANT THAT CAUGHT A REAL BUG. A stop-out cannot make money and a
     #    target cannot lose it. Both were violated when a strategy measured its
     #    stop from a signal LEVEL while the engine filled at a later tick: one
     #    stop-out booked +$17,635 and the strategy showed +$34K over 23 days.
     #    Checked across every strategy, because the mistake is not local to one.
-    costs = Costs()
+    #    `replace` mirrors what `backtest` does to the costs it is handed: the
+    #    bounds below are in dollars, so they have to be in THIS tape's dollars.
+    _pv, _tick = instrument(c)
+    costs = replace(Costs(), point_value=_pv, tick_size=_tick)
     slip_cost = costs.slippage_ticks * costs.tick_size * costs.point_value
     for name in LIBRARY:
         trades, meta = backtest(c, name, 300, costs=costs)
