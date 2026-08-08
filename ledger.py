@@ -34,6 +34,7 @@ import argparse
 import hashlib
 import json
 import math
+import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from statistics import NormalDist
@@ -69,6 +70,22 @@ def read(path: Path | None = None) -> list[dict]:
     return out
 
 
+# READING THE PREVIOUS HASH AND APPENDING THE NEXT RECORD IS ONE OPERATION, and
+# it was two. The dashboard is threaded -- every SSE stream is its own thread --
+# so two runs finishing near each other both read the same tail, both computed
+# the same `seq` and the same `prev`, and both appended. Measured with 24
+# concurrent writers on a fresh file: 25 rows, 12 distinct sequence numbers, and
+# `verify()` broken at record 2 on Linux and on Windows alike. The one file in
+# this project whose entire purpose is being tamper-evident was being corrupted
+# by ordinary use, and the corruption is indistinguishable from an edit.
+#
+# ponytail: a thread lock, so two PropSim instances sharing ~/.prop-sim can still
+# interleave. That needs a lock FILE (msvcrt.locking / fcntl.flock), and a second
+# instance is at least visible now that `_free_port` refuses to hand back an
+# occupied port. Upgrade here if instances ever become routine.
+_APPEND = threading.Lock()
+
+
 def append(kind: str, path: Path | None = None, **fields) -> dict:
     """Record one trial. Called BEFORE the result is shown, never after.
 
@@ -78,13 +95,15 @@ def append(kind: str, path: Path | None = None, **fields) -> dict:
     """
     p = Path(path or LEDGER)
     p.parent.mkdir(parents=True, exist_ok=True)
-    rows = read(p)
-    prev = rows[-1].get("hash", "") if rows else ""
-    body = dict(seq=len(rows) + 1, ts=datetime.now().isoformat(timespec="seconds"),
-                kind=kind, **fields)
-    rec = dict(body, prev=prev, hash=_digest(prev, body))
-    with p.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(rec, sort_keys=True) + "\n")
+    with _APPEND:
+        rows = read(p)
+        prev = rows[-1].get("hash", "") if rows else ""
+        body = dict(seq=len(rows) + 1,
+                    ts=datetime.now().isoformat(timespec="seconds"),
+                    kind=kind, **fields)
+        rec = dict(body, prev=prev, hash=_digest(prev, body))
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, sort_keys=True) + "\n")
     return rec
 
 
@@ -296,6 +315,36 @@ def selfcheck():
     assert sq["best_t"] == 2.4, f"a 3-session t must not become the best: {sq}"
     assert sq["trials"] == 2 and sq["tested"] == 1, sq
     assert verify(q)["ok"], "recognising it must not require rewriting history"
+
+    # CONCURRENT APPENDS MUST NOT BREAK THE CHAIN. The dashboard is threaded and
+    # every SSE stream is its own thread, so two runs finishing together is
+    # ordinary use, not an edge case. Unlocked, 24 writers on a fresh file gave
+    # 25 rows with 12 distinct sequence numbers and a chain broken at record 2 --
+    # on Linux and on Windows alike -- and a broken chain is indistinguishable
+    # from someone having edited the file, which is the one thing it exists to
+    # tell you. 24 threads because the failure is a lost update and needs real
+    # contention to show; at 2 it is a coin flip.
+    q2 = Path(tempfile.mkdtemp(prefix="propsim-ledger-")) / "trials.jsonl"
+    append("backtest", path=q2, strategy="seed", t_daily=1.0, days=30)
+    boom = []
+
+    def _writer(i):
+        try:
+            append("backtest", path=q2, strategy=f"s{i}", t_daily=1.0, days=30)
+        except Exception as exc:                              # noqa: BLE001
+            boom.append(exc)
+
+    hands = [threading.Thread(target=_writer, args=(i,)) for i in range(24)]
+    for h in hands:
+        h.start()
+    for h in hands:
+        h.join()
+    assert not boom, boom[0]
+    conc = read(q2)
+    seqs = [r["seq"] for r in conc]
+    assert len(conc) == 25, len(conc)
+    assert len(set(seqs)) == 25, f"lost updates: {25 - len(set(seqs))} duplicate seq"
+    assert verify(q2)["ok"], verify(q2)
 
     # The noise baseline has to rise with the count, and the 5% bar sit above it.
     assert expected_max_t(1) == 0.0

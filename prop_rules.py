@@ -484,7 +484,7 @@ def update_rules(url=RULES_URL, timeout=5.0) -> dict:
         if len(rows) < have * 0.8:
             return dict(ok=False, reason=f"rejected: {len(rows)} rows vs {have} bundled")
         USER_DIR.mkdir(parents=True, exist_ok=True)
-        USER_RULES.write_text(raw)
+        USER_RULES.write_text(raw, encoding="utf-8")   # downloaded text
         global _CACHE
         _CACHE = None
         return dict(ok=True, rows=len(rows), path=str(USER_RULES))
@@ -500,7 +500,7 @@ def load() -> list[RuleSet]:
             raise SystemExit(f"{path} missing - run: python3 prop_rules.py --build")
         names = {f.name for f in fields(RuleSet)}
         _CACHE = [RuleSet(**{k: v for k, v in r.items() if k in names})
-                  for r in json.loads(path.read_text())]
+                  for r in json.loads(path.read_text(encoding="utf-8"))]
     return _CACHE
 
 

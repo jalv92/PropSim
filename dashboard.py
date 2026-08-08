@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import multiprocessing
+import sys
 import threading
 import time
 import traceback
@@ -61,6 +62,30 @@ MIN_DAYS = sim.MIN_DAYS
 MEANINGFUL_DAYS = sim.MEANINGFUL_DAYS
 UPDATE_RESULT = {}          # filled once at startup, shown in the UI
 PLUGIN_REPORT: list = []    # user strategy files: loaded, or why not
+
+
+class Server(ThreadingHTTPServer):
+    """ThreadingHTTPServer that does not shout when a browser walks away.
+
+    BELT AND BRACES, and it earned its place: `socketserver` catches whatever
+    escapes a handler and prints "Exception occurred during processing of
+    request" plus a full traceback, on its own, ABOVE anything this module
+    does. So the console noise this was written to remove has two sources, and
+    fixing only the handler's `except` clause leaves the second one live for
+    every path that has not been thought of yet -- teardown, header writes,
+    keep-alive reads.
+
+    A peer that left is not an error at any layer, so it is swallowed here and
+    nowhere else. Everything that is not a `ConnectionError` still prints in
+    full, because a silent server is worse than a noisy one.
+    """
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], ConnectionError):
+            return
+        super().handle_error(request, client_address)
 
 
 class ClientGone(Exception):
@@ -727,11 +752,20 @@ class Handler(BaseHTTPRequestHandler):
         pass                                   # quiet; this is a local tool
 
     def _send(self, code, body: bytes, ctype):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        # THE SAME DEAD PEER, ON THE ORDINARY ROUTES. `/api/tape` is slow by
+        # construction -- `available_range` decompresses every cached contract
+        # to produce three numbers, and the Data tab asks on every refresh -- so
+        # a reload during one leaves this writing into a closed socket, and it
+        # had no handler at all. The traceback the stream path printed on Stop,
+        # this one printed on a refresh. Nothing to unwind here, so it returns.
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except ConnectionError:
+            return
 
     def do_GET(self):
         u = urlparse(self.path)
@@ -1020,11 +1054,18 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found", "text/plain")
 
     def _sse(self, q, runner=None):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
-        self.end_headers()
+        # The headers go out before anything is guarded, and a client can be gone
+        # by then: pressing Run twice fast, or a reload landing between the
+        # request and the response. Starting the run anyway would burn a sweep
+        # nobody is watching AND charge it to the ledger.
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+        except ConnectionError:
+            return
         lock = threading.Lock()
 
         def write(event, payload):
@@ -1033,8 +1074,32 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     self.wfile.write(msg.encode())
                     self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError):
-                    raise ClientGone          # client navigated away mid-run
+                except ConnectionError:
+                    # A DEAD SOCKET HERE IS THE STOP BUTTON, NOT A FAULT. Stopping
+                    # a sweep is implemented as the browser closing the stream and
+                    # the server's next progress write finding nobody there (see
+                    # the comment beside `finish` in dashboard.html), so this path
+                    # runs on purpose several times a session.
+                    #
+                    # ON THE BASE CLASS, because the platform picks the subclass
+                    # and this was a list of the two that Linux picks. Windows
+                    # raised the third -- ConnectionAbortedError, WinError 10053,
+                    # "aborted by the software in your host machine" -- which fell
+                    # through to the generic handler and printed a full traceback
+                    # to the console every time Javier pressed Stop. Measured:
+                    # Linux gives ConnectionResetError (errno 104) or
+                    # BrokenPipeError (32); Windows gives ConnectionResetError
+                    # (10054) for a socket closed outright and
+                    # ConnectionAbortedError (10053) when the abort is raised
+                    # locally, which is what a browser dropping an EventSource on
+                    # loopback does. All four ConnectionError subclasses mean the
+                    # same thing to this function: there is nobody to write to.
+                    #
+                    # NOT `OSError`, deliberately. WinError 10038 (not a socket)
+                    # or a closed-file ValueError would mean this code closed
+                    # something it still owned, and swallowing that would hide a
+                    # real bug behind a routine one.
+                    raise ClientGone
         try:
             (runner or run_stream)(q, write)
         except ClientGone:
@@ -1069,21 +1134,206 @@ def _free_port(preferred):
     report the bind error on, so it would just fail silently.
     """
     import socket
+    # ASK WHETHER SOMEBODY IS SERVING, NOT WHETHER WE COULD BIND. The two are the
+    # same question on Linux and are NOT on Windows, where SO_REUSEADDR means
+    # something else entirely: it lets a socket bind a port that another socket
+    # is actively LISTENING on. The probe therefore bound 8765 straight over a
+    # running PropSim and reported it free, and a second instance served nothing
+    # while the first kept the browser -- silently, which is the whole problem.
+    # Measured: with a live listener on a port, this returned port+1 on Linux and
+    # the SAME occupied port on Windows.
+    #
+    # A connect answers the question directly and identically everywhere, and it
+    # keeps the property the bind probe was given SO_REUSEADDR for: a socket in
+    # TIME_WAIT accepts nothing, so a restart with a browser still attached finds
+    # its own port free instead of hopping and moving the URL under the user.
     for p in range(preferred, preferred + 40):
         with socket.socket() as s:
-            # Match what the real server can do. ThreadingHTTPServer sets
-            # allow_reuse_address, so it binds a port whose old connections are
-            # still in TIME_WAIT -- a probe without SO_REUSEADDR does not, and the
-            # app then hopped to the next port on every restart that had a browser
-            # attached. The URL moving under the user is worse than the collision
-            # this was guarding against.
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                s.bind(("127.0.0.1", p))
-                return p
-            except OSError:
-                continue
+            s.settimeout(0.25)
+            if s.connect_ex(("127.0.0.1", p)) == 0:
+                continue                      # somebody is answering here
+        return p
     return preferred
+
+
+def selfcheck():
+    """The disconnect path, which is a CONTROL PATH here and not an error one.
+
+    This module had no selfcheck at all, which is the only reason the bug below
+    survived: stopping a sweep is implemented as the browser closing the stream
+    and the server noticing on its next write, so a disconnect happens by design
+    several times a session, and nothing ever exercised it.
+    """
+    import contextlib
+    import io
+    import socket as _socket
+    import struct as _struct
+
+    # 1. EVERY PLATFORM'S WAY OF SAYING "NOBODY IS THERE" IS ONE BASE CLASS.
+    #    The handler used to list the two subclasses Linux raises. Windows
+    #    raises the third and it fell through to the generic handler, which
+    #    printed a full traceback to the console on every Stop.
+    for exc in (BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
+                ConnectionRefusedError):
+        assert issubclass(exc, ConnectionError), exc
+    #    ...and OSError is NOT that base, so the catch cannot swallow a real one.
+    assert not issubclass(OSError, ConnectionError)
+
+    class _Dead:
+        """A socket that has gone away in a chosen platform's dialect.
+
+        `closed` and `close` are not decoration: `StreamRequestHandler.finish`
+        touches both on the way out, and a stub without them raises an
+        AttributeError that `socketserver.handle_error` prints -- which is
+        exactly how the second source of console noise was found.
+        """
+        closed = False
+
+        def __init__(self, exc):
+            self.exc = exc
+            self.writes = 0
+
+        def write(self, _b):
+            self.writes += 1
+            raise self.exc
+
+        def flush(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    served = {}
+
+    class _H(Handler):
+        exc_type = ConnectionAbortedError
+
+        def do_GET(self):
+            def runner(_q, write):
+                # First write lands normally; the peer leaves; the next one is
+                # where the platform speaks. A sweep's progress callback is
+                # exactly this shape.
+                write("progress", dict(done=1))
+                self.wfile = _Dead(_H.exc_type(10053, "aborted"))
+                for i in range(50):
+                    write("progress", dict(done=i))     # must not return
+                served["ran_on"] = True                 # unreachable
+            self._sse({}, runner)
+            served["returned"] = True
+
+    for exc_type, label in ((ConnectionAbortedError, "Windows 10053"),
+                            (ConnectionResetError, "reset"),
+                            (BrokenPipeError, "broken pipe")):
+        _H.exc_type = exc_type
+        served.clear()
+        srv = Server(("127.0.0.1", 0), _H)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                c = _socket.create_connection(("127.0.0.1", srv.server_address[1]))
+                c.sendall(b"GET /x HTTP/1.1\r\nHost: x\r\n\r\n")
+                c.recv(200)
+                for _ in range(100):
+                    if served.get("returned"):
+                        break
+                    time.sleep(0.02)
+                c.close()
+        finally:
+            srv.shutdown()
+        assert served.get("returned"), f"{label}: the handler never unwound"
+        assert not served.get("ran_on"), f"{label}: the run continued past a dead socket"
+        assert "Traceback" not in err.getvalue(), (
+            f"{label}: printed a traceback for a client that simply left:\n"
+            + err.getvalue()[:400])
+
+    # 2. AND A REAL PEER LEAVING MID-STREAM, whatever this platform calls it.
+    class _R(Handler):
+        def do_GET(self):
+            def runner(_q, write):
+                for i in range(20_000):
+                    write("progress", dict(done=i))
+                    time.sleep(0.001)
+            self._sse({}, runner)
+            served["real"] = True
+
+    served.clear()
+    srv = Server(("127.0.0.1", 0), _R)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            c = _socket.create_connection(("127.0.0.1", srv.server_address[1]))
+            c.setsockopt(_socket.SOL_SOCKET, _socket.SO_LINGER,
+                         _struct.pack("ii", 1, 0))       # close() -> RST
+            c.sendall(b"GET /x HTTP/1.1\r\nHost: x\r\n\r\n")
+            c.recv(200)
+            time.sleep(0.05)
+            c.close()
+            for _ in range(200):
+                if served.get("real"):
+                    break
+                time.sleep(0.02)
+    finally:
+        srv.shutdown()
+    assert served.get("real"), "a real disconnect did not unwind the stream"
+    assert "Traceback" not in err.getvalue(), err.getvalue()[:400]
+
+    # 3. THE ORDINARY ROUTES TOO. A reload while dashboard.html is still going
+    #    out printed the same traceback `_sse` printed on Stop.
+    class _S(Handler):
+        def do_GET(self):
+            self.wfile = _Dead(ConnectionAbortedError(10053, "aborted"))
+            self._send(200, b"x" * 4096, "text/plain")
+            served["send"] = True
+
+    served.clear()
+    srv = Server(("127.0.0.1", 0), _S)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            c = _socket.create_connection(("127.0.0.1", srv.server_address[1]))
+            c.sendall(b"GET /x HTTP/1.1\r\nHost: x\r\n\r\n")
+            for _ in range(100):
+                if served.get("send"):
+                    break
+                time.sleep(0.02)
+            c.close()
+    finally:
+        srv.shutdown()
+    assert served.get("send"), "_send did not return on a dead socket"
+    assert "Traceback" not in err.getvalue(), err.getvalue()[:400]
+
+    # 4. THE PORT PROBE MUST SEE A LIVE SERVER. It asked "could I bind here",
+    #    which on Windows -- where SO_REUSEADDR lets a socket bind a port another
+    #    is LISTENING on -- is a different question with a different answer. It
+    #    handed back the occupied port, so a second PropSim served nothing while
+    #    the first kept the browser. Measured before the fix: port+1 on Linux,
+    #    the same port on Windows.
+    busy = _socket.socket()
+    busy.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)   # as the server does
+    busy.bind(("127.0.0.1", 0))
+    taken = busy.getsockname()[1]
+    busy.listen(5)
+    try:
+        assert _free_port(taken) != taken, (
+            f"_free_port handed back {taken}, which is being served right now")
+    finally:
+        busy.close()
+    #    ...and a port nobody is on comes straight back, so the URL does not move
+    #    under the user on a restart.
+    idle = _socket.socket()
+    idle.bind(("127.0.0.1", 0))
+    free = idle.getsockname()[1]
+    idle.close()
+    assert _free_port(free) == free, "a free port must be used, not stepped over"
+
+    print("selfcheck OK: a peer that leaves unwinds the stream silently in all "
+          "three dialects (Windows 10053 included, the one that was missing); a "
+          "real RST mid-stream unwinds too; _send returns instead of raising; and "
+          "the port probe steps over a live server instead of joining it")
 
 
 def main():
@@ -1097,7 +1347,10 @@ def main():
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--open", action="store_true", help="open a browser tab")
     ap.add_argument("--no-open", action="store_true")
+    ap.add_argument("--selfcheck", action="store_true")
     args = ap.parse_args()
+    if args.selfcheck:
+        return selfcheck()
     if not PAGE.exists():
         raise SystemExit(f"missing {PAGE}")
     pr.load()                                  # fail fast if the table is absent
@@ -1119,7 +1372,7 @@ def main():
     threading.Thread(target=_refresh, daemon=True).start()
     port = _free_port(args.port)
     url = f"http://127.0.0.1:{port}"
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    srv = Server(("127.0.0.1", port), Handler)
     print(f"PropSim on {url}   (ctrl-c to stop)")
     # A windowed build has no console, so the browser IS the UI: open it unless
     # explicitly told not to.

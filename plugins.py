@@ -367,7 +367,7 @@ def scan(directory: Path | None = None, validate: bool = True) -> list[dict]:
         if f.name.startswith("_"):
             continue
         row = dict(file=f.name, path=str(f))
-        src = f.read_text()
+        src = f.read_text(encoding="utf-8")   # written as utf-8 by aiauthor
         sha = hashlib.sha256(src.encode()).hexdigest()
         hit = cache.get(sha) if validate else None
         ok, why = (True, "") if (hit or not validate) else _isolated_check(f)
@@ -648,7 +648,7 @@ def main():
         ok, why = _isolated_check(f)
         if not ok:
             raise SystemExit(f"REJECTED: {why}")
-        S = load_source(f.read_text(), f.name)
+        S = load_source(f.read_text(encoding="utf-8"), f.name)
         print(f"OK: {S.name} — {S.label}, params: {', '.join(S.params) or 'none'}")
         try:
             print("smoke test:", smoke_test(S))

@@ -1908,7 +1908,15 @@ function opCount(){
           clear t ≈ ${noise.toFixed(2)} to be worth anything, and your best
           result so far is ${(OP_BEST_T==null ? "—" : OP_BEST_T.toFixed(2))}.</b>`
         : "");
-  $("#op_run").disabled = !any || !$("#op_contract").value;
+  // NOT WHILE ONE IS RUNNING. `opRun` disables this button, and every caller of
+  // `opCount` used to hand it straight back: editing a parameter, or -- since
+  // the estimate started depending on them -- touching a date or the bar size,
+  // re-enabled Run in the middle of a sweep. Pressing it then started a SECOND
+  // sweep without closing the first, so two of them competed for the pool and
+  // both charged the ledger, and the browser (six connections per host) was
+  // left to abort one of the streams itself. `OP_RUN` is non-null exactly while
+  // a sweep is in flight.
+  $("#op_run").disabled = !!OP_RUN || !any || !$("#op_contract").value;
 }
 
 // Seconds per combination PER SESSION, keyed by strategy and bar size, learned
@@ -1944,6 +1952,8 @@ function opSessions(){
 // Handles for the running sweep: OP_RUN stops it, OP_PAUSE holds and releases
 // it. Both null when nothing is running, which is what the refresh guard tests.
 let OP_RUN = null, OP_PAUSE = null;
+// The live stream, at module scope so a NEW run can close an orphaned one.
+let OP_ES = null;
 
 // A sweep dies when the page reloads -- the stream closes and the server
 // unwinds on its next progress tick. It cannot be resumed, so an accidental
@@ -2002,7 +2012,14 @@ function opRun(){
   $("#op_pause").hidden=false; $("#op_pause").textContent="Pause";
   $("#op_err").hidden = true;                 // last run's failure is not this one's
   $("#op_status").textContent="Starting…";
-  const es = new EventSource("/api/optimize?"+q);
+  // CLOSE ANY PREVIOUS STREAM FIRST, the same guard the Analyzer tab has had
+  // since a run abandoned before its result leaked the socket. Optimize never
+  // got it: `es` was a local const reachable only from its own `finish`, so a
+  // sweep whose stream was orphaned kept a connection open for the life of the
+  // page. Six of those and the browser queues the seventh request forever, and
+  // the tab wedges with no error anywhere.
+  if(OP_ES){ try{ OP_ES.close(); }catch(_){} }
+  const es = OP_ES = new EventSource("/api/optimize?"+q);
   let paused = false;
   OP_PAUSE = () => {
     paused = !paused;
@@ -2014,7 +2031,9 @@ function opRun(){
   // are still charged to the ledger -- stopping early is not a free look.
   const finish = msg => { OP_RUN=null; OP_PAUSE=null; $("#op_run").disabled=false;
     $("#op_stop").hidden=true; $("#op_pause").hidden=true;
-    $("#op_status").textContent=msg||""; es.close(); };
+    $("#op_status").textContent=msg||""; es.close();
+    if(OP_ES === es) OP_ES = null;
+    opCount(); };            // re-gate Run now that OP_RUN is null
   OP_RUN = () => finish("Stopped. The combinations already searched were "
                         + "charged to the ledger.");
   es.addEventListener("meta", e=>{ const m=JSON.parse(e.data);

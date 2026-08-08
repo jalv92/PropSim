@@ -475,7 +475,12 @@ def validate(src: str, contract=None, tf_secs=300) -> tuple[str, dict]:
     """
     info: dict = {}
     tmp = Path(tempfile.mkdtemp(prefix="propsim-ai-")) / "candidate.py"
-    tmp.write_text(src)
+    # UTF-8 EXPLICITLY. Without it Windows uses the locale codec, and the text on
+    # both sides of this pair is not ASCII: a model writes em dashes and arrows into
+    # comments without being asked, and the rules table is downloaded. A cp1252
+    # machine raises UnicodeEncodeError on the write, or reads back mojibake. This
+    # machine happens to report UTF-8 already; the repo is public and most do not.
+    tmp.write_text(src, encoding="utf-8")
     try:
         # A separate process first: a generated file can loop forever at import time,
         # and that must not take the dashboard with it.
@@ -591,7 +596,7 @@ def install(res: dict, directory: Path | None = None, overwrite=False) -> Path:
     p = d / f"{res['info']['name']}.py"
     if p.exists() and not overwrite:
         raise AuthorError(f"{p} already exists. Delete it, or rename the strategy.")
-    p.write_text(res["header"] + "\n\n" + res["source"])
+    p.write_text(res["header"] + "\n\n" + res["source"], encoding="utf-8")
     return p
 
 
