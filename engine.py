@@ -127,6 +127,21 @@ class Strategy:
     # and the next morning's 09:30 window counted as two different days, while
     # NinjaTrader resets its daily P&L once, at the session begin.
     session_offset_s = 0
+    # THE INSTRUMENT'S MINIMUM PRICE INCREMENT, set on the instance by
+    # `backtest` from the contract that is actually running. Every setup here
+    # sizes its stops, targets and filters in TICKS, and until this existed they
+    # multiplied by the module constant -- NQ's 0.25 -- on every tape. So a
+    # 40-tick stop on MYM (tick 1.00) was placed 10 points away and the engine
+    # then charged slippage and measured risk at 1.00 a tick: the strategy and
+    # the engine disagreed about what a tick was, silently, and the two numbers
+    # only ever matched because NQ, MNQ, ES and MES all happen to be 0.25.
+    # The class default keeps a strategy constructed directly -- a selfcheck, a
+    # plugin's own fixtures -- working exactly as before.
+    tick = TICK_SIZE
+    # Same contract, same reason: a setup that sizes anything in DOLLARS -- a
+    # daily governor, a risk cap -- needs the running instrument's multiplier
+    # and not NQ's. Set beside `tick` by `backtest`.
+    point_value = POINT_VALUE
     params: dict[str, Param] = {}
 
     def entries(self, bars, tape, p):
@@ -176,8 +191,8 @@ class MACross(Strategy):
         idx, direc, nxt = idx[ok], direc[ok], nxt[ok]
         entry_tick = bars["start"][nxt]
         px = bars["o"][nxt].astype(np.float64)
-        stop = px - direc * p["stop_ticks"] * TICK_SIZE
-        target = px + direc * p["stop_ticks"] * p["rr"] * TICK_SIZE
+        stop = px - direc * p["stop_ticks"] * self.tick
+        target = px + direc * p["stop_ticks"] * p["rr"] * self.tick
         return entry_tick, direc, stop, target
 
 
@@ -191,49 +206,90 @@ class ORB(Strategy):
     }
 
     def entries(self, bars, tape, p):
+        """NOT ONE DECISION HERE IS TAKEN FROM A BAR, and that is the whole point.
+
+        The bars are used for exactly one thing -- finding where each session
+        starts and ends in the tape -- because everything else this setup needs
+        is a property of the tape and the clock. Reading any of it off the bar
+        grid was two separate bugs, both silent, both found by the timeframe
+        invariant in `selfcheck` failing:
+
+        1. LOOKAHEAD IN THE DIRECTION. The break used to be detected as
+           `bars.h[i] > hi` -> long, `bars.l[i] < lo` -> short, with `up`
+           winning when a bar did both. A bar's high and low are only known at
+           its close, so on any bar that traded through BOTH sides the direction
+           was chosen with end-of-bar information about a trade that started
+           earlier -- and always chosen long. On 2025-12-16 the tape crossed
+           DOWN at 09:46:01; on 15-minute bars this booked a LONG at 09:50:49
+           for +$370 where the 30-second run took the real short for -$230.
+           Coarser bars produce more such bars (0 at 30s and 60s, 1 at 5m, 5 at
+           15m) and the P&L rose with them: -4,700 / -4,700 / -4,100 / -2,900.
+           This is the same trap the entry PRICE was fixed for long ago; the
+           direction was left behind. `RangeBreak` already resolves it from the
+           ticks, first crossing wins, and this now does it the same way.
+
+        2. THE OPENING RANGE SNAPPED TO THE BAR GRID. `sod < range_end` on the
+           bar's START time makes the window whatever bars happen to begin
+           inside it, so on 15-minute bars a `range_min` of 20 measured 09:30 to
+           10:00 rather than 09:30 to 09:50. It agreed with the finer runs only
+           when `range_min` was a multiple of the bar size, and `range_min` is
+           swept from 5 to 90 -- so most of a sweep at 15m was measuring a range
+           it was not asked for. Cut on the tape's own clock instead.
+        """
         t = bars["t"]
         if not len(t):
             return _empty()
+        px, ts = tape["px"], tape["ts"]
         day = tp.day_index(t)
-        sod = tp.sec_of_day(t)
-        open_s = 9 * 3600 + 30 * 60
-        in_range = sod < open_s + p["range_min"] * 60
+        range_end = 9 * 3600 + 30 * 60 + int(round(p["range_min"] * 60))
+        stop = p["stop_ticks"] * self.tick
         et, dr, st, tg = [], [], [], []
         for d in np.unique(day):
-            m = day == d
-            rng = m & in_range
-            if not rng.any():
+            # The session's tick span, off the bars -- the one thing they are
+            # authoritative about, since bucketing is by (day, slot) so the
+            # first bar of a day starts on that day's first tick.
+            m = np.flatnonzero(day == d)
+            d0, d1 = int(bars["start"][m[0]]), int(bars["end"][m[-1]])
+            # Where the window ends, as a timestamp rather than as a bar. Exact
+            # and O(log n): `day_index` and `sec_of_day` are floor-divide and
+            # modulo of the same quantity, so the second the window closes on
+            # day `d` is a number, and the tape is sorted.
+            cut = (tp.NET_EPOCH_S + int(d) * 86400 + range_end) * tp.TPS
+            r1 = d0 + int(np.searchsorted(ts[d0:d1], cut, "left"))
+            if r1 <= d0 or r1 >= d1:
+                continue          # no ticks in the window, or none after it
+            hi, lo = float(px[d0:r1].max()), float(px[d0:r1].min())
+
+            # WHERE EACH TICK STANDS RELATIVE TO THE RANGE, and the whole setup
+            # falls out of it. A breakout is a tick outside the range whose
+            # predecessor was inside -- so the marks are one shifted comparison,
+            # the direction is the side it left by, and both are read off the
+            # tape without a bar or a loop.
+            #
+            # RE-ARMING IS A PROPERTY OF THE TAPE TOO. The old loop offered one
+            # entry per BAR still outside the range, which on 30-second bars is
+            # thirty candidates for the move that gives one on 15 minutes: the
+            # `one_per_day=0` mode was never timeframe-independent either. It
+            # re-arms when price has been back INSIDE and left again, which is
+            # what the setup means and what the shift below says.
+            sub = px[r1:d1]
+            state = np.zeros(len(sub), np.int8)
+            state[sub > hi] = 1
+            state[sub < lo] = -1
+            out = state != 0
+            mark = out.copy()
+            mark[1:] &= ~out[:-1]      # [0] stands: already outside at the open
+            idx = np.flatnonzero(mark)
+            if not len(idx):
                 continue
-            hi, lo = bars["h"][rng].max(), bars["l"][rng].min()
-            after = np.flatnonzero(m & ~in_range)
-            for i in after:
-                up = bars["h"][i] > hi
-                dn = bars["l"][i] < lo
-                if not (up or dn):
-                    continue
-                direc = 1 if up else -1
-                level = hi if up else lo
-                # LOOKAHEAD TRAP, and the first version fell in it. The breakout
-                # is detected from the bar's HIGH/LOW, which is only known once
-                # the bar closes -- but the trade happens the instant price
-                # crosses the level, mid-bar. Entering at the bar's first tick
-                # would buy below the level using end-of-bar information, which
-                # is free money that does not exist. It scored t=4.78 and 79%
-                # win rate before this was fixed.
-                #
-                # So find the actual crossing tick inside the bar. The tape is
-                # right here; there is no reason to approximate.
-                a, b = int(bars["start"][i]), int(bars["end"][i])
-                seg = tape["px"][a:b]
-                cross = np.flatnonzero(seg > level) if up else np.flatnonzero(seg < level)
-                if not len(cross):
-                    continue
-                entry_i = a + int(cross[0])
-                et.append(entry_i); dr.append(direc)
-                st.append(level - direc * p["stop_ticks"] * TICK_SIZE)
-                tg.append(level + direc * p["stop_ticks"] * p["rr"] * TICK_SIZE)
-                if p["one_per_day"]:
-                    break
+            if p["one_per_day"]:
+                idx = idx[:1]
+            for j in idx:
+                direc = int(state[j])
+                level = hi if direc > 0 else lo
+                et.append(r1 + int(j)); dr.append(direc)
+                st.append(level - direc * stop)
+                tg.append(level + direc * stop * p["rr"])
         if not et:
             return _empty()
         return (np.array(et, np.int64), np.array(dr, np.int8),
@@ -315,10 +371,10 @@ class RangeBreak(Strategy):
         day = tp.day_index(bars["t"])
         px, ts = tape["px"], tape["ts"]
         t0, t1 = int(p["session_start"]) * 60, int(p["last_entry"]) * 60
-        lo_w = p["min_range_ticks"] * TICK_SIZE
-        hi_w = p["max_range_ticks"] * TICK_SIZE
+        lo_w = p["min_range_ticks"] * self.tick
+        hi_w = p["max_range_ticks"] * self.tick
         atr = _atr(bars, int(p["atr_period"]), day)
-        max_stop = p["max_stop_ticks"] * TICK_SIZE
+        max_stop = p["max_stop_ticks"] * self.tick
         be_pct = p["be_trigger_pct"] / 100.0
 
         top = _roll(h, N, np.max)
@@ -420,8 +476,8 @@ class SweepFollow(Strategy):
             return _empty()
         direc = side[last].astype(np.int8)
         fill = px[last].astype(np.float64)
-        stop = fill - direc * p["stop_ticks"] * TICK_SIZE
-        target = fill + direc * p["stop_ticks"] * p["rr"] * TICK_SIZE
+        stop = fill - direc * p["stop_ticks"] * self.tick
+        target = fill + direc * p["stop_ticks"] * p["rr"] * self.tick
         # map back to indices in the FULL tape (the caller resolves there)
         full_idx = np.flatnonzero(good)[last]
         return full_idx, direc, stop, target
@@ -455,7 +511,7 @@ class FVG(Strategy):
         n = len(h)
         if n < 4:
             return _empty()
-        gap = p["min_ticks"] * TICK_SIZE
+        gap = p["min_ticks"] * self.tick
         px, ts = tape["px"], tape["ts"]
         exp = int(p["expiry_bars"])
         day = tp.day_index(bars["t"])
@@ -497,8 +553,8 @@ class FVG(Strategy):
             j = a + int(hit[0])
             direc = 1 if bull else -1
             et.append(j); dr.append(direc)
-            st.append(level - direc * p["stop_ticks"] * TICK_SIZE)
-            tg.append(level + direc * p["stop_ticks"] * p["rr"] * TICK_SIZE)
+            st.append(level - direc * p["stop_ticks"] * self.tick)
+            tg.append(level + direc * p["stop_ticks"] * p["rr"] * self.tick)
             lim.append(level)
             used_days.add(d)
         if not et:
@@ -560,7 +616,7 @@ class VWAPRevert(Strategy):
             cnt += 1
         vwap = cpv / np.maximum(cvv, 1.0)
 
-        stretch = p["stretch_ticks"] * TICK_SIZE
+        stretch = p["stretch_ticks"] * self.tick
         far = bars["c"] - vwap
         sig = np.flatnonzero((np.abs(far) >= stretch)
                              & (bar_of_day >= int(p["min_bar"])))
@@ -575,8 +631,8 @@ class VWAPRevert(Strategy):
         direc = np.where(far[sig] > 0, -1, 1).astype(np.int8)   # fade the stretch
         entry_tick = starts[nxt]
         fill = px[entry_tick]
-        stop = fill - direc * p["stop_ticks"] * TICK_SIZE
-        target = fill + direc * p["stop_ticks"] * p["rr"] * TICK_SIZE
+        stop = fill - direc * p["stop_ticks"] * self.tick
+        target = fill + direc * p["stop_ticks"] * p["rr"] * self.tick
         return entry_tick.astype(np.int64), direc, stop, target
 
 
@@ -715,10 +771,10 @@ class LatigoBreak(Strategy):
         day = tp.day_index(bars["t"])
         atr = _atr_wilder(bars, int(p["atr_period"]), day)
         bstart = bars["start"]
-        half = TICK_SIZE * 0.5
+        half = self.tick * 0.5
         filt = bool(p["use_whipsaw_filter"])
         hold_ticks = int(p["hold_seconds"] * tp.TPS)
-        max_stop = self._SANITY_STOP_TICKS * TICK_SIZE
+        max_stop = self._SANITY_STOP_TICKS * self.tick
         max_trades = int(p["max_trades_per_window"])
         be_frac = p["breakeven_percent"] / 100.0 if p["use_breakeven"] else 0.0
         candle_s = float(p["candle_seconds"])
@@ -745,7 +801,7 @@ class LatigoBreak(Strategy):
                     continue                    # empty candle, or no hunt left
                 h = float(px[a:cend].max())
                 l = float(px[a:cend].min())
-                r30 = int(round((h - l) / TICK_SIZE))
+                r30 = int(round((h - l) / self.tick))
                 if r30 < p["min_r30_ticks"]:
                     continue                    # degenerate candle, window skipped
                 # ceil, as in NT8: a fractional tick of extension is a whole tick
@@ -792,7 +848,7 @@ class LatigoBreak(Strategy):
                             if need_ext <= 0:
                                 i_e = i
                             else:
-                                thr = level + side * (need_ext - 0.5) * TICK_SIZE
+                                thr = level + side * (need_ext - 0.5) * self.tick
                                 hit = (np.flatnonzero(seg[i:] >= thr) if side > 0
                                        else np.flatnonzero(seg[i:] <= thr))
                                 i_e = i + int(hit[0]) if len(hit) else len(seg)
@@ -853,7 +909,7 @@ class LatigoBreak(Strategy):
         pc = float(bars["c"][bi - 1])   # previous close, as NinjaTrader's TrueRange
         tr = max(h - l, abs(h - pc), abs(l - pc))
         a = prev + (tr - prev) / int(p["atr_period"])
-        if not np.isfinite(a) or a <= TICK_SIZE:
+        if not np.isfinite(a) or a <= self.tick:
             return False
         risk = p["atr_stop_mult"] * float(a)
         if risk > max_stop:
@@ -862,14 +918,14 @@ class LatigoBreak(Strategy):
         ref = float(ref)
         et.append(e)
         dr.append(side)
-        st.append(_round_tick(ref - side * risk))
-        tg.append(_round_tick(ref + side * reward))
+        st.append(_round_tick(ref - side * risk, self.tick))
+        tg.append(_round_tick(ref + side * reward, self.tick))
         be.append(ref + side * be_frac * reward if be_frac > 0 else ref)
         return True
 
 
-def _round_tick(px: float) -> float:
-    return round(px / TICK_SIZE) * TICK_SIZE
+def _round_tick(px: float, tick: float) -> float:
+    return round(px / tick) * tick
 
 
 LIBRARY = {s.name: s for s in (MACross, ORB, RangeBreak, SweepFollow, FVG,
@@ -1280,6 +1336,11 @@ def backtest(contract, strategy_name, tf_secs=300, start=None, end=None,
     # ran and overwrites whatever the caller happened to construct.
     pv, tick = instrument(ctx["contract"])
     costs = replace(costs, point_value=pv, tick_size=tick)
+    # And the STRATEGY is told too, or it sizes its stops in NQ ticks on a tape
+    # that is not NQ while the engine below charges the real ones. `strat` is
+    # constructed fresh per call just above, so this is per-run state and two
+    # threads on two contracts cannot see each other's.
+    strat.tick, strat.point_value = tick, pv
 
     res = strat.entries(bars, t, p)
     ei, dr, st, tg = res[:4]
@@ -1502,6 +1563,42 @@ def selfcheck():
     assert _ok["t_days"] == MIN_T_DAYS, _ok["t_days"]
     assert abs(_ok["t_daily"]) < 10, (
         f"a month of ordinary days must not score {_ok['t_daily']:.0f}")
+
+    # 5d. A STRATEGY'S "TICKS" ARE THE INSTRUMENT'S TICKS. Every setup here sizes
+    #     its stop, target and filters in ticks, and every one of them multiplied
+    #     by NQ's 0.25 whatever tape was loaded, while `resolve` charged slippage
+    #     and measured risk at the real one. The two only ever agreed because NQ,
+    #     MNQ, ES and MES are all 0.25 -- on MYM (1.00) or M2K (0.10), both of
+    #     which are on this machine's disk, they did not, and nothing said so.
+    _ctx5 = prepare(c, 300, strategy="orb")
+    _p5 = {k: v.default for k, v in LIBRARY["orb"]().params.items()}
+
+    def _levels(tick):
+        s = LIBRARY["orb"]()
+        s.tick = tick
+        e = s.entries(_ctx5["bars"], _ctx5["tape"], _p5)
+        return e[0], e[2], e[3]
+    _i1, _st1, _tg1 = _levels(0.25)
+    _i4, _st4, _tg4 = _levels(1.00)
+    assert np.array_equal(_i1, _i4), "the tick size must not move the entries"
+    assert np.allclose(np.abs(_tg4 - _st4), 4 * np.abs(_tg1 - _st1)), \
+        "stop and target distances must scale with the instrument's tick"
+
+    #     Driven end to end through `instrument` as well, because the WIRING is
+    #     the part that rots: a class attribute nobody sets looks identical from
+    #     inside the strategy. Patch what the resolver reads, not the resolver.
+    import nttrades as _nt5
+    _keep5 = _nt5.master_instruments
+    _nt5.master_instruments = lambda *a, **k: {"NQ": (20.0, 1.00)}
+    try:
+        _wide, _wmeta = backtest(c, "orb", 300)
+    finally:
+        _nt5.master_instruments = _keep5
+    assert _wmeta["tick_size"] == 1.00, _wmeta["tick_size"]
+    _hit = sum(1 for x in tr if x.reason == "stop")
+    _hit_wide = sum(1 for x in _wide if x.reason == "stop")
+    assert _hit_wide < _hit, (
+        f"a stop four times wider must be reached less often: {_hit_wide} vs {_hit}")
 
     # 6. THE INVARIANT THAT CAUGHT A REAL BUG. A stop-out cannot make money and a
     #    target cannot lose it. Both were violated when a strategy measured its
