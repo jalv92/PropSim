@@ -494,8 +494,21 @@ class MomentumBreak(Strategy):
             lo[i] = l[i - look:i].min()
 
         et, dr, st, tg = [], [], [], []
-        stop = p["stop_ticks"] * TICK_SIZE
+        # RULE 1 IN THE PREAMBLE, ENFORCED. The tape is session-filtered, so
+        # 16:00 sits immediately beside 09:30 in this array and bar i+1 is the
+        # NEXT MORNING whenever i is a session's last bar. Measured on NQ 06-26
+        # at 5m, 7 of 235 signals fired on the 15:55 bar and opened at 09:30 the
+        # following session -- one across a whole weekend -- across a gap the
+        # setup never saw, with the stop then measured off the gapped fill.
+        # Those 7 trades were worth +$1,025 of a -$5,600 result: 15% of the P&L
+        # came from trades this setup cannot take.
+        day = tp.day_index(bars["t"])
+        # `self.tick`, not the TICK_SIZE global: the instrument this run is
+        # actually on. They differ on anything that is not NQ, MNQ, ES or MES.
+        stop = p["stop_ticks"] * self.tick
         for i in range(look, n - 1):
+            if day[i + 1] != day[i]:
+                continue
             if not np.isfinite(hi[i]):
                 continue
             if abs(bars["delta"][i]) < p["min_delta"]:

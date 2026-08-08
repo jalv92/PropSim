@@ -1467,7 +1467,8 @@ MIN_T_DAYS = 20
 
 def summarise(trades, meta):
     if not trades:
-        return dict(**meta, pnl=0.0, wr=0.0, per_day=0.0, t_daily=float("nan"))
+        return dict(**meta, pnl=0.0, wr=0.0, per_day=0.0,
+                    t_daily=float("nan"), t_days=0)
     pnl = np.array([t.pnl for t in trades])
     by_day: dict[str, float] = {}
     for t in trades:

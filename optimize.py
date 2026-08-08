@@ -198,7 +198,15 @@ def result_row(p: dict, keys: list, trades, meta, rules=None, contracts=1) -> di
     t_daily = s["t_daily"]
     return dict(
         params={k: p[k] for k in keys},
-        trades=s["trades"], days=s["days"], pnl=round(s["pnl"], 2),
+        trades=s["trades"], days=s["days"],
+        # THE SESSIONS THE STATISTIC RESTS ON, not the sessions on the tape.
+        # `days` is the prepared tape's session count; the daily t is computed
+        # over the days the strategy actually TRADED, and its degrees of
+        # freedom are that count minus one. Reporting the tape's number said
+        # "t 2.10 over 76 sessions" for a statistic resting on 56 -- and the
+        # same sentence is pasted into the NinjaScript export.
+        t_days=s.get("t_days", 0),
+        pnl=round(s["pnl"], 2),
         mean=round(s.get("mean", 0.0), 2), wr=round(s["wr"], 4),
         per_day=round(s["per_day"], 2),
         t_daily=(None if t_daily != t_daily else round(float(t_daily), 3)),
@@ -452,7 +460,8 @@ def evaluate(row: dict, noise_t: float) -> tuple[str, str]:
             f"t {t:.2f} does not exceed the {noise_t:.2f} that the best of this many "
             f"null trials reaches by chance")
     return "earns a forward test", (
-        f"t {t:.2f} over {row['days']} sessions, {row['trades']} trades, "
+        f"t {t:.2f} over {row['t_days']} traded sessions "
+        f"of {row['days']} on the tape, {row['trades']} trades, "
         f"positive in {row['positive_subperiods']}/{SUBPERIODS} sub-periods, "
         f"above the {noise_t:.2f} noise ceiling at this trial count")
 
@@ -645,7 +654,8 @@ def ninjascript_block(res: dict, row: dict) -> str:
     lines = [
         f"// PropSim sweep — {res['label']} on {res['contract']}, "
         f"{res['timeframe']} bars",
-        f"// {row['trades']} trades over {row['days']} sessions, "
+        f"// {row['trades']} trades over {row['t_days']} traded sessions "
+        f"of {row['days']} on the tape, "
         f"net {row['pnl']:,.0f}, daily t = "
         + ("n/a" if row["t_daily"] is None else f"{row['t_daily']:.2f}"),
         f"// Best of {res['combos']} combinations. Ledger trial "
@@ -704,11 +714,17 @@ def selfcheck():
 
     # 4. THE GATE. A configuration whose t does not clear the noise ceiling at the
     #    current trial count is never called a winner, however well it ranks.
-    row = dict(t_daily=2.0, trades=120, days=28, positive_subperiods=3)
+    # `t_days` deliberately different from `days`: the tape had 28 sessions and
+    # the strategy traded on 26 of them, and the verdict must quote the count the
+    # STATISTIC rests on. Quoting the tape's said "t 2.10 over 76 sessions" for a
+    # t with 55 degrees of freedom, in the sentence that is pasted verbatim into
+    # the NinjaScript export.
+    row = dict(t_daily=2.0, trades=120, days=28, t_days=26, positive_subperiods=3)
     v, _ = evaluate(row, noise_t=2.5)
     assert v == "indistinguishable from noise", v
-    v, _ = evaluate(row, noise_t=1.2)
+    v, why = evaluate(row, noise_t=1.2)
     assert v == "earns a forward test", v
+    assert "26 traded sessions" in why and "28 on the tape" in why, why
     v, _ = evaluate(dict(row, trades=10), noise_t=1.2)
     assert v == "below the bar", v
     v, _ = evaluate(dict(row, positive_subperiods=1), noise_t=1.2)

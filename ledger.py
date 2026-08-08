@@ -40,6 +40,10 @@ from statistics import NormalDist
 
 import engine            # for MIN_T_DAYS only; engine never imports this module
 
+# Degrees of freedom at the smallest sample `engine.summarise` will publish a
+# daily t from. `threshold_t` prices its bar here by default.
+_MIN_T_DF = engine.MIN_T_DAYS - 1
+
 LEDGER = Path.home() / ".prop-sim" / "trials.jsonl"
 SEARCH_KINDS = ("backtest", "import", "sweep")
 
@@ -116,10 +120,38 @@ def expected_max_t(n: int) -> float:
     return NormalDist().inv_cdf((n - 0.375) / (n + 0.25))
 
 
-def threshold_t(n: int, alpha: float = 0.05) -> float:
-    """The |t| a two-sided 5% claim needs after n looks (Bonferroni)."""
+def threshold_t(n: int, alpha: float = 0.05, df: int | None = None) -> float:
+    """The |t| a two-sided 5% claim needs after n looks (Bonferroni).
+
+    ON THE t DISTRIBUTION, NOT THE NORMAL, because the thing being compared
+    against it is a t. `engine.summarise` computes it over daily totals and
+    `engine.MIN_T_DAYS` floors that at 20 sessions, so it carries 19 degrees of
+    freedom at the admissible minimum -- and a normal quantile understates the
+    bar by 13% at n=20, 18% at n=200 and 22% at n=1000, a gap that WIDENS with
+    the trial count because Bonferroni pushes further into the tail, which is
+    exactly where the two distributions differ most. Understating flatters the
+    user, and `expected_max_t` below says in as many words that this number must
+    never err in that direction.
+
+    `df` defaults to the floor. That is the most conservative admissible bar and
+    the only honest default here: `stats` prices one number for a whole ledger
+    of runs with different sample sizes, and cannot know any single one's.
+
+    Cornish-Fisher off the normal quantile rather than an inverse incomplete
+    beta: four terms, no dependency, and the residual at df >= 19 is under a
+    tenth of a percent against published tables -- checked in `selfcheck`
+    against t(19) and t(29) at three quantiles. scipy would be exact and is
+    130 MB in a PyInstaller bundle for four lines of series.
+    """
     n = max(int(n), 1)
-    return NormalDist().inv_cdf(1.0 - alpha / (2.0 * n))
+    z = NormalDist().inv_cdf(1.0 - alpha / (2.0 * n))
+    v = float(max(int(df if df is not None else _MIN_T_DF), 1))
+    z2 = z * z
+    return (z
+            + z * (z2 + 1.0) / (4.0 * v)
+            + z * (5.0 * z2 * z2 + 16.0 * z2 + 3.0) / (96.0 * v * v)
+            + z * (3.0 * z2 * z2 * z2 + 19.0 * z2 * z2 + 17.0 * z2 - 15.0)
+            / (384.0 * v * v * v))
 
 
 def fingerprint(**inputs) -> str:
@@ -270,6 +302,23 @@ def selfcheck():
     assert expected_max_t(20) < expected_max_t(200)
     assert 1.80 < expected_max_t(20) < 1.95, expected_max_t(20)   # true value 1.87
     assert threshold_t(20) > expected_max_t(20)
+
+    # THE BONFERRONI BAR IS A t QUANTILE, AND IT IS THE PUBLISHED ONE. Against a
+    # printed table, at the two sample sizes that matter -- the MIN_T_DAYS floor
+    # and a month -- across three quantiles, because a series that is right at
+    # the middle and wrong in the tail is worse than useless here: Bonferroni
+    # spends all its time in the tail. `alpha` is driven directly so each case
+    # lands on a tabulated quantile.
+    for df, q, published in ((19, 0.975, 2.093), (19, 0.995, 2.861),
+                             (19, 0.9995, 3.883), (29, 0.975, 2.045),
+                             (29, 0.995, 2.756), (29, 0.9995, 3.659)):
+        got = threshold_t(1, alpha=2 * (1 - q), df=df)
+        assert abs(got - published) / published < 0.002, (df, q, got, published)
+    #     And it must sit ABOVE the normal quantile it replaced, at every trial
+    #     count, by a margin that grows -- understating the bar flatters the user.
+    gaps = [threshold_t(n) - NormalDist().inv_cdf(1 - 0.05 / (2 * n))
+            for n in (20, 200, 1000)]
+    assert all(g > 0 for g in gaps) and gaps == sorted(gaps), gaps
 
     print(f"selfcheck OK: chain verified then broken by an edit and by a deletion; "
           f"2 trials + 1 score counted separately; "
