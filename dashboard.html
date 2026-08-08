@@ -954,14 +954,18 @@ function anTapeList(){
   return list;
 }
 
-async function anInit(){
-  if(AN.ready) return; AN.ready = true;
-  const lib = await loadLibrary();
+// The instrument list, rebuilt from a fresh AN.tape. Called AGAIN after a
+// prepare finishes, not just at init: the status lives in the option's own
+// label, so a contract that had just been prepared went on reading
+// "(not prepared)" until the page was reloaded -- the note underneath said the
+// cache was built and the picker right above it said it was not.
+function anOptions(){
   // EVERY contract is offered, cached or not. Hiding the uncached ones was how a
   // contract the user had just downloaded simply failed to exist on this page,
   // with nothing saying why. An uncached one disables Run and offers to build.
   AN.tape = anTapeList();
-  const sel = $("#an_contract"); sel.innerHTML = "";
+  const sel = $("#an_contract"), keep = sel.value;
+  sel.innerHTML = "";
   for(const c of AN.tape){
     const o = document.createElement("option");
     o.value = o.textContent = c.contract;
@@ -969,6 +973,14 @@ async function anInit(){
     else if(c.stale) o.textContent += "  (new data available)";
     sel.appendChild(o);
   }
+  if(keep) sel.value = keep;   // at init there is nothing to keep yet
+}
+
+async function anInit(){
+  if(AN.ready) return; AN.ready = true;
+  const lib = await loadLibrary();
+  anOptions();
+  const sel = $("#an_contract");
   // ALL sits first in the list so it's easy to find, not so it's the default
   // pick: preselecting it before it has ever been built left every first-time
   // user staring at a dead selection that can never run. Default to it only
@@ -1079,10 +1091,11 @@ function anContract(){
     note.innerHTML = isAll
       ? `<div class="warn">${esc(c.why)}.
           <button id="an_prepare" class="mini">Rebuild it</button></div>`
-      : `<div class="warn">The cache covers <b>${c.last}</b> but you
-      have data through <b>${c.raw_last}</b> (${c.raw_days} days on disk). The
-      backtest can only use what the cache holds.
-      <button id="an_prepare" class="mini">Rebuild it</button></div>`;
+      : `<div class="warn">The cache holds <b>${c.days}</b> of the
+      <b>${c.raw_days}</b> day(s) on disk${c.raw_last > c.last
+        ? `, and stops at <b>${c.last}</b> while your data runs to
+           <b>${c.raw_last}</b>` : ""}. The backtest can only use what the
+      cache holds. <button id="an_prepare" class="mini">Rebuild it</button></div>`;
   else note.innerHTML = "";
   if($("#an_prepare")) $("#an_prepare").onclick = ()=>anPrepare(c);
 }
@@ -1101,7 +1114,7 @@ function anPrepare(c){
       (${d.ticks.toLocaleString()} ticks)</div>`; });
   es.addEventListener("result", e=>{
     es.close();
-    loadLibrary(true).then(()=>{ AN.tape = anTapeList(); anContract(); });
+    loadLibrary(true).then(()=>{ anOptions(); anContract(); });
   });
   // A refused build (continuous.build()'s audit failing) arrives as this same
   // named "error" event carrying the real reason in .data -- read it before
@@ -2688,7 +2701,9 @@ function allUpdate(){
   es.addEventListener("result", e=>{
     es.close();
     loadAll();
-    loadLibrary(true);   // ALL just changed for every picker on the other tabs too
+    // ALL just changed for every picker on the other tabs too -- including its
+    // own "(not prepared)" label on Backtesting, if that tab has been opened.
+    loadLibrary(true).then(()=>{ if(AN.ready){ anOptions(); anContract(); } });
   });
   // A refused build (continuous.build()'s stitch audit failing) is the safety
   // mechanism working, not a crash -- the reason it refused arrives here in

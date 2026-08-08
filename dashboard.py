@@ -762,7 +762,16 @@ class Handler(BaseHTTPRequestHandler):
                 # knows they downloaded, and nothing on the page explains why.
                 # Both ranges go out, and `stale` is the difference stated plainly.
                 raw_first, raw_last = _fmt_day(v["first"]), _fmt_day(v["last"])
-                stale = bool(ready and hi and raw_last > hi)
+                # The day COUNT, not just the last day: a download that backfills
+                # holes in the middle (NinjaTrader fetches whatever the request
+                # was missing, not only newer days) leaves the last day equal and
+                # the cache short by everything it filled in. Measured on a real
+                # folder: 20 cached days against 28 on disk, with both ends
+                # matching -- eight days the backtest would silently skip while
+                # this said the cache was current. The two counts agree exactly
+                # on every up-to-date contract, so this is not a fuzzy heuristic.
+                stale = bool(ready and hi
+                             and (raw_last > hi or v["days"] > days))
                 rows.append(dict(contract=name, ready=ready, days=days,
                                  first=lo or raw_first,
                                  last=hi or raw_last,

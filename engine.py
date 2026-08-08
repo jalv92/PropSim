@@ -966,7 +966,7 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
             cooldown_min=0.0, timeout_min=240.0, limit_px=None,
             max_gap_s=MAX_GAP_S, day=None, be_trigger=None, contracts=1,
             be_offset_ticks=0.0, day_target=0.0, day_loss=0.0,
-            gov_day=None) -> list[Trade]:
+            gov_day=None, flatten_hhmm=0) -> list[Trade]:
     """Walk ticks from each entry to its exit. One position at a time.
 
     Bounded forward scans, deliberately: an unbounded per-trade scan to the end
@@ -1008,6 +1008,13 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
     strategy -- the real one exits mid-trade, which is why a $3,000 target books
     $4,245 and a $2,000 limit books -$3,514. Days are counted on `gov_day`, the
     session-boundary day, not the calendar day.
+
+    `flatten_hhmm` is a wall-clock cutoff in ET, `HHMM`, `0` meaning off: it
+    additionally bounds the exit to the first tick of the trade's OWN SESSION
+    at or after that time, reason `"flatten"`. The search is confined to the
+    session's own slice on purpose -- `sec_of_day` is periodic, so a global
+    search finds the first cut in the whole DATASET, which for any trade past
+    day one lies in the past and would close every trade at its own entry.
     """
     ts, px = tape["ts"], tape["px"]
     n = len(ts)
@@ -1067,14 +1074,27 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
             continue
         stop_end = min(int(np.searchsorted(ts, ts[i0] + horizon, "right")),
                        session_end)
+        # `flatten_hhmm` further bounds the exit to the first tick of THIS
+        # session at or after the cut, and relabels the reason "flatten" when
+        # that bound is the one that binds. The search runs on the session's
+        # OWN slice (i0:session_end) -- see the docstring for why a global
+        # search over `ts` would be wrong.
+        flattened = False
+        if flatten_hhmm:
+            cut_s = (flatten_hhmm // 100) * 3600 + (flatten_hhmm % 100) * 60
+            sod = tp.sec_of_day(ts[i0:session_end])
+            flat_bound = int(np.searchsorted(sod, cut_s, "left")) + i0 + 1
+            if flat_bound < stop_end:
+                stop_end, flattened = flat_bound, True
         be = None if be_trigger is None else float(be_trigger[k])
         if be is not None and (be <= fill if d > 0 else be >= fill):
             be = None               # a trigger the entry is already past is not one
         moved = False
         lo = hi = fill
         mdd = 0.0                   # running fall from the running peak
-        exit_i, exit_px, why = None, None, ("close" if stop_end == session_end
-                                            else "timeout")
+        exit_i, exit_px, why = None, None, (
+            "flatten" if flattened else
+            ("close" if stop_end == session_end else "timeout"))
         for i in range(i0 + 1, min(stop_end, n)):
             # A HOLE IN THE TAPE IS NOT A PRICE MOVE. This contract's data has
             # missing hours -- 2026-07-17 jumps 3,538 seconds in one step, and a
@@ -1241,7 +1261,8 @@ def backtest(contract, strategy_name, tf_secs=300, start=None, end=None,
                      contracts=p.get("contracts", 1),
                      be_offset_ticks=p.get("breakeven_offset_ticks", 0.0),
                      day_target=tgt, day_loss=dl, gov_day=gd,
-                     timeout_min=float(p.get("timeout_min", 240.0)))
+                     timeout_min=float(p.get("timeout_min", 240.0)),
+                     flatten_hhmm=int(p.get("flatten_hhmm", 0)))
 
     # Data quality, reported rather than assumed: a silence longer than MAX_GAP_S
     # inside a session means hourly files are missing, and every bar spanning one
@@ -1575,6 +1596,30 @@ def selfcheck():
     assert abs(lst2[j] - lst[k]) < 1e-9 and abs(ltg2[j] - ltg[k]) < 1e-9, (
         f"ATR read the future: stop/target {lst[k]:.2f}/{ltg[k]:.2f} on the full "
         f"tape, {lst2[j]:.2f}/{ltg2[j]:.2f} with the bar cut at the entry")
+
+    # 10g. WALL-CLOCK FLATTEN BOUNDS THE EXIT, AND ONLY WHEN ASKED. A synthetic
+    #      flat session (constant price, so no bracket is ever reachable)
+    #      isolates the time bound from everything else that can end a trade,
+    #      so the reason is exact. sec_of_day is periodic -- the trap this
+    #      guards is a searchsorted over the WHOLE tape finding day one's
+    #      15:55, which for any later trade is already in the past and would
+    #      close it at its own entry tick.
+    day0 = (20_000 * 86400 + tp.NET_EPOCH_S) * tp.TPS   # any real day, RTH session
+    sod_f = np.arange(9 * 3600 + 1800, 16 * 3600 + 1)   # 09:30:00 .. 16:00:00, 1s
+    tape_f = dict(ts=day0 + sod_f.astype(np.int64) * tp.TPS,
+                  px=np.full(len(sod_f), 20000.0))
+    i0 = int(np.searchsorted(sod_f, 10 * 3600))
+    costs_f = Costs()
+    tr_off = resolve(tape_f, [i0], [1], [19000.0], [21000.0], costs_f,
+                     timeout_min=600.0)[0]
+    tr_on = resolve(tape_f, [i0], [1], [19000.0], [21000.0], costs_f,
+                    timeout_min=600.0, flatten_hhmm=1555)[0]
+    assert tr_off.reason == "close", f"default must be unchanged, got {tr_off.reason}"
+    assert tr_on.reason == "flatten", f"flatten must bound the exit, got {tr_on.reason}"
+    exit_s = (tr_on.exit_time.hour * 3600 + tr_on.exit_time.minute * 60
+              + tr_on.exit_time.second)
+    assert exit_s == 15 * 3600 + 55 * 60, f"flatten exited at {exit_s}, want 57300"
+    assert tr_on.exit_time < tr_off.exit_time, "flatten must exit strictly earlier"
 
     print(f"selfcheck OK: ORB timeframe-invariant (${pnls[300]:,.0f} at 30s/1m/5m/15m); "
           f"MA cross varies ({ma[30]['trades']} vs {ma[900]['trades']} trades); "
