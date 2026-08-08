@@ -119,6 +119,30 @@ def read_nrd_header(path: Path):
 _INV_CACHE: dict = {}
 
 
+def tick_file_day(name: str):
+    """The ET calendar day an hourly .ncd actually holds, from its name.
+
+    NT8 names an hourly tick file after the END of the hour it covers, so
+    `202608070000.Last.ncd` is 23:00-24:00 on 2026-08-06 -- verified against
+    the file's own header timestamp -- and not a single tick in it belongs to
+    the 7th. Reading the date off the name verbatim invents a day that no
+    cache can ever cover, which is not cosmetic: every "your cache stops
+    before your data does" comparison downstream is `raw_last > cache_last`,
+    so for any contract whose download ends on a midnight boundary (an
+    expired month, a partial download) it is permanently true. The Rebuild
+    button then comes back the instant it finishes, and building ALL
+    re-parses those contracts from scratch every single time.
+
+    None for a name that is not `YYYYMMDDHH...` -- a stray file in the folder
+    is not a reason to take the whole Data tab down.
+    """
+    try:
+        return (datetime.strptime(name[:10], "%Y%m%d%H")
+                - timedelta(hours=1)).strftime("%Y%m%d")
+    except ValueError:
+        return None
+
+
 def inventory(root: Path, force: bool = False):
     """Everything the app knows about a user's NinjaTrader folder.
 
@@ -148,9 +172,9 @@ def inventory(root: Path, force: bool = False):
             with os.scandir(cdir) as it:
                 files = [(e.name, e.stat().st_size) for e in it
                          if e.is_file() and e.name.endswith(".Last.ncd")]
-            if not files:
+            days = sorted({d for d in (tick_file_day(n) for n, _ in files) if d})
+            if not days:
                 continue
-            days = sorted({n[:8] for n, _ in files})
             size = sum(sz for _, sz in files)
             out["tick"][cdir.name] = dict(
                 days=len(days), first=days[0], last=days[-1],
@@ -219,7 +243,21 @@ def resolve_root(explicit=None):
     return autodetect()
 
 
+def selfcheck():
+    # THE POINT: the midnight file. Its name says the 7th, every tick in it is
+    # the 6th, and calling it the 7th is what made "your cache is out of date"
+    # permanently true for a contract whose data stops at that boundary.
+    assert tick_file_day("202608070000.Last.ncd") == "20260806"
+    assert tick_file_day("202608062300.Last.ncd") == "20260806"
+    assert tick_file_day("202608060100.Last.ncd") == "20260806"
+    assert tick_file_day("202601010000.Last.ncd") == "20251231"   # and years
+    assert tick_file_day("notatimestamp.Last.ncd") is None
+    print("selfcheck OK: hourly .ncd names map to the ET day they hold")
+
+
 def main():
+    if "--selfcheck" in sys.argv[1:]:
+        return selfcheck()
     root = resolve_root(sys.argv[1] if len(sys.argv) > 1 else None)
     if root is None:
         print("No NinjaTrader 8 folder found. Pass one:")
