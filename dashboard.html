@@ -1740,16 +1740,25 @@ function anProp(R){
         + 'intra-trade path, so their fall was taken at its upper bound. '
         + 'At size that is not a near miss.</div>')}
   <h4>Projection — ${j.sims.toLocaleString()} resampled futures</h4>
-  <table>
-    <tr><td>P(pass)</td><td>${anNum(j.p_pass,3)}</td></tr>
+  ${j.insufficient ? `<div class="warn">Withheld. The bootstrap resamples whole
+     DAYS, and this pool has ${j.insufficient.distinct} distinct daily total(s)
+     over ${j.insufficient.n_days} session(s) — below ${j.insufficient.needed}
+     every "future" is the same handful of days shuffled, so P(bust) comes out
+     0.000 or 1.000 by construction rather than by evidence. The verdict above
+     is unaffected: it is a fact about the sequence you actually traded.</div>`
+   : `<table>
+    <tr><td>P(pass)</td><td>${j.has_target === false ? "n/a" : anNum(j.p_pass,3)}</td></tr>
     <tr><td>P(bust)</td><td>${anNum(j.p_bust,3)}</td></tr>
     <tr><td>P(timeout)</td><td>${anNum(j.p_timeout,3)}</td></tr>
-    <tr><td>Mean days to pass</td><td>${anNum(j.days_to_pass,1)}</td></tr>
+    <tr><td>Mean days to pass</td><td>${j.has_target === false ? "n/a" : anNum(j.days_to_pass,1)}</td></tr>
   </table>
+  ${j.has_target === false ? `<div class="hint">This phase has no profit target,
+     so there is nothing to pass and P(pass) is not a number. <b>P(bust)</b> is
+     the question a funded account asks.</div>` : ""}
   <p class="hint">Day-block bootstrap over ${j.pool_days} days
    (${j.distinct_days} distinct daily totals). The verdict above is a fact about
    this one sequence; these are a projection. Path fidelity:
-   ${p.fidelity.toUpperCase()}.</p>
+   ${p.fidelity.toUpperCase()}.</p>`}
   ${(r.warnings||[]).map(w=>`<div class="warn">${w}</div>`).join("")}`;
 }
 

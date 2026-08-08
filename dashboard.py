@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 
 import prop_rules as pr
+import sim
 from sim import PROFILES, POLICIES, load_trades, sim_attempt
 import nttrades
 import ntdata
@@ -53,16 +54,11 @@ HERE = Path(__file__).resolve().parent
 PAGE = pr._res("dashboard.html")
 PATHS_DRAWN = 1000          # spaghetti lines; the screenshot's reference count
 
-# A pass rate computed from a handful of trading days is not "uncertain" -- it is
-# structurally meaningless. The bootstrap resamples whole DAYS, so a pool holding
-# one profitable session produces ten thousand identical winning paths and reports
-# P(pass) = 100%. Measured, on a real two-trade Playback session: 100.0% pass,
-# $105,111 mean payout. Below MIN_DAYS the headline figure is withheld rather than
-# rendered with a warning next to it, because a number on a screen outranks a
-# caption every time. MEANINGFUL_DAYS is the separate, larger threshold at which
-# the figure stops being a statement about the fortnight you happened to replay.
-MIN_DAYS = 10
-MEANINGFUL_DAYS = 60
+# Both thresholds now live in `sim`, beside the statistic they gate: the
+# Analyzer screen publishes the same `sim_eval` numbers and was not applying
+# them. See the comment there.
+MIN_DAYS = sim.MIN_DAYS
+MEANINGFUL_DAYS = sim.MEANINGFUL_DAYS
 UPDATE_RESULT = {}          # filled once at startup, shown in the UI
 PLUGIN_REPORT: list = []    # user strategy files: loaded, or why not
 

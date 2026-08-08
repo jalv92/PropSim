@@ -1178,6 +1178,23 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
         if flatten_hhmm:
             cut_s = (flatten_hhmm // 100) * 3600 + (flatten_hhmm % 100) * 60
             sod = tp.sec_of_day(ts[i0:session_end])
+            # AN ENTRY ALREADY PAST THE CUT IS NOT A TRADE, and this is the case
+            # the session-local search does NOT cover. When the entry tick is at
+            # or after the cut, `searchsorted` returns 0, `flat_bound` becomes
+            # i0 + 1, the scan `range(i0+1, i0+1)` is empty and the fallback
+            # books the exit on the entry tick itself: entry_time == exit_time,
+            # exit at the fill, P&L exactly minus two slippages and a
+            # commission, reason "flatten". Measured on the shipped
+            # drift_vwap_pullback over Jan-Mar, where flatten_hhmm is a live
+            # parameter, an EARLIER flatten produced MORE trades and phantom
+            # exits: 1555 -> 149 trades and no phantoms, 1500 -> 154 and 13,
+            # 1400 -> 162 and 46. A time bound that must be monotonic was not,
+            # because each phantom released `free_at` on the tick it took it and
+            # let the next signal straight in. NinjaTrader does not open a
+            # position it has to flatten in the same instant, and neither does
+            # this: the signal is skipped.
+            if len(sod) and sod[0] >= cut_s:
+                continue
             flat_bound = int(np.searchsorted(sod, cut_s, "left")) + i0 + 1
             if flat_bound < stop_end:
                 stop_end, flattened = flat_bound, True
@@ -1851,6 +1868,31 @@ def selfcheck():
               + tr_on.exit_time.second)
     assert exit_s == 15 * 3600 + 55 * 60, f"flatten exited at {exit_s}, want 57300"
     assert tr_on.exit_time < tr_off.exit_time, "flatten must exit strictly earlier"
+
+    #      AND AN ENTRY PAST THE CUT IS SKIPPED, NOT FILLED AND FLATTENED ON THE
+    #      SAME TICK. The bound only searched inside the session, so an entry
+    #      already past the cut got `flat_bound = i0 + 1`, an empty scan, and an
+    #      exit on its own entry tick -- a phantom costing two slippages and a
+    #      commission that also released the one-position lock immediately, so an
+    #      EARLIER flatten let more signals through than a later one. Measured on
+    #      the shipped drift_vwap_pullback over Jan-Mar: 1555 -> 149 trades,
+    #      1500 -> 154, 1400 -> 162, with 0 / 13 / 46 zero-duration exits.
+    #      Two entries, one either side of the cut, and the bound must be
+    #      monotone in the only direction it can be.
+    late = int(np.searchsorted(sod_f, 15 * 3600 + 58 * 60))     # past a 15:55 cut
+    both = resolve(tape_f, [i0, late], [1, 1], [19000.0] * 2, [21000.0] * 2,
+                   costs_f, timeout_min=600.0, flatten_hhmm=1555)
+    assert len(both) == 1, f"an entry past the cut must be skipped, got {len(both)}"
+    assert both[0].entry_time != both[0].exit_time, "a filled trade cannot be flat"
+    assert all(t.entry_time != t.exit_time for t in
+               resolve(tape_f, [i0, late], [1, 1], [19000.0] * 2, [21000.0] * 2,
+                       costs_f, timeout_min=600.0, flatten_hhmm=1400)), \
+        "no flatten time may book a zero-duration trade"
+    counts = [len(resolve(tape_f, [i0, late], [1, 1], [19000.0] * 2, [21000.0] * 2,
+                          costs_f, timeout_min=600.0, flatten_hhmm=h))
+              for h in (1600, 1555, 1400, 900)]
+    assert counts == sorted(counts, reverse=True), \
+        f"an earlier flatten cannot admit more trades: {counts}"
 
     print(f"selfcheck OK: ORB timeframe-invariant (${pnls[300]:,.0f} at 30s/1m/5m/15m); "
           f"MA cross varies ({ma[30]['trades']} vs {ma[900]['trades']} trades); "

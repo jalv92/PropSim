@@ -306,6 +306,25 @@ def prop(trades, rules, contracts=1, sims=20_000, rng=None):
             days_to_pass=(None if mc["days"] != mc["days"] else float(mc["days"])),
             sims=sims, pool_days=pool["n_days"],
             distinct_days=pool.get("distinct_days"),
+            # THE SAME FLOOR THE MONTE CARLO SCREEN HAS ALWAYS APPLIED. It is the
+            # same statistic out of the same `sim_eval`, and it was gated on one
+            # tab and published bare on the other: three sessions whose daily
+            # totals are identical give the bootstrap no freedom at all, so all
+            # 20,000 "resampled futures" are one day repeated and P(bust) comes
+            # out exactly 0.000 or 1.000 by construction. `distinct_days` was
+            # already computed and shipped here -- as a caption, which a number
+            # on the same screen outranks every time.
+            insufficient=(None if min(int(pool["n_days"]),
+                                      int(pool.get("distinct_days")
+                                          or pool["n_days"])) >= sim.MIN_DAYS
+                          else dict(n_days=int(pool["n_days"]),
+                                    distinct=int(pool.get("distinct_days")
+                                                 or pool["n_days"]),
+                                    needed=sim.MIN_DAYS,
+                                    meaningful=sim.MEANINGFUL_DAYS)),
+            # `p_pass` is 0.000 by construction on a phase with no profit target
+            # (see `sim.sim_eval`), which reads as a verdict and is not one.
+            has_target=bool(mc.get("has_target", True)),
             trades_per_day=pool.get("trades_per_day")))
 
 

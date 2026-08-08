@@ -65,6 +65,22 @@ import numpy as np
 from prop_rules import EOD, INTRA, NONE, RuleSet, firms, select, variants
 
 EVAL_HORIZON_DAYS = 90      # count as fail if not passed by then
+
+# A pass rate computed from a handful of trading days is not "uncertain" -- it is
+# structurally meaningless. The bootstrap resamples whole DAYS, so a pool holding
+# one profitable session produces ten thousand identical winning paths and reports
+# P(pass) = 100%. Measured, on a real two-trade Playback session: 100.0% pass,
+# $105,111 mean payout. Below MIN_DAYS the headline figure is withheld rather than
+# rendered with a warning next to it, because a number on a screen outranks a
+# caption every time. MEANINGFUL_DAYS is the separate, larger threshold at which
+# the figure stops being a statement about the fortnight you happened to replay.
+#
+# HERE RATHER THAN IN THE DASHBOARD, because the Monte Carlo screen enforced it
+# and the Analyzer screen did not -- the same statistic, from the same
+# `sim_eval`, gated on one tab and published bare on the other. Both import this
+# module; neither imports the other.
+MIN_DAYS = 10
+MEANINGFUL_DAYS = 60
 FUNDED_HORIZON_DAYS = 250
 
 # ponytail: a Bernoulli trade has no price path, so intra-trade excursion is
@@ -352,7 +368,27 @@ def sim_eval(prof, policy, sims, rng, rules: RuleSet | None = None,
     """
     rules = rules or DEFAULT_EVAL
     start = rules.start_balance
-    target = rules.profit_target or 0.0
+    # NO PROFIT TARGET IS NOT A TARGET OF ZERO. 120 of the 196 rule sets -- every
+    # `funded_sim` and every `live` phase of all five firms -- carry
+    # `profit_target = None`, because a funded account has nothing to pass. As
+    # 0.0 the pass test at the bottom of the loop degenerated to "ended a day
+    # non-negative", and a losing strategy (p=0.30, rr=1.0) scored P(pass) 0.107
+    # on MFF Builder/live.
+    #
+    # Worse where a consistency rule binds: `day_cap` below scales off the
+    # target, so 0.0 made it 0.0, the trade gate `day_pnl < day_cap` was False on
+    # the very first slot of every day, and NOT ONE TRADE was ever simulated.
+    # Balance never moved, nothing ever busted, and every path was recorded as a
+    # pass -- the same losing strategy scored P(pass) 1.000, P(bust) 0.000 on
+    # Apex funded_sim over "20,000 resampled futures" in which nobody traded.
+    #
+    # `replay` has had this right one screen away since it was written
+    # (`need = rules.profit_target if ... is not None else np.inf`), so the
+    # deterministic verdict and the Monte Carlo disagreed about what a pass is.
+    # Infinity is the honest value: it makes the target unreachable, leaves
+    # `day_cap` unbounded, and lets the simulation actually trade so that
+    # P(bust) -- the only question a funded account HAS -- comes out right.
+    target = rules.profit_target if rules.profit_target is not None else np.inf
     bal = np.full(sims, start)
     hwm = np.full(sims, start)
     best_day = np.zeros(sims)
@@ -462,7 +498,13 @@ def sim_eval(prof, policy, sims, rng, rules: RuleSet | None = None,
                days=pass_day[passed].mean() if passed.any() else float("nan"),
                bust_days=float(bust_day[busted].mean()) if busted.any() else float("nan"),
                final=bal - start, outcome=np.where(passed, 1, np.where(busted, 2, 0)),
-               pass_day=pass_day, bust_day=bust_day)
+               pass_day=pass_day, bust_day=bust_day,
+               # WHETHER `p_pass` MEANS ANYTHING. With no profit target it is
+               # 0.000 by construction -- correct arithmetic and a different
+               # lie, since it reads as "you will certainly fail" when what is
+               # true is that there is nothing to pass. A screen that renders
+               # the number needs to know that; P(bust) is the real question.
+               has_target=rules.profit_target is not None)
     if rec:
         out["paths"] = paths
     return out
@@ -960,6 +1002,37 @@ def selfcheck(rng):
                                          daily_loss_limit=1000.0, dll_soft=True))
     assert hard["outcome"] == "busted" and hard["reason"] == "daily loss limit", hard
     assert soft["outcome"] == "open", soft
+
+    # NO PROFIT TARGET MUST NOT BECOME A TARGET OF ZERO. 120 of the 196 shipped
+    # rule sets carry `profit_target = None` -- every funded_sim and every live
+    # phase of all five firms -- and as 0.0 the pass test degenerated to "ended a
+    # day non-negative". Where a consistency rule binds it was worse: the day cap
+    # scales off the target, so it became 0.0, the trade gate was False on the
+    # first slot of every day, and NOT ONE TRADE was simulated -- so nothing
+    # busted and every path was recorded as a pass. Driven with a strategy that
+    # cannot win, on the real shipped tables, because both defects were invisible
+    # to a synthetic rule set that happens to have a target.
+    losing = dict(p=0.30, rr=1.0, risk=500.0, tpd=4, friction=5.0)
+    checked = 0
+    for firm, variant, phase, size in (
+            ("my_funded_futures", "builder", "live", 25_000),
+            ("apex_trader_funding", "eod_drawdown", "funded_sim", 50_000)):
+        try:
+            rs = select(firm, variant, phase, size)
+        except (KeyError, ValueError):
+            continue                      # a table edit may retire a variant
+        assert rs.profit_target is None, (firm, phase, rs.profit_target)
+        out = sim_eval(losing, policy_fixed(1), 20_000, rng, rs)
+        assert out["has_target"] is False, out["has_target"]
+        assert out["p_bust"] > 0.9, (
+            f"{firm}/{phase}: a strategy that cannot win must bust, "
+            f"got p_bust {out['p_bust']:.3f}, p_pass {out['p_pass']:.3f}")
+        checked += 1
+    assert checked, "no target-less rule set reachable: this check went vacuous"
+    #     And a phase that HAS a target is untouched by the change.
+    with_t = select("apex_trader_funding", "eod_drawdown", "evaluation", 50_000)
+    ctl = sim_eval(losing, policy_fixed(1), 20_000, rng, with_t)
+    assert ctl["has_target"] is True and ctl["p_pass"] < 0.1, ctl["p_pass"]
 
     print(f"selfcheck OK: gambler's ruin {r['p_pass']:.3f} ~ 0.400; "
           f"intraday breach {a['p_pass']:.3f} <= close-only {b['p_pass']:.3f}; "
