@@ -225,6 +225,11 @@ def date_str(day_no: int) -> str:
     return (datetime(1970, 1, 1) + timedelta(days=int(day_no))).date().isoformat()
 
 
+def day_no(date_s: str) -> int:
+    """The inverse of `date_str`: 'YYYY-MM-DD' -> the day number `day_index` uses."""
+    return (datetime.fromisoformat(date_s).date() - datetime(1970, 1, 1).date()).days
+
+
 def available_range(contract: str) -> tuple[str, str, int]:
     """First session, last session, session count.
 

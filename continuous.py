@@ -691,9 +691,24 @@ def selfcheck():
             print(f"  ALL matches {src} trade-for-trade over {lo}..{hi} "
                   f"({len(a)} trades) [{label}]")
 
+        # BOUNDED ON BOTH SIDES, and the oldest case below has been bounded on
+        # one since it was written -- the newest never was, and it failed for
+        # both of the reasons the oldest was bounded for. A contract's own cache
+        # is not ALL's window into it:
+        #
+        #   - it starts printing BEFORE the roll hands off to it. NQ 09-26's
+        #     cache opens 2026-06-11; ALL still sources 06-26 that day,
+        #     correctly, because that is what was front month.
+        #   - it keeps printing AFTER ALL was last stitched. NQ 09-26 had
+        #     292,888 ticks on 2026-08-05 and ALL had none, because someone
+        #     downloaded a day and has not pressed "Update ALL" since.
+        #
+        # Neither is a stitch bug, and asserting over the contract's own range
+        # turned "your ALL is a day out of date" into "the stitch is broken".
+        # ALL's own metadata says where its window starts and ends; use that.
         newest = m["contracts"][-1]
-        lo, hi, _ = tape.available_range(newest)
-        equivalence_case(newest, lo, hi, "roll_cum=0")
+        lo = tape.date_str(m["rolls"][-1]["day"]) if m["rolls"] else m["first"]
+        equivalence_case(newest, lo, m["last"], "roll_cum=0")
 
         oldest = m["contracts"][0]
         lo0 = m["first"]
@@ -711,7 +726,14 @@ def selfcheck():
         # moving the second.
         daily = {c: daily_volume(c) for c in m["contracts"]}
         front = front_months(daily)
-        mine = {c: set(d for d, k in front.items() if k == c) for c in m["contracts"]}
+        # SAME BOUND, same reason. `front_months` reads the caches as they are
+        # NOW; ALL is as it was when it was stitched. A day downloaded since
+        # then is in every source contract and in none of ALL, which the three
+        # assertions below would each report as a corrupt stitch.
+        d_lo, d_hi = tape.day_no(m["first"]), tape.day_no(m["last"])
+        mine = {c: set(d for d, k in front.items()
+                       if k == c and d_lo <= d <= d_hi)
+                for c in m["contracts"]}
         union = set().union(*mine.values())
         total = sum(len(v) for v in mine.values())
         assert total == len(union), \
@@ -724,18 +746,39 @@ def selfcheck():
             f"ALL's session days != union of its contracts: {all_days ^ union}"
         assert len(all_days) == m["sessions"], (len(all_days), m["sessions"])
 
+        # ALL'S FINAL DAY IS A PREFIX, NOT A SHORTFALL. A stitch taken while
+        # that session was still printing holds part of it: 213,011 ticks of
+        # 2026-08-04 against the 549,119 its source cache has now. Counting it
+        # reported "the stitch dropped 336,108 ticks" for a build that was
+        # simply taken earlier in the day. So the boundary day is checked as a
+        # PREFIX instead -- which is the real invariant and strictly stronger
+        # than the count it replaces, because a shift or a duplication at the
+        # boundary fails it where two counts could still balance.
+        last_d = tape.day_no(m["last"])
         for c in m["contracts"]:
             days_c = mine[c]
             if not days_c:
                 continue
-            all_n = int(np.isin(all_day, list(days_c)).sum())
-            c_day = tape.day_index(np.load(tape.cache_path(c))["ts"])
-            c_n = int(np.isin(c_day, list(days_c)).sum())
+            cz = np.load(tape.cache_path(c))
+            c_day = tape.day_index(cz["ts"])
+            whole = [d for d in days_c if d != last_d]
+            all_n = int(np.isin(all_day, whole).sum())
+            c_n = int(np.isin(c_day, whole).sum())
             assert all_n == c_n, \
                 f"{c}: ALL has {all_n} ticks on its owned days, source cache has {c_n}"
+            if last_d in days_c:
+                a_ts = z["ts"][all_day == last_d]
+                c_ts = cz["ts"][c_day == last_d]
+                assert len(a_ts) <= len(c_ts), (
+                    f"{c}: ALL holds {len(a_ts):,} ticks on {m['last']}, more than "
+                    f"the {len(c_ts):,} in its source -- the stitch duplicated")
+                assert np.array_equal(a_ts, c_ts[:len(a_ts)]), (
+                    f"{c}: ALL's {m['last']} is not a prefix of its source day")
         print(f"  session-day partition holds: {len(all_days)} days, "
               f"{len(m['contracts'])} contracts, no day claimed twice, "
-              f"no tick duplicated in the stitch")
+              f"no tick duplicated in the stitch"
+              + ("" if last_d not in set().union(*mine.values())
+                 else f"; {m['last']} is a clean prefix of its source"))
 
     print("selfcheck OK: front months monotone across an oscillating roll")
 

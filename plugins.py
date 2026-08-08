@@ -173,6 +173,13 @@ def _namespace() -> dict:
         "Param": engine.Param,
         "np": np,
         "tp": _TapeHelpers,            # day_index, sec_of_day, date_str, TPS
+        # THESE TWO ARE NQ's, AND THEY CANNOT BE ANYTHING ELSE HERE. A plugin is
+        # loaded once, with no contract in hand, so a global cannot know which
+        # tape it will be run against. `self.tick` and `self.point_value` on the
+        # Strategy base ARE the running instrument's -- `engine.backtest` sets
+        # them per run -- and that is what a plugin should size its stops in.
+        # These stay because every plugin already written reads them, and a
+        # rename that turns working files into NameErrors is not a fix.
         "TICK_SIZE": engine.TICK_SIZE,
         "POINT_VALUE": engine.POINT_VALUE,
     }
@@ -421,9 +428,16 @@ TEMPLATE = '''\
 # NOTHING IS IMPORTED. The engine hands you:
 #   np          numpy
 #   tp          tape helpers: tp.day_index(ts), tp.sec_of_day(ts), tp.TPS
-#   TICK_SIZE   price increment of the instrument
-#   POINT_VALUE currency per point
+#   TICK_SIZE   NQ's price increment, 0.25 -- see below
+#   POINT_VALUE NQ's currency per point, 20.0 -- see below
 #   Strategy, Param
+#
+# SIZE IN self.tick, NOT IN TICK_SIZE. The two globals above are NQ's and cannot
+# be anything else: this file is loaded once, before any contract is chosen.
+# `self.tick` and `self.point_value` are the instrument the run is ACTUALLY on,
+# set on your instance before `entries` is called, and they are what the engine
+# charges slippage and measures risk in. They differ: MNQ is $2 a point where NQ
+# is $20, and MYM ticks at 1.00 where NQ ticks at 0.25.
 #
 # `bars` is a dict of arrays, one entry per bar:
 #   t      timestamp of the bar's first tick   o h l c   open/high/low/close
