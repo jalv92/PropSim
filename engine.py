@@ -143,6 +143,31 @@ class Strategy:
     # and not NQ's. Set beside `tick` by `backtest`.
     point_value = POINT_VALUE
     params: dict[str, Param] = {}
+    # BAR-CLOSE BRACKET MANAGEMENT. `None` means the bracket is placed once and
+    # never moves -- every strategy written before this existed. A setup that
+    # wants a trailing stop or a moving target defines the method instead, and
+    # `backtest` finds it here:
+    #
+    #   def on_bar_close(self, bars, entry_b, direction, fill, stop, target, p):
+    #       """Reprice the bracket at the close of the last bar in `bars`.
+    #
+    #       `bars` is the engine's own bar dict TRUNCATED to the bars that have
+    #       closed: `bars["c"][-1]` is the close that just printed and there is
+    #       no bar after it to read. The hook cannot look ahead because the
+    #       future is not in the object it was handed, not merely because a
+    #       comment forbids it.
+    #
+    #       `entry_b` indexes the bar the entry tick fell in, so "since entry"
+    #       is a slice the callback can take itself. `fill` is the ACTUAL fill
+    #       including slippage -- the engine's number, not the signal price,
+    #       which is the whole reason this cannot be precomputed in `entries`.
+    #
+    #       Returns `(new_stop, new_target)`, or None to leave both alone.
+    #       """
+    #
+    # The engine owns the mechanism (when it fires, what it refuses); the
+    # strategy owns the arithmetic. Same split as `limit_px` and `be_trigger`.
+    on_bar_close = None
 
     def entries(self, bars, tape, p):
         raise NotImplementedError
@@ -1061,7 +1086,8 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
             cooldown_min=0.0, timeout_min=240.0, limit_px=None,
             max_gap_s=MAX_GAP_S, day=None, be_trigger=None, contracts=1,
             be_offset_ticks=0.0, day_target=0.0, day_loss=0.0,
-            gov_day=None, flatten_hhmm=0) -> list[Trade]:
+            gov_day=None, flatten_hhmm=0,
+            on_bar_close=None, bars=None, params=None) -> list[Trade]:
     """Walk ticks from each entry to its exit. One position at a time.
 
     Bounded forward scans, deliberately: an unbounded per-trade scan to the end
@@ -1104,6 +1130,21 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
     $4,245 and a $2,000 limit books -$3,514. Days are counted on `gov_day`, the
     session-boundary day, not the calendar day.
 
+    `on_bar_close` is a per-bar bracket manager (see `Strategy.on_bar_close`),
+    called at the FIRST TICK OF THE NEXT BAR -- the earliest instant at which
+    the previous bar is closed -- and before that tick's own high, low and exit
+    tests are read. That is precisely what NinjaTrader's `Calculate.OnBarClose`
+    sees, and it is why the mirror of a managed strategy can agree with it tick
+    for tick. `bars` is the engine's bar dict and `params` the strategy's
+    parameters, both passed straight through. All three default to None and a
+    caller that omits them gets the pre-existing behaviour exactly.
+
+    The engine keeps two refusals for itself, because they are properties of the
+    market rather than of any strategy: a returned stop may only TIGHTEN, and a
+    returned target may not land through the market -- it is clamped to the
+    current print, which is what a real cancel-replace gets. Anything better
+    would be the same free money the rest of this function exists to refuse.
+
     `flatten_hhmm` is a wall-clock cutoff in ET, `HHMM`, `0` meaning off: it
     additionally bounds the exit to the first tick of the trade's OWN SESSION
     at or after that time, reason `"flatten"`. The search is confined to the
@@ -1138,6 +1179,8 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
     if governed and gov_day is None:
         gov_day = day
     gov_d, day_pnl, locked = None, 0.0, False
+    # A function of the tape, so it is read once here rather than per trade.
+    b_start = None if (on_bar_close is None or bars is None) else bars["start"]
 
     for k in range(len(entry_idx)):
         i0 = int(entry_idx[k])
@@ -1202,6 +1245,18 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
         if be is not None and (be <= fill if d > 0 else be >= fill):
             be = None               # a trigger the entry is already past is not one
         moved = False
+        # `bars["start"]` is the tick index each bar OPENS at, so it is also the
+        # first index at which the PREVIOUS bar is closed. Resolving the next
+        # boundary to two integers here keeps an array lookup out of the tick
+        # loop -- the loop below is the hot one, and a per-tick searchsorted was
+        # what made an earlier version of this function 120x slower than a plain
+        # scan. With no manager `next_open` stays -1, which the loop can never
+        # equal because it starts at i0 + 1 >= 1.
+        nb, next_open, entry_b = 0, -1, -1
+        if b_start is not None:
+            entry_b = int(np.searchsorted(b_start, i0, "right")) - 1
+            nb = int(np.searchsorted(b_start, i0 + 1, "left"))
+            next_open = int(b_start[nb]) if nb < len(b_start) else -1
         lo = hi = fill
         mdd = 0.0                   # running fall from the running peak
         exit_i, exit_px, why = None, None, (
@@ -1218,6 +1273,34 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
             if ts[i] - ts[i - 1] > gap_limit:
                 exit_i, exit_px, why = i - 1, float(px[i - 1]), "gap"
                 break
+            if i == next_open:
+                # THE MANAGER SEES CLOSED BARS AND NOTHING ELSE. It is handed a
+                # VIEW ending at the bar that just closed, so "it cannot look
+                # ahead" is a property of the object rather than a rule someone
+                # has to keep remembering. It runs before this tick's high, low
+                # and exit tests: NinjaTrader reprices at the close and its new
+                # orders are resting before the next print, and a manager that
+                # got to see the tick it acts on would be reading a price the
+                # real one has not been shown yet.
+                r = on_bar_close({key: v[:nb] for key, v in bars.items()},
+                                 entry_b, d, fill, st, tg, params)
+                if r is not None:
+                    ns, nt = float(r[0]), float(r[1])
+                    # A STOP MAY ONLY EVER TIGHTEN. This is the engine's rule and
+                    # not the strategy's: a manager that loosens a stop is
+                    # printing an escape the market never offered, and the
+                    # cheapest place to make that impossible is here, once, for
+                    # every strategy that will ever use this hook.
+                    st = max(st, ns) if d > 0 else min(st, ns)
+                    # AND A TARGET MAY NOT LAND THROUGH THE MARKET. A limit moved
+                    # past the current print is marketable: it fills AT the
+                    # market, not at the level it was written on. Clamping to
+                    # px[i] is exactly what a real cancel-replace gets -- and it
+                    # makes the exit tests below book that fill on this same
+                    # tick, which is the honest outcome rather than a free one.
+                    tg = max(nt, float(px[i])) if d > 0 else min(nt, float(px[i]))
+                nb += 1
+                next_open = int(b_start[nb]) if nb < len(b_start) else -1
             p = float(px[i])
             if p < lo: lo = p
             if p > hi: hi = p
@@ -1380,13 +1463,28 @@ def backtest(contract, strategy_name, tf_secs=300, start=None, end=None,
         # The governor's day, not the calendar's. Shifting the tape back by the
         # session offset and reusing `day_index` keeps one definition of a day.
         gd = tp.day_index(t["ts"] - strat.session_offset_s * tp.TPS)
+    # And the bar-close bracket manager, found on the strategy rather than in its
+    # return value: it is a property of the setup for its whole life, not of one
+    # signal. A strategy that does not define it is resolved exactly as before.
+    mgr = strat.on_bar_close
+    # THE TWO STOP-MOVERS ARE MUTUALLY EXCLUSIVE, and this is an error rather
+    # than a silent merge: `be_trigger` jumps the stop to the entry ONCE, a
+    # manager trails it continuously, and a breakeven jump landing after the
+    # trail has already climbed past the entry would LOOSEN the stop -- the one
+    # thing `resolve` promises can never happen. A managed strategy trails
+    # through breakeven by construction and does not need the other mechanism.
+    if mgr is not None and bet is not None:
+        raise SystemExit(f"{strategy_name}: on_bar_close() and a breakeven trigger "
+                         f"both move the stop — pick one")
     trades = resolve(t, ei, dr, st, tg, costs, cooldown_min=cd, limit_px=lim,
                      day=ctx["dayi"], be_trigger=bet,
                      contracts=p.get("contracts", 1),
                      be_offset_ticks=p.get("breakeven_offset_ticks", 0.0),
                      day_target=tgt, day_loss=dl, gov_day=gd,
                      timeout_min=float(p.get("timeout_min", 240.0)),
-                     flatten_hhmm=int(p.get("flatten_hhmm", 0)))
+                     flatten_hhmm=int(p.get("flatten_hhmm", 0)),
+                     on_bar_close=mgr, bars=bars if mgr is not None else None,
+                     params=p)
 
     # Data quality, reported rather than assumed: a silence longer than MAX_GAP_S
     # inside a session means hourly files are missing, and every bar spanning one
@@ -1408,7 +1506,10 @@ def backtest(contract, strategy_name, tf_secs=300, start=None, end=None,
                 slippage_ticks=costs.slippage_ticks,
                 # REPORTED so it can be checked by eye. The bug this replaced was
                 # silent precisely because no screen ever said what a point cost.
-                point_value=pv, tick_size=tick)
+                point_value=pv, tick_size=tick,
+                # A managed run and an unmanaged one are different experiments,
+                # and the difference is invisible in every other field here.
+                managed=mgr is not None)
 
     # THE LEDGER MUST SHOW THE PRICE THAT ACTUALLY TRADED. The ALL tape is
     # back-adjusted so indicators do not see a multi-hundred-point step at each
@@ -1623,6 +1724,17 @@ def selfcheck():
     #    stop from a signal LEVEL while the engine filled at a later tick: one
     #    stop-out booked +$17,635 and the strategy showed +$34K over 23 days.
     #    Checked across every strategy, because the mistake is not local to one.
+    #
+    #    ⚠ BOTH CLAUSES ARE FALSE UNDER A BAR-CLOSE MANAGER, and this loop must
+    #    not be extended to one. A trailing stop is SUPPOSED to exit in profit --
+    #    that is the entire point of it -- and the exact-excursion identity below
+    #    holds only while the stop never moves. It does not fire today because
+    #    this loop walks `LIBRARY` and every managed strategy is a plugin, so the
+    #    day someone registers one here they will see this assert break on a
+    #    perfectly correct result and "fix" the result. The invariants that
+    #    survive management are weaker and are checked in 10h instead: the exit
+    #    is at or worse than the stop level in force at that instant, and
+    #    `pnl <= mfe`. Gate any extension on `meta["managed"]`.
     #    `replace` mirrors what `backtest` does to the costs it is handed: the
     #    bounds below are in dollars, so they have to be in THIS tape's dollars.
     _pv, _tick = instrument(c)
@@ -1894,6 +2006,81 @@ def selfcheck():
               for h in (1600, 1555, 1400, 900)]
     assert counts == sorted(counts, reverse=True), \
         f"an earlier flatten cannot admit more trades: {counts}"
+
+    # 10h. A BAR-CLOSE MANAGER MOVES THE BRACKET, AND THE ENGINE STILL OWNS THE
+    #      REFUSALS. One synthetic session carries all six: a ramp up to 10:30,
+    #      a partial retrace to 11:00, then flat. A trailing stop has to make
+    #      money on it, and every other hook has to change nothing.
+    sod_h = np.arange(9 * 3600 + 1800, 16 * 3600 + 1)          # 09:30..16:00, 1s
+    px_h = np.concatenate([np.linspace(20000.0, 20100.0, 3600),   # 09:30 -> 10:30
+                           np.linspace(20100.0, 20050.0, 1800),   # 10:30 -> 11:00
+                           np.full(len(sod_h) - 5400, 20050.0)])
+    tape_h = dict(ts=day0 + sod_h.astype(np.int64) * tp.TPS, px=px_h,
+                  vol=np.ones(len(sod_h), np.int32),
+                  side=np.zeros(len(sod_h), np.int8))
+    bars_h = tp.build_bars(tape_h, 60)
+    i0h = int(np.searchsorted(sod_h, 9 * 3600 + 1860))         # 09:31, mid-bar
+    free_h = Costs(commission=0.0, slippage_ticks=0.0)
+
+    def _run(hook, tape=tape_h, bars=bars_h, stop=19900.0, target=21000.0):
+        return resolve(tape, [i0h], [1], [stop], [target], free_h,
+                       timeout_min=600.0, on_bar_close=hook,
+                       bars=None if hook is None else bars, params={})[0]
+
+    #      h1. THE NEUTRAL PATH IS THE OLD PATH. An IDENTITY hook and a NULL hook
+    #      must both reproduce the unmanaged trade field for field. Checking
+    #      `on_bar_close=None` alone would only prove that unreached code does
+    #      nothing; these two prove the boundary detection, the slicing and the
+    #      clamps are transparent when the arithmetic is.
+    _plain = _run(None)
+    _ident = _run(lambda b, eb, d, f, s, t, p: (s, t))
+    _null = _run(lambda b, eb, d, f, s, t, p: None)
+    assert _plain == _ident == _null, (_plain, _ident, _null)
+
+    #      h2. A LOOSENED STOP IS REFUSED. The hook asks for 100 points of extra
+    #      room on every bar; the trade must come out identical to the identity
+    #      run, because the engine never lets a stop retreat.
+    assert _run(lambda b, eb, d, f, s, t, p: (s - 100.0, t)) == _ident
+
+    #      h3. A TARGET MOVED THROUGH THE MARKET FILLS AT THE MARKET. Asking for
+    #      a long's target BELOW the print is a marketable limit: it must book
+    #      "target" at the print itself on that very tick, not at the level.
+    #      Filling at the requested level would be free money on a price that
+    #      never traded.
+    _thru = _run(lambda b, eb, d, f, s, t, p: (s, 0.0))
+    _first_close = int(np.searchsorted(bars_h["start"], i0h + 1, "left"))
+    _tick = int(bars_h["start"][_first_close])
+    assert _thru.reason == "target", _thru.reason
+    assert abs(_thru.exit_price - float(px_h[_tick])) < 1e-9, (
+        f"a marketable target must fill at the print: {_thru.exit_price} vs {px_h[_tick]}")
+    assert _thru.exit_time == tp.to_datetime(tape_h["ts"][_tick]), _thru.exit_time
+
+    #      h4. THE HOOK CANNOT SEE PAST THE BAR IT IS HANDED. Truncating the tape
+    #      one tick after the exit and rebuilding the bars must reproduce the
+    #      same trade: a manager that peeked at later bars would lose them here
+    #      and decide differently. This is `rlp_long`'s truncation invariant
+    #      moved down into the engine, where it covers every managed strategy.
+    def _trail(b, eb, d, f, s, t, p):
+        return (float(b["c"][-1]) - d * 10.0, t)
+    _full = _run(_trail)
+    _xi = int(np.searchsorted(tape_h["ts"], tp.to_net(_full.exit_time), "left"))
+    _cut = {key: v[:_xi + 1] for key, v in tape_h.items()}
+    assert _run(_trail, tape=_cut, bars=tp.build_bars(_cut, 60)) == _full, "lookahead"
+
+    #      h5. Same inputs, same trade. Two lines, and they catch any state that
+    #      leaked into module scope.
+    assert _run(_trail) == _full
+
+    #      h6. AND THE POINT OF THE WHOLE THING: a trailing stop on a ramp that
+    #      retraces exits by STOP, in PROFIT. This is the case invariant 6 above
+    #      would reject, which is why that loop is fenced off from managed runs.
+    #      The weaker invariants that do survive are asserted instead: the exit
+    #      is at or below the stop the hook had placed, and the realised P&L
+    #      cannot exceed the peak the trade actually reached.
+    assert _full.reason == "stop", _full.reason
+    assert _full.pnl > 0, f"a trailing stop must be able to win: {_full.pnl}"
+    assert _full.pnl <= _full.mfe + 1e-9, (_full.pnl, _full.mfe)
+    assert _full.exit_price <= 20100.0 - 10.0 + 1e-9, _full.exit_price
 
     print(f"selfcheck OK: ORB timeframe-invariant (${pnls[300]:,.0f} at 30s/1m/5m/15m); "
           f"MA cross varies ({ma[30]['trades']} vs {ma[900]['trades']} trades); "
