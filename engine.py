@@ -2009,12 +2009,12 @@ def selfcheck():
 
     # 10h. A BAR-CLOSE MANAGER MOVES THE BRACKET, AND THE ENGINE STILL OWNS THE
     #      REFUSALS. One synthetic session carries all six: a ramp up to 10:30,
-    #      a partial retrace to 11:00, then flat. A trailing stop has to make
-    #      money on it, and every other hook has to change nothing.
+    #      a retrace THROUGH the entry to 11:00, then flat. A trailing stop has
+    #      to make money on it, and every other hook has to change nothing.
     sod_h = np.arange(9 * 3600 + 1800, 16 * 3600 + 1)          # 09:30..16:00, 1s
     px_h = np.concatenate([np.linspace(20000.0, 20100.0, 3600),   # 09:30 -> 10:30
-                           np.linspace(20100.0, 20050.0, 1800),   # 10:30 -> 11:00
-                           np.full(len(sod_h) - 5400, 20050.0)])
+                           np.linspace(20100.0, 19950.0, 1800),   # 10:30 -> 11:00
+                           np.full(len(sod_h) - 5400, 19950.0)])
     tape_h = dict(ts=day0 + sod_h.astype(np.int64) * tp.TPS, px=px_h,
                   vol=np.ones(len(sod_h), np.int32),
                   side=np.zeros(len(sod_h), np.int8))
@@ -2022,7 +2022,12 @@ def selfcheck():
     i0h = int(np.searchsorted(sod_h, 9 * 3600 + 1860))         # 09:31, mid-bar
     free_h = Costs(commission=0.0, slippage_ticks=0.0)
 
-    def _run(hook, tape=tape_h, bars=bars_h, stop=19900.0, target=21000.0):
+    #      The default stop sits below the entry -- a long cannot open past its
+    #      own stop -- and is REACHABLE on the retrace, deliberately: a stop no
+    #      path ever touches makes every hook below agree for the wrong reason.
+    #      A loosening manager and a refused loosening manager would then both
+    #      end the session flat, and h2 would pass against a missing clamp.
+    def _run(hook, tape=tape_h, bars=bars_h, stop=19980.0, target=21000.0):
         return resolve(tape, [i0h], [1], [stop], [target], free_h,
                        timeout_min=600.0, on_bar_close=hook,
                        bars=None if hook is None else bars, params={})[0]
@@ -2036,11 +2041,19 @@ def selfcheck():
     _ident = _run(lambda b, eb, d, f, s, t, p: (s, t))
     _null = _run(lambda b, eb, d, f, s, t, p: None)
     assert _plain == _ident == _null, (_plain, _ident, _null)
+    assert _plain.reason == "stop", (
+        f"the fixture must exercise a reachable stop, got {_plain.reason}")
 
     #      h2. A LOOSENED STOP IS REFUSED. The hook asks for 100 points of extra
-    #      room on every bar; the trade must come out identical to the identity
-    #      run, because the engine never lets a stop retreat.
-    assert _run(lambda b, eb, d, f, s, t, p: (s - 100.0, t)) == _ident
+    #      room on every bar, which without the clamp walks the stop down the
+    #      retrace ahead of price and turns a stop-out into a session close.
+    #      Asserted BOTH ways -- same trade as the identity run, and still a
+    #      stop-out -- because equality alone also holds when neither run ever
+    #      reaches its stop, which is exactly how this check first passed
+    #      against a deliberately broken clamp.
+    _loose = _run(lambda b, eb, d, f, s, t, p: (s - 100.0, t))
+    assert _loose == _ident, (_loose, _ident)
+    assert _loose.reason == "stop", _loose.reason
 
     #      h3. A TARGET MOVED THROUGH THE MARKET FILLS AT THE MARKET. Asking for
     #      a long's target BELOW the print is a marketable limit: it must book
