@@ -736,9 +736,9 @@ class LatigoBreak(Strategy):
     params = {
         # Windows are DECISIONS, not dials -- flags, so the sweep leaves them be.
         "trade_globex_reopen": Param(1, 0, 1, "hunt the 18:00 ET Globex reopen"),
-        "trade_evening": Param(1, 0, 1, "hunt the 20:00 ET window"),
-        "trade_us_open": Param(1, 0, 1, "hunt the 09:30 ET US open"),
-        "entry_window_minutes": Param(30, 1, 480, "hunt breaks/entries only this "
+        "trade_evening": Param(0, 0, 1, "hunt the 20:00 ET window"),
+        "trade_us_open": Param(0, 0, 1, "hunt the 09:30 ET US open"),
+        "entry_window_minutes": Param(5, 1, 480, "hunt breaks/entries only this "
                                                   "long after a window opens",
                                       fixed=True),
         "use_whipsaw_filter": Param(1, 0, 1, "0 = naive chase at the break print"),
@@ -746,7 +746,7 @@ class LatigoBreak(Strategy):
         "extension_r30": Param(0.25, 0, 3, "excursion beyond the level required to "
                                            "confirm, as a fraction of the range"),
         "candle_seconds": Param(30, 5, 300, "opening candle, seconds"),
-        "min_r30_ticks": Param(4, 0, 100, "skip the window if the opening range is "
+        "min_r30_ticks": Param(80, 0, 400, "skip the window if the opening range is "
                                           "narrower, ticks"),
         "contracts": Param(1, 1, 100, "position size, contracts", fixed=True),
         "atr_period": Param(14, 2, 100, "bars in the ATR"),
@@ -767,16 +767,15 @@ class LatigoBreak(Strategy):
         # on `contracts`: one four-lot LatigoBreak trade is worth $3-4k here, so
         # a $3,000 target is in practice "one trade a day" and a $2,000 loss
         # limit is narrower than the stop it is supposed to bound.
-        # 500/300 because that is NT8's SetDefaults, not because they are good
-        # numbers -- at one contract they stop most days after a single trade.
-        # Defaulting them to 0 would have been the tidier-looking choice and the
-        # wrong one: it hands anyone who does not touch the panel a strategy that
-        # is not the one running in NinjaTrader, which is the entire class of bug
-        # this parameter list was closed to prevent. 0 disables either side.
-        "daily_profit_target": Param(500, 0, 100_000, "flatten and stop for the day "
+        # 0/0 because that is NT8's SetDefaults since 2026-09-12 (they were
+        # 500/300 before): the defaults here track SetDefaults, never taste, so
+        # anyone who does not touch the panel runs the strategy NinjaTrader runs.
+        # Same date, same reason: 18:00 only, 5-minute hunt, MinR30 80 -- the
+        # settings pre-registered in LatigoBreak/docs/research/tape-report-2026-09-12.md.
+        "daily_profit_target": Param(0, 0, 100_000, "flatten and stop for the day "
                                                       "at this profit, USD; 0 = off",
                                      fixed=True),
-        "daily_loss_limit": Param(300, 0, 100_000, "flatten and stop for the day at "
+        "daily_loss_limit": Param(0, 0, 100_000, "flatten and stop for the day at "
                                                    "this loss, USD; 0 = off",
                                   fixed=True),
     }
