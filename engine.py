@@ -746,7 +746,7 @@ class LatigoBreak(Strategy):
         "extension_r30": Param(0.25, 0, 3, "excursion beyond the level required to "
                                            "confirm, as a fraction of the range"),
         "candle_seconds": Param(30, 5, 300, "opening candle, seconds"),
-        "min_r30_ticks": Param(80, 0, 400, "skip the window if the opening range is "
+        "min_r30_ticks": Param(4, 0, 400, "skip the window if the opening range is "
                                           "narrower, ticks"),
         "contracts": Param(1, 1, 100, "position size, contracts", fixed=True),
         "atr_period": Param(14, 2, 100, "bars in the ATR"),
@@ -770,7 +770,7 @@ class LatigoBreak(Strategy):
         # 0/0 because that is NT8's SetDefaults since 2026-09-12 (they were
         # 500/300 before): the defaults here track SetDefaults, never taste, so
         # anyone who does not touch the panel runs the strategy NinjaTrader runs.
-        # Same date, same reason: 18:00 only, 5-minute hunt, MinR30 80 -- the
+        # Same date, same reason: 18:00 only, 5-minute hunt (MinR30 stays 4) -- the
         # settings pre-registered in LatigoBreak/docs/research/tape-report-2026-09-12.md.
         "daily_profit_target": Param(0, 0, 100_000, "flatten and stop for the day "
                                                       "at this profit, USD; 0 = off",
