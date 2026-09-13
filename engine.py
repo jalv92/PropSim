@@ -720,8 +720,8 @@ class LatigoBreak(Strategy):
 
     # Seconds from the 18:00 ET session begin, in TRADING-DAY order: the third
     # window lands at 09:30 of the following calendar morning.
-    _OFFSETS = (0, 7200, 55800)
-    _FLAGS = ("trade_globex_reopen", "trade_evening", "trade_us_open")
+    _OFFSETS = (0, 7200, 55800, 57600, 72000)
+    _FLAGS = ("trade_globex_reopen", "trade_evening", "trade_us_open", "trade_ten_am", "trade_two_pm")
     _SESSION_BEGIN = 18 * 3600
 
     # PARAMETER NAMES ARE THE NT8 PROPERTY NAMES, in snake_case, AND THE LIST IS
@@ -738,6 +738,8 @@ class LatigoBreak(Strategy):
         "trade_globex_reopen": Param(1, 0, 1, "hunt the 18:00 ET Globex reopen"),
         "trade_evening": Param(0, 0, 1, "hunt the 20:00 ET window"),
         "trade_us_open": Param(0, 0, 1, "hunt the 09:30 ET US open"),
+        "trade_ten_am": Param(0, 0, 1, "hunt the 10:00 ET window"),
+        "trade_two_pm": Param(0, 0, 1, "hunt the 14:00 ET window"),
         "entry_window_minutes": Param(5, 1, 480, "hunt breaks/entries only this "
                                                   "long after a window opens",
                                       fixed=True),
@@ -809,11 +811,11 @@ class LatigoBreak(Strategy):
         et, dr, st, tg, be = [], [], [], [], []
         for d in np.unique(day):
             base = (int(d) * 86400 + tp.NET_EPOCH_S + self._SESSION_BEGIN)
-            for wi in range(3):
+            for wi in range(len(self._OFFSETS)):
                 if not enabled[wi]:
                     continue
                 deadline = want
-                for j in range(wi + 1, 3):
+                for j in range(wi + 1, len(self._OFFSETS)):
                     if enabled[j]:
                         deadline = min(deadline, self._OFFSETS[j] - self._OFFSETS[wi])
                         break
