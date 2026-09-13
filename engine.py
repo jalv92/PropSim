@@ -720,8 +720,9 @@ class LatigoBreak(Strategy):
 
     # Seconds from the 18:00 ET session begin, in TRADING-DAY order: the third
     # window lands at 09:30 of the following calendar morning.
-    _OFFSETS = (0, 7200, 55800, 57600, 72000)
-    _FLAGS = ("trade_globex_reopen", "trade_evening", "trade_us_open", "trade_ten_am", "trade_two_pm")
+    _OFFSETS = (0, 7200, 55800, 57600, 61200, 78600)
+    _FLAGS = ("trade_globex_reopen", "trade_evening", "trade_us_open", "trade_ten_am",
+              "trade_eleven_am", "trade_three_fifty")
     _SESSION_BEGIN = 18 * 3600
 
     # PARAMETER NAMES ARE THE NT8 PROPERTY NAMES, in snake_case, AND THE LIST IS
@@ -739,7 +740,13 @@ class LatigoBreak(Strategy):
         "trade_evening": Param(0, 0, 1, "hunt the 20:00 ET window"),
         "trade_us_open": Param(0, 0, 1, "hunt the 09:30 ET US open"),
         "trade_ten_am": Param(0, 0, 1, "hunt the 10:00 ET window"),
-        "trade_two_pm": Param(0, 0, 1, "hunt the 14:00 ET window"),
+        "trade_eleven_am": Param(0, 0, 1, "hunt the 11:00 ET window"),
+        "trade_three_fifty": Param(0, 0, 1, "hunt the 15:50 ET window"),
+        # MANDATORY wall (Javier 2026-09-12): everything flat at 16:15 ET. Fixed:
+        # a decision, not a dial. `backtest` hands it to `resolve` as flatten_hhmm
+        # with this strategy's session offset, so the 18:00 trades are cut the
+        # NEXT afternoon and not treated as "entered past the cut".
+        "flatten_hhmm": Param(1615, 1, 2359, "hard flatten, HHMM ET", fixed=True),
         "entry_window_minutes": Param(5, 1, 480, "hunt breaks/entries only this "
                                                   "long after a window opens",
                                       fixed=True),
@@ -1087,7 +1094,7 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
             cooldown_min=0.0, timeout_min=240.0, limit_px=None,
             max_gap_s=MAX_GAP_S, day=None, be_trigger=None, contracts=1,
             be_offset_ticks=0.0, day_target=0.0, day_loss=0.0,
-            gov_day=None, flatten_hhmm=0,
+            gov_day=None, flatten_hhmm=0, flatten_offset_s=0,
             on_bar_close=None, bars=None, params=None) -> list[Trade]:
     """Walk ticks from each entry to its exit. One position at a time.
 
@@ -1220,8 +1227,21 @@ def resolve(tape, entry_idx, direc, stop, target, costs: Costs,
         # search over `ts` would be wrong.
         flattened = False
         if flatten_hhmm:
-            cut_s = (flatten_hhmm // 100) * 3600 + (flatten_hhmm % 100) * 60
-            sod = tp.sec_of_day(ts[i0:session_end])
+            # `flatten_offset_s` rebases the clock to the strategy's TRADING day
+            # (LatigoBreak: 18:00 ET), so a 16:15 wall cuts an 18:00 entry the
+            # next afternoon instead of reading it as already past the cut.
+            cut_s = ((flatten_hhmm // 100) * 3600 + (flatten_hhmm % 100) * 60
+                     - flatten_offset_s) % 86400
+            sod = (tp.sec_of_day(ts[i0:session_end]) - flatten_offset_s) % 86400
+            # The slice runs to the end of the CALENDAR day, so with an offset it
+            # can wrap into the next trading day (16:59 -> 18:00 reads 82799 ->
+            # 0) and `searchsorted` on the unsorted tail returned nonsense: 12
+            # of 202 trades of a 15:50 window sailed past a 16:15 wall. Search
+            # only the monotone head, i.e. this trading day.
+            if flatten_offset_s:
+                wrap = np.flatnonzero(np.diff(sod) < 0)
+                if len(wrap):
+                    sod = sod[:int(wrap[0]) + 1]
             # AN ENTRY ALREADY PAST THE CUT IS NOT A TRADE, and this is the case
             # the session-local search does NOT cover. When the entry tick is at
             # or after the cut, `searchsorted` returns 0, `flat_bound` becomes
@@ -1484,6 +1504,7 @@ def backtest(contract, strategy_name, tf_secs=300, start=None, end=None,
                      day_target=tgt, day_loss=dl, gov_day=gd,
                      timeout_min=float(p.get("timeout_min", 240.0)),
                      flatten_hhmm=int(p.get("flatten_hhmm", 0)),
+                     flatten_offset_s=strat.session_offset_s,
                      on_bar_close=mgr, bars=bars if mgr is not None else None,
                      params=p)
 
