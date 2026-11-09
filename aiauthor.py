@@ -48,7 +48,7 @@ import plugins
 import tape as tp
 
 KEY_FILE = Path.home() / ".prop-sim" / "anthropic-api-key.txt"
-DEFAULT_MODEL = "claude-opus-5"
+DEFAULT_MODEL = "claude-opus-5-5"
 MAX_ATTEMPTS = 3
 MAX_TOKENS = 24000
 
@@ -771,7 +771,7 @@ def selfcheck():
     assert res["compiles"] in (True, None), res["attempts"]
 
     # 7. Provenance goes in the file, and says what the validation did and did not prove.
-    hdr = _provenance("fade the opening range", "claude-opus-5",
+    hdr = _provenance("fade the opening range", "claude-opus-5-5",
                       dict(smoke=dict(contract="NQ 09-26", trades=12, signals=20),
                            lookahead=dict(ran=True, cuts=3, compared=9)))
     assert "NOT evidence of an edge" in hdr and "lookahead probe" in hdr

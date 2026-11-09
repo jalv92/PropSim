@@ -271,7 +271,7 @@ then `anthropic_api_key` in `~/.prop-sim/config.json` — all outside the reposi
 It is never written into a generated file, the ledger, or an API response, and every
 message that can reach the screen is scrubbed of anything key-shaped first, because
 an SDK-level HTTP error can quote the request it failed on. Set `anthropic_model` in
-the same config file to use a different model; the default is `claude-opus-5`.
+the same config file to use a different model; the default is `claude-opus-5-5`.
 
 **A model writing a strategy is not an edge, and nothing here pretends otherwise.**
 What it writes goes through the plugin validation above, and then one more check:
